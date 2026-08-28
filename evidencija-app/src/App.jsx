@@ -63,6 +63,7 @@ const curMonth = () => { const n = new Date(); return `${n.getFullYear()}-${Stri
 const logSpan = (l) => (l.from && l.to ? `${l.from}–${l.to}` : l.monthly ? "mjesečni zbroj" : "upis sati");
 const parseNum = (v) => parseFloat(String(v || "").replace(",", "."));
 const TYPE_LABEL = { avans: "Avans", bonus: "Bonus", gorivo: "Gorivo", ostalo: "Ostali trošak" };
+const MZDY_NOTE_LABEL = "soc. + zdr.";
 
 /* ---------- jezici (HR / CZ / UK) ---------- */
 const LANGS = ["HR", "CZ", "UK"];
@@ -2141,7 +2142,14 @@ function ReportTab({ data, api, admin }) {
       const w = data.workers.find((x) => x.id === row.workerId);
       const amount = round2(parseNum(row.amount) || 0);
       if (amount <= 0) continue;
-      await api.addPayrollNote({ workerId: row.workerId, month: mzdyReview.month, amount, currency: row.currency, sourceCzk: row.halfKc }, w?.name || row.rawName);
+      await api.addPayrollNote({
+        workerId: row.workerId,
+        month: mzdyReview.month,
+        amount,
+        currency: row.currency,
+        sourceCzk: row.halfKc,
+        note: MZDY_NOTE_LABEL,
+      }, w?.name || row.rawName);
     }
     setMzdyBusy(false);
     setMzdyReview(null);
@@ -2262,12 +2270,13 @@ function ReportTab({ data, api, admin }) {
         netK !== 0 ? czk(netK) : "",
       ].filter(Boolean);
       const gc = wCur(r.w);
+      const noteLabel = note?.note || MZDY_NOTE_LABEL;
       const breakdown = [
         gc === "CZK" ? (r.grossKc ? "zarada " + czk(r.grossKc) : "") : (r.gross ? "zarada " + eur(r.gross) : ""),
         r.bonuses ? "bonus +" + eur(r.bonuses) : "", r.czk.bonuses ? "bonus +" + czk(r.czk.bonuses) : "",
         r.advances ? "avans −" + eur(r.advances) : "", r.czk.advances ? "avans −" + czk(r.czk.advances) : "",
         r.deductions ? "odbici −" + eur(r.deductions) : "", r.czk.deductions ? "odbici −" + czk(r.czk.deductions) : "",
-        note ? "doprinosi +" + money(note.amount, note.currency) : "",
+        note ? `${noteLabel} +${money(note.amount, note.currency)}` : "",
       ].filter(Boolean).join(" · ");
       return `<div class="env">
         <div class="env-top">${periodLabel}${objLine ? "<br>" + objLine : ""}</div>
@@ -2417,7 +2426,7 @@ function ReportTab({ data, api, admin }) {
                 </Field>
                 <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
                   <div style={{ flex: 1 }}>
-                    <Field label={`Iznos za kovertu (${row.currency === "CZK" ? "Kč" : "€"})`}>
+                    <Field label={`Iznos za kovertu (soc. + zdr., ${row.currency === "CZK" ? "Kč" : "€"})`}>
                       <input inputMode="decimal" value={row.amount} onChange={(e) => {
                         const rows = [...mzdyReview.rows]; rows[i] = { ...row, amount: e.target.value }; setMzdyReview({ ...mzdyReview, rows });
                       }} />
@@ -2650,9 +2659,10 @@ function ReportTab({ data, api, admin }) {
                     {(() => {
                       const note = view === "month" ? (data.payrollNotes || []).find((n) => n.workerId === r.w.id && n.month === month) : null;
                       if (!note) return null;
+                      const noteLabel = note.note || MZDY_NOTE_LABEL;
                       return (
                         <div className="num" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 13.5, padding: "4px 0", color: S.blue }}>
-                          <span>📄 Mzdy doprinos (pola zbroja, {czk(note.sourceCzk)}){note.note ? " · " + note.note : ""}</span>
+                          <span>📄 {noteLabel} (pola zbroja, {czk(note.sourceCzk)})</span>
                           <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
                             <span style={{ fontWeight: 600 }}>+{money(note.amount, note.currency)}</span>
                             <button onClick={() => api.delPayrollNote(note, r.w.name)} style={{ background: "none", border: "none", color: S.red, fontSize: 15, cursor: "pointer", padding: 2 }}>✕</button>
