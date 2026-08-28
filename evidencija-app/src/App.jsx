@@ -70,7 +70,7 @@ const LANG_FLAG = { HR: "🇭🇷", CZ: "🇨🇿", UK: "🇺🇦" };
 const LANG_NAME = { HR: "Hrvatski", CZ: "Čeština", UK: "Українська" };
 const DICT = {
   HR: {
-    appTitle: "Evidencija rada", appSubtitle: "Radnici · Sati · Obračun", logout: "Odjava",
+    appTitle: "Evidencija rada - Firma", appSubtitle: "Radnici · Sati · Obračun", logout: "Odjava",
     tabRadnici: "Radnici", tabObjekti: "Objekti", tabImenik: "Imenik", tabSati: "Sati", tabIsplate: "Isplate", tabObracun: "Obračun",
     loginTitle: "Prijava", email: "E-mail", password: "Lozinka", loginBtn: "Prijavi se", loginBusy: "Prijavljujem…",
     loginErr: "Neispravan e-mail ili lozinka.",
