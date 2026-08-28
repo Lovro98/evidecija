@@ -2274,8 +2274,8 @@ function ReportTab({ data, api, admin }) {
       const objs = [...new Set(r.logs.map((l) => objName(l.objectId)).filter(Boolean))];
       const objLine = objs.length ? objs.join(", ") : (objName(r.w.objectId) || "");
       const note = view === "month" ? (data.payrollNotes || []).find((n) => n.workerId === r.w.id && n.month === month) : null;
-      const netE = round2(r.net + (note && note.currency === "EUR" ? note.amount : 0));
-      const netK = round2(r.czk.net + (note && note.currency === "CZK" ? note.amount : 0));
+      const netE = round2(r.net - (note && note.currency === "EUR" ? note.amount : 0));
+      const netK = round2(r.czk.net - (note && note.currency === "CZK" ? note.amount : 0));
       const amounts = [
         netE !== 0 || netK === 0 ? eur(netE) : "",
         netK !== 0 ? czk(netK) : "",
@@ -2287,7 +2287,7 @@ function ReportTab({ data, api, admin }) {
         r.bonuses ? "bonus +" + eur(r.bonuses) : "", r.czk.bonuses ? "bonus +" + czk(r.czk.bonuses) : "",
         r.advances ? "avans −" + eur(r.advances) : "", r.czk.advances ? "avans −" + czk(r.czk.advances) : "",
         r.deductions ? "odbici −" + eur(r.deductions) : "", r.czk.deductions ? "odbici −" + czk(r.czk.deductions) : "",
-        note ? `${noteLabel} +${money(note.amount, note.currency)}` : "",
+        note ? `${noteLabel} −${money(note.amount, note.currency)}` : "",
       ].filter(Boolean).join(" · ");
       return `<div class="env">
         <div class="env-top">${periodLabel}${objLine ? "<br>" + objLine : ""}</div>
@@ -2680,7 +2680,7 @@ function ReportTab({ data, api, admin }) {
                         <div className="num" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 13.5, padding: "4px 0", color: S.blue }}>
                           <span>📄 {noteLabel} (pola zbroja, {czk(note.sourceCzk)})</span>
                           <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                            <span style={{ fontWeight: 600 }}>+{money(note.amount, note.currency)}</span>
+                            <span style={{ fontWeight: 600 }}>−{money(note.amount, note.currency)}</span>
                             <button onClick={() => api.delPayrollNote(note, r.w.name)} style={{ background: "none", border: "none", color: S.red, fontSize: 15, cursor: "pointer", padding: 2 }}>✕</button>
                           </span>
                         </div>
@@ -2688,8 +2688,8 @@ function ReportTab({ data, api, admin }) {
                     })()}
                     {(() => {
                       const note = view === "month" ? (data.payrollNotes || []).find((n) => n.workerId === r.w.id && n.month === month) : null;
-                      const netE = round2(r.net + (note && note.currency === "EUR" ? note.amount : 0));
-                      const netK = round2(r.czk.net + (note && note.currency === "CZK" ? note.amount : 0));
+                      const netE = round2(r.net - (note && note.currency === "EUR" ? note.amount : 0));
+                      const netK = round2(r.czk.net - (note && note.currency === "CZK" ? note.amount : 0));
                       return (
                         <div style={{ borderTop: `1px dashed ${S.line}`, marginTop: 8, paddingTop: 8, display: "flex", justifyContent: "space-between", fontWeight: 800 }}>
                           <span>Za isplatu</span>
