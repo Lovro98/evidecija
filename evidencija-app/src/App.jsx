@@ -2137,12 +2137,14 @@ function ReportTab({ data, api, admin }) {
   };
   const saveMzdyReview = async () => {
     setMzdyBusy(true);
+    setMzdyErr("");
+    let saved = 0, failed = 0, skipped = 0;
     for (const row of mzdyReview.rows) {
-      if (!row.include || !row.workerId) continue;
+      if (!row.include || !row.workerId) { skipped++; continue; }
       const w = data.workers.find((x) => x.id === row.workerId);
       const amount = round2(parseNum(row.amount) || 0);
-      if (amount <= 0) continue;
-      await api.addPayrollNote({
+      if (amount <= 0) { skipped++; continue; }
+      const ok = await api.addPayrollNote({
         workerId: row.workerId,
         month: mzdyReview.month,
         amount,
@@ -2150,8 +2152,17 @@ function ReportTab({ data, api, admin }) {
         sourceCzk: row.halfKc,
         note: MZDY_NOTE_LABEL,
       }, w?.name || row.rawName);
+      ok ? saved++ : failed++;
     }
     setMzdyBusy(false);
+    if (failed > 0) {
+      setMzdyErr(`Nije spremljeno ${failed} od ${failed + saved} napomena. Najčešći uzrok: tablica "payroll_notes" ne postoji u bazi (pokreni schema.sql) ili nemaš admin ovlasti. Klikni Odustani pa pogledaj crvenu poruku na vrhu stranice za točan detalj.`);
+      return; // ostavi prozor otvoren da se ispravi
+    }
+    if (saved === 0) {
+      setMzdyErr("Ništa nije spremljeno — nijedan red nema odabranog radnika ili je iznos 0.");
+      return;
+    }
     setMzdyReview(null);
   };
 
@@ -2440,9 +2451,14 @@ function ReportTab({ data, api, admin }) {
                 </div>
               </div>
             ))}
+            {mzdyErr && (
+              <div style={{ background: S.redSoft, color: S.red, borderRadius: 8, padding: "8px 10px", fontSize: 12.5, fontWeight: 600, marginBottom: 8 }}>
+                {mzdyErr}
+              </div>
+            )}
             <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
               <Btn onClick={saveMzdyReview} disabled={mzdyBusy} style={{ flex: 1 }}>{mzdyBusy ? "Spremam…" : "💾 Spremi napomene"}</Btn>
-              <Btn kind="ghost" onClick={() => setMzdyReview(null)}>Odustani</Btn>
+              <Btn kind="ghost" onClick={() => { setMzdyReview(null); setMzdyErr(""); }}>Odustani</Btn>
             </div>
           </div>
         </div>
