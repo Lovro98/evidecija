@@ -2276,6 +2276,7 @@ function ReportTab({ data, api, admin }) {
       const note = view === "month" ? (data.payrollNotes || []).find((n) => n.workerId === r.w.id && n.month === month) : null;
       const netE = round2(r.net - (note && note.currency === "EUR" ? note.amount : 0));
       const netK = round2(r.czk.net - (note && note.currency === "CZK" ? note.amount : 0));
+      if (netE === 0 && netK === 0) return "";
       const amounts = [
         netE !== 0 || netK === 0 ? eur(netE) : "",
         netK !== 0 ? czk(netK) : "",
