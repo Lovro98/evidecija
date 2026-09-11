@@ -520,6 +520,14 @@ export default function App() {
       worker_id: l.workerId, object_id: l.objectId || null, work_date: l.date,
       from_t: l.from, to_t: l.to, hours: l.hours, monthly: !!l.monthly, note: l.note || "", created_by: session.user.id,
     }); }, `Upisao sate: ${wName} ${fmtH(l.hours)}${objName ? " (" + objName + ")" : ""} (${fmtDate(l.date)})`),
+    addLogsBulk: (entries, mo) => act(async () => {
+      entries.forEach((e) => guardPaid(e.workerId, mo));
+      const { error } = await supabase.from("work_logs").insert(entries.map((e) => ({
+        worker_id: e.workerId, object_id: e.objectId || null, work_date: mo + "-01",
+        from_t: "", to_t: "", hours: e.hours, monthly: true, created_by: session.user.id,
+      })));
+      if (error) throw error;
+    }, `Upisao mjesečne sate za ${entries.length} radnika (${mo})`),
     delLog: (l, wName) => act(() => { guardPaid(l.workerId, l.date); return softDel("work_logs", l.id); },
       `Obrisao sate: ${wName} ${fmtH(l.hours)} (${fmtDate(l.date)})`),
     updLog: (l, patch, wName) => act(() => {
@@ -1932,11 +1940,11 @@ function ObjectDetail({ object, data, api, onBack }) {
 function HoursTab({ data, api }) {
   const [mode, setMode] = useState("day"); // day | month
   const [form, setForm] = useState({ workerId: "", objectId: "", date: todayISO(), from: "07:00", to: "15:00", note: "" });
-  const [monthForm, setMonthForm] = useState({ workerId: "", objectId: "", month: curMonth(), hours: "" });
+  const [monthBulk, setMonthBulk] = useState({ month: curMonth(), objectId: "" });
+  const [monthHours, setMonthHours] = useState({}); // workerId -> string
+  const [monthBusy, setMonthBusy] = useState(false);
   const h = hoursBetween(form.from, form.to);
   const w = data.workers.find((x) => x.id === form.workerId);
-  const mw = data.workers.find((x) => x.id === monthForm.workerId);
-  const mh = parseNum(monthForm.hours) || 0;
   const objName = (id) => data.objects.find((o) => o.id === id)?.name || "";
 
   /* radni dani ovog mjeseca (do danas) bez ijednog upisa */
@@ -1962,20 +1970,17 @@ function HoursTab({ data, api }) {
     api.addLog({ workerId: form.workerId, objectId: form.objectId, date: form.date, from: form.from, to: form.to, hours: h, note: form.note }, w?.name || "", objName(form.objectId));
     setForm({ ...form, note: "" });
   };
-  const monthWorkerOptions = workersAtObject(data, monthForm.objectId);
-  const pickMonthObject = (id) => {
-    const stillValid = workersAtObject(data, id).some((x) => x.id === monthForm.workerId);
-    setMonthForm({ ...monthForm, objectId: id, workerId: stillValid ? monthForm.workerId : "" });
-  };
-  const pickMonthWorker = (id) => {
-    const wk = data.workers.find((x) => x.id === id);
-    setMonthForm({ ...monthForm, workerId: id, objectId: wk?.objectId || monthForm.objectId });
-  };
-  const addMonth = () => {
-    if (!monthForm.workerId || mh <= 0) return;
-    api.addLog({ workerId: monthForm.workerId, objectId: monthForm.objectId, date: monthForm.month + "-01", from: "", to: "", hours: round2(mh), monthly: true },
-      mw?.name || "", objName(monthForm.objectId));
-    setMonthForm({ ...monthForm, hours: "" });
+  const monthWorkers = workersAtObject(data, monthBulk.objectId);
+  const monthEntryCount = Object.values(monthHours).filter((v) => (parseNum(v) || 0) > 0).length;
+  const submitMonthBulk = async () => {
+    const entries = Object.entries(monthHours)
+      .map(([workerId, v]) => ({ workerId, hours: round2(parseNum(v) || 0) }))
+      .filter((e) => e.hours > 0)
+      .map((e) => ({ ...e, objectId: monthBulk.objectId || data.workers.find((w) => w.id === e.workerId)?.objectId || "" }));
+    if (!entries.length) return;
+    setMonthBusy(true);
+    if (await api.addLogsBulk(entries, monthBulk.month)) setMonthHours({});
+    setMonthBusy(false);
   };
   const recent = [...data.logs].sort((a, b) => b.date.localeCompare(a.date)).slice(0, 15);
   const wName = (id) => data.workers.find((x) => x.id === id)?.name || "Obrisan radnik";
@@ -2029,28 +2034,26 @@ function HoursTab({ data, api }) {
             </Card>
           ) : (
             <Card>
-              <Field label={api.t("object")}><ObjectSelect data={data} api={api} value={monthForm.objectId} onChange={pickMonthObject} /></Field>
-              <Field label={monthForm.objectId ? `${api.t("worker")} (${api.t("object").toLowerCase()})` : api.t("worker")}>
-                <select value={monthForm.workerId} onChange={(e) => pickMonthWorker(e.target.value)}>
-                  <option value="">{api.t("choose")}</option>
-                  {monthWorkerOptions.map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}
-                </select>
-                {monthForm.objectId && monthWorkerOptions.length === 0 && (
-                  <div style={{ fontSize: 12, color: S.sub, marginTop: 4 }}>Nitko još nije upisan na ovom objektu.</div>
-                )}
-              </Field>
-              <Field label="Mjesec">
-                <input type="month" value={monthForm.month} onChange={(e) => setMonthForm({ ...monthForm, month: e.target.value })} />
-              </Field>
-              <Field label="Ukupno sati za cijeli mjesec">
-                <input inputMode="decimal" value={monthForm.hours} onChange={(e) => setMonthForm({ ...monthForm, hours: e.target.value })} placeholder="npr. 176" />
-              </Field>
-              <div style={{ background: S.greenSoft, borderRadius: 10, padding: "10px 12px", marginBottom: 12, display: "flex", justifyContent: "space-between", fontWeight: 700 }}>
-                <span>{api.t("total")}: <span className="num">{fmtH(mh)}</span></span>
-                {mw && <span className="num" style={{ color: S.green }}>{money(round2(mh * rateFor(data, mw, monthForm.month + "-01")), wCur(mw))}</span>}
+              <div style={{ display: "flex", gap: 10 }}>
+                <div style={{ flex: 1 }}><Field label="Mjesec"><input type="month" value={monthBulk.month} onChange={(e) => setMonthBulk({ ...monthBulk, month: e.target.value })} /></Field></div>
+                <div style={{ flex: 1 }}><Field label={`${api.t("object")} (filter, nije obavezno)`}><ObjectSelect data={data} api={api} value={monthBulk.objectId} onChange={(v) => setMonthBulk({ ...monthBulk, objectId: v })} /></Field></div>
               </div>
-              <Btn onClick={addMonth} style={{ width: "100%" }}>{api.t("addHours")}</Btn>
-              <div style={{ fontSize: 12, color: S.sub, marginTop: 8 }}>Upisuje se kao jedan zbirni unos za cijeli mjesec (bez pojedinačnih dana).</div>
+              <div style={{ fontSize: 12, color: S.sub, margin: "-4px 0 10px" }}>Upiši sate svakome tko je radio i klikni jednom "Spremi sve" na kraju — ne treba jedan po jedan.</div>
+              {monthWorkers.length === 0 ? <Empty text="Nema radnika." /> : monthWorkers.map((mw) => (
+                <div key={mw.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 0", borderBottom: `1px solid ${S.line}` }}>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontWeight: 600, fontSize: 14 }}>{mw.name}</div>
+                    <div style={{ fontSize: 12, color: S.sub }}>{objName(mw.objectId) || "—"}</div>
+                  </div>
+                  <input inputMode="decimal" placeholder="sati" value={monthHours[mw.id] || ""}
+                    onChange={(e) => setMonthHours((p) => ({ ...p, [mw.id]: e.target.value }))}
+                    style={{ width: 80, padding: "8px 8px", textAlign: "right" }} />
+                </div>
+              ))}
+              <Btn onClick={submitMonthBulk} disabled={monthBusy || monthEntryCount === 0} style={{ width: "100%", marginTop: 12 }}>
+                {monthBusy ? "Spremam…" : `✓ Spremi sve${monthEntryCount ? ` (${monthEntryCount})` : ""}`}
+              </Btn>
+              <div style={{ fontSize: 12, color: S.sub, marginTop: 8 }}>Svaki upis sprema se kao jedan zbirni unos za cijeli mjesec (bez pojedinačnih dana).</div>
             </Card>
           )}
         </>
