@@ -550,6 +550,14 @@ export default function App() {
     }); }, `Upisao ${TYPE_LABEL[p.type].toLowerCase()}: ${name} ${money(p.amount, p.currency)}`),
     delPayment: (p, name) => act(() => { if (p.workerId) guardPaid(p.workerId, p.date); return softDel("payments", p.id); },
       `Obrisao ${(TYPE_LABEL[p.type] || p.type).toLowerCase()}: ${name} ${eur(p.amount)}`),
+    addPaymentsBulk: (entries, meta) => act(async () => {
+      entries.forEach((e) => guardPaid(e.workerId, meta.date));
+      const { error } = await supabase.from("payments").insert(entries.map((e) => ({
+        worker_id: e.workerId, object_id: null, pay_date: meta.date, type: meta.type, amount: e.amount,
+        note: meta.note || "", deduct: meta.deduct, currency: meta.currency || "EUR", created_by: session.user.id,
+      })));
+      if (error) throw error;
+    }, `Upisao ${TYPE_LABEL[meta.type]?.toLowerCase() || meta.type} za ${entries.length} radnika (${money(round2(entries.reduce((s, e) => s + e.amount, 0)), meta.currency)})`),
     markPaid: (w, mo, amount, amountKc) => act(() => ins("payouts", { worker_id: w.id, month: mo, amount, amount_czk: amountKc || 0, created_by: session.user.id }),
       `Označio ISPLAĆENO: ${w.name} za ${mo} (${[amount ? eur(amount) : "", amountKc ? czk(amountKc) : ""].filter(Boolean).join(" + ") || eur(0)})`),
     unmarkPaid: (payout, wName) => act(() => softDel("payouts", payout.id), `Otključao isplatu: ${wName} za ${payout.month}`),
@@ -2098,8 +2106,23 @@ function PaymentsTab({ data, api }) {
   const [filterObj, setFilterObj] = useState("");
   const [cur, setCur] = useState("EUR"); // EUR | CZK
   const [form, setForm] = useState({ workerId: "", objectId: "", date: todayISO(), type: "avans", amount: "", note: "", deduct: true });
+  const [bulkMode, setBulkMode] = useState(false);
+  const [bulkAmounts, setBulkAmounts] = useState({}); // workerId -> string
+  const [bulkBusy, setBulkBusy] = useState(false);
   const wName = (id) => data.workers.find((x) => x.id === id)?.name || "Obrisan radnik";
   const oName = (id) => data.objects.find((o) => o.id === id)?.name || "Obrisan objekt";
+  const bulkWorkers = workersAtObject(data, filterObj);
+  const bulkEntryCount = Object.values(bulkAmounts).filter((v) => (parseNum(v) || 0) > 0).length;
+  const submitBulk = async () => {
+    const entries = Object.entries(bulkAmounts)
+      .map(([workerId, v]) => ({ workerId, amount: round2(parseNum(v) || 0) }))
+      .filter((e) => e.amount > 0);
+    if (!entries.length || !form.date) return;
+    const deduct = form.type === "avans" || form.type === "racun" ? true : form.type === "bonus" ? false : form.deduct;
+    setBulkBusy(true);
+    if (await api.addPaymentsBulk(entries, { date: form.date, type: form.type, currency: cur, note: form.note, deduct })) setBulkAmounts({});
+    setBulkBusy(false);
+  };
   const add = () => {
     const raw = parseNum(form.amount);
     if (!form.date || !raw) return;
@@ -2129,6 +2152,14 @@ function PaymentsTab({ data, api }) {
             background: target === id ? S.blue : "#fff", color: target === id ? "#fff" : S.sub, border: `1px solid ${target === id ? S.blue : S.line}` }}>{label}</button>
         ))}
       </div>
+      {target === "radnik" && (
+        <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+          {[[false, "Pojedinačno"], [true, "Grupno — svi odjednom"]].map(([id, label]) => (
+            <button key={String(id)} onClick={() => setBulkMode(id)} style={{ flex: 1, padding: "9px 8px", borderRadius: 10, fontWeight: 700, fontSize: 13, cursor: "pointer",
+              background: bulkMode === id ? S.green : "#fff", color: bulkMode === id ? "#fff" : S.sub, border: `1px solid ${bulkMode === id ? S.green : S.line}` }}>{label}</button>
+          ))}
+        </div>
+      )}
       {target === "radnik" && data.workers.filter((x) => !x.archived).length === 0 ? <Empty text="Prvo dodaj radnika." /> : (
         <Card>
           {target === "radnik" ? (
@@ -2142,19 +2173,21 @@ function PaymentsTab({ data, api }) {
                   if (v && ob && !stillValid) setCur(countryCur(ob.country));
                 }} />
               </Field>
-              <Field label={filterObj ? `${api.t("worker")} (${api.t("object").toLowerCase()})` : api.t("worker")}>
-                <select value={form.workerId} onChange={(e) => {
-                  const wk = data.workers.find((x) => x.id === e.target.value);
-                  setForm({ ...form, workerId: e.target.value });
-                  if (wk) setCur(wCur(wk));
-                }}>
-                  <option value="">— odaberi —</option>
-                  {workersAtObject(data, filterObj).map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}
-                </select>
-                {filterObj && workersAtObject(data, filterObj).length === 0 && (
-                  <div style={{ fontSize: 12, color: S.sub, marginTop: 4 }}>Nitko još nije upisan na ovom objektu.</div>
-                )}
-              </Field>
+              {!bulkMode && (
+                <Field label={filterObj ? `${api.t("worker")} (${api.t("object").toLowerCase()})` : api.t("worker")}>
+                  <select value={form.workerId} onChange={(e) => {
+                    const wk = data.workers.find((x) => x.id === e.target.value);
+                    setForm({ ...form, workerId: e.target.value });
+                    if (wk) setCur(wCur(wk));
+                  }}>
+                    <option value="">— odaberi —</option>
+                    {workersAtObject(data, filterObj).map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}
+                  </select>
+                  {filterObj && workersAtObject(data, filterObj).length === 0 && (
+                    <div style={{ fontSize: 12, color: S.sub, marginTop: 4 }}>Nitko još nije upisan na ovom objektu.</div>
+                  )}
+                </Field>
+              )}
               <Field label={api.t("type")}>
                 <select value={form.type} onChange={(e) => setForm({ ...form, type: e.target.value })}>
                   <option value="avans">Avans (odbija se od plaće)</option>
@@ -2188,11 +2221,13 @@ function PaymentsTab({ data, api }) {
           )}
           <div style={{ display: "flex", gap: 10 }}>
             <div style={{ flex: 1 }}><Field label={api.t("date")}><input type="date" value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} /></Field></div>
-            <div style={{ flex: 1 }}>
-              <Field label={cur === "CZK" ? "Iznos (Kč)" : api.t("amount")}>
-                <input inputMode="decimal" value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} placeholder="0.00" />
-              </Field>
-            </div>
+            {!(target === "radnik" && bulkMode) && (
+              <div style={{ flex: 1 }}>
+                <Field label={cur === "CZK" ? "Iznos (Kč)" : api.t("amount")}>
+                  <input inputMode="decimal" value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} placeholder="0.00" />
+                </Field>
+              </div>
+            )}
           </div>
           <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 10 }}>
             {[["EUR", "€ Euro"], ["CZK", "Kč Kruna"]].map(([id, label]) => (
@@ -2210,7 +2245,24 @@ function PaymentsTab({ data, api }) {
               Odbij radniku od plaće (inače je trošak firme)
             </label>
           )}
-          <Btn onClick={add} style={{ width: "100%" }}>{api.t("save")}</Btn>
+          {target === "radnik" && bulkMode ? (
+            <>
+              <div style={{ fontSize: 12, color: S.sub, margin: "-4px 0 10px" }}>Upiši iznos svakome tko treba i klikni jednom "Spremi sve" na kraju.</div>
+              {bulkWorkers.length === 0 ? <Empty text="Nema radnika." /> : bulkWorkers.map((bw) => (
+                <div key={bw.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 0", borderBottom: `1px solid ${S.line}` }}>
+                  <div style={{ flex: 1, fontWeight: 600, fontSize: 14 }}>{bw.name}</div>
+                  <input inputMode="decimal" placeholder="0.00" value={bulkAmounts[bw.id] || ""}
+                    onChange={(e) => setBulkAmounts((p) => ({ ...p, [bw.id]: e.target.value }))}
+                    style={{ width: 90, padding: "8px 8px", textAlign: "right" }} />
+                </div>
+              ))}
+              <Btn onClick={submitBulk} disabled={bulkBusy || bulkEntryCount === 0} style={{ width: "100%", marginTop: 12 }}>
+                {bulkBusy ? "Spremam…" : `✓ Spremi sve${bulkEntryCount ? ` (${bulkEntryCount})` : ""}`}
+              </Btn>
+            </>
+          ) : (
+            <Btn onClick={add} style={{ width: "100%" }}>{api.t("save")}</Btn>
+          )}
         </Card>
       )}
       {recent.length > 0 && (
