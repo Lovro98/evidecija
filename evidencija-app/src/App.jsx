@@ -621,7 +621,7 @@ export default function App() {
         {worker ? (
           <WorkerDetail worker={worker} data={data} api={api} onBack={() => setOpenWorker(null)} />
         ) : object ? (
-          <ObjectDetail object={object} data={data} api={api} onBack={() => setOpenObject(null)} />
+          <ObjectDetail object={object} data={data} api={api} onBack={() => setOpenObject(null)} onOpenWorker={setOpenWorker} />
         ) : (
           <>
             {tab === "radnici" && <WorkersTab data={data} api={api} onOpen={setOpenWorker} onOpenObject={setOpenObject} />}
@@ -1434,7 +1434,7 @@ function WorkerDetail({ worker, data, api, onBack }) {
 /* ================================================================== */
 /*  OBJEKT — BRZI UNOS + kopiranje dana                                */
 /* ================================================================== */
-function ObjectDetail({ object, data, api, onBack }) {
+function ObjectDetail({ object, data, api, onBack, onOpenWorker }) {
   const [mode, setMode] = useState("day");
   const [date, setDate] = useState(todayISO());
   const [month, setMonth] = useState(curMonth());
@@ -1858,8 +1858,9 @@ function ObjectDetail({ object, data, api, onBack }) {
         return (
           <Card key={w.id} style={{ padding: "12px 14px" }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-              <div>
+              <div onClick={() => onOpenWorker && onOpenWorker(w.id)} style={{ cursor: onOpenWorker ? "pointer" : "default" }}>
                 <span style={{ fontWeight: 700, fontSize: 15 }}>{w.name}</span>
+                {onOpenWorker && <span style={{ color: S.blue, fontWeight: 700 }}> ›</span>}
                 {w.objectId === object.id && <span style={{ marginLeft: 6, fontSize: 11, color: S.blue, fontWeight: 700 }}>★ ovaj objekt</span>}
               </div>
               <div className="num" style={{ fontSize: 12.5, color: S.sub }}>{fmtH(monthHours(w.id))} ovdje ovaj mj.</div>
