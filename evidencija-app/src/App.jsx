@@ -1930,9 +1930,13 @@ function ObjectDetail({ object, data, api, onBack }) {
 /*  SATI + podsjetnik na neupisane dane                                */
 /* ================================================================== */
 function HoursTab({ data, api }) {
+  const [mode, setMode] = useState("day"); // day | month
   const [form, setForm] = useState({ workerId: "", objectId: "", date: todayISO(), from: "07:00", to: "15:00", note: "" });
+  const [monthForm, setMonthForm] = useState({ workerId: "", objectId: "", month: curMonth(), hours: "" });
   const h = hoursBetween(form.from, form.to);
   const w = data.workers.find((x) => x.id === form.workerId);
+  const mw = data.workers.find((x) => x.id === monthForm.workerId);
+  const mh = parseNum(monthForm.hours) || 0;
   const objName = (id) => data.objects.find((o) => o.id === id)?.name || "";
 
   /* radni dani ovog mjeseca (do danas) bez ijednog upisa */
@@ -1958,6 +1962,21 @@ function HoursTab({ data, api }) {
     api.addLog({ workerId: form.workerId, objectId: form.objectId, date: form.date, from: form.from, to: form.to, hours: h, note: form.note }, w?.name || "", objName(form.objectId));
     setForm({ ...form, note: "" });
   };
+  const monthWorkerOptions = workersAtObject(data, monthForm.objectId);
+  const pickMonthObject = (id) => {
+    const stillValid = workersAtObject(data, id).some((x) => x.id === monthForm.workerId);
+    setMonthForm({ ...monthForm, objectId: id, workerId: stillValid ? monthForm.workerId : "" });
+  };
+  const pickMonthWorker = (id) => {
+    const wk = data.workers.find((x) => x.id === id);
+    setMonthForm({ ...monthForm, workerId: id, objectId: wk?.objectId || monthForm.objectId });
+  };
+  const addMonth = () => {
+    if (!monthForm.workerId || mh <= 0) return;
+    api.addLog({ workerId: monthForm.workerId, objectId: monthForm.objectId, date: monthForm.month + "-01", from: "", to: "", hours: round2(mh), monthly: true },
+      mw?.name || "", objName(monthForm.objectId));
+    setMonthForm({ ...monthForm, hours: "" });
+  };
   const recent = [...data.logs].sort((a, b) => b.date.localeCompare(a.date)).slice(0, 15);
   const wName = (id) => data.workers.find((x) => x.id === id)?.name || "Obrisan radnik";
   const [editLog, setEditLog] = useState(null);
@@ -1976,30 +1995,65 @@ function HoursTab({ data, api }) {
       )}
 
       {data.workers.filter((x) => !x.archived).length === 0 ? <Empty text="Prvo dodaj radnika." /> : (
-        <Card>
-          <Field label={api.t("object")}><ObjectSelect data={data} api={api} value={form.objectId} onChange={pickObject} /></Field>
-          <Field label={form.objectId ? `${api.t("worker")} (${api.t("object").toLowerCase()})` : api.t("worker")}>
-            <select value={form.workerId} onChange={(e) => pickWorker(e.target.value)}>
-              <option value="">{api.t("choose")}</option>
-              {workerOptions.map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}
-            </select>
-            {form.objectId && workerOptions.length === 0 && (
-              <div style={{ fontSize: 12, color: S.sub, marginTop: 4 }}>Nitko još nije upisan na ovom objektu.</div>
-            )}
-          </Field>
-          <Field label={api.t("date")}><input type="date" value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} /></Field>
-          <div style={{ marginBottom: 8 }}><DayBadge iso={form.date} /></div>
-          <div style={{ display: "flex", gap: 10 }}>
-            <div style={{ flex: 1 }}><Field label={api.t("from")}><input type="time" value={form.from} onChange={(e) => setForm({ ...form, from: e.target.value })} /></Field></div>
-            <div style={{ flex: 1 }}><Field label={api.t("to")}><input type="time" value={form.to} onChange={(e) => setForm({ ...form, to: e.target.value })} /></Field></div>
+        <>
+          <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+            {[["day", "Po danu"], ["month", "Cijeli mjesec"]].map(([id, label]) => (
+              <button key={id} onClick={() => setMode(id)} style={{ flex: 1, padding: "10px 8px", borderRadius: 10, fontWeight: 700, fontSize: 13.5, cursor: "pointer",
+                background: mode === id ? S.blue : "#fff", color: mode === id ? "#fff" : S.sub, border: `1px solid ${mode === id ? S.blue : S.line}` }}>{label}</button>
+            ))}
           </div>
-          <Field label="Napomena (opcionalno)"><input value={form.note} onChange={(e) => setForm({ ...form, note: e.target.value })} /></Field>
-          <div style={{ background: S.greenSoft, borderRadius: 10, padding: "10px 12px", marginBottom: 12, display: "flex", justifyContent: "space-between", fontWeight: 700 }}>
-            <span>{api.t("total")}: <span className="num">{fmtH(h)}</span></span>
-            {w && <span className="num" style={{ color: S.green }}>{money(round2(h * rateFor(data, w, form.date)), wCur(w))}</span>}
-          </div>
-          <Btn onClick={add} style={{ width: "100%" }}>{api.t("addHours")}</Btn>
-        </Card>
+          {mode === "day" ? (
+            <Card>
+              <Field label={api.t("object")}><ObjectSelect data={data} api={api} value={form.objectId} onChange={pickObject} /></Field>
+              <Field label={form.objectId ? `${api.t("worker")} (${api.t("object").toLowerCase()})` : api.t("worker")}>
+                <select value={form.workerId} onChange={(e) => pickWorker(e.target.value)}>
+                  <option value="">{api.t("choose")}</option>
+                  {workerOptions.map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}
+                </select>
+                {form.objectId && workerOptions.length === 0 && (
+                  <div style={{ fontSize: 12, color: S.sub, marginTop: 4 }}>Nitko još nije upisan na ovom objektu.</div>
+                )}
+              </Field>
+              <Field label={api.t("date")}><input type="date" value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} /></Field>
+              <div style={{ marginBottom: 8 }}><DayBadge iso={form.date} /></div>
+              <div style={{ display: "flex", gap: 10 }}>
+                <div style={{ flex: 1 }}><Field label={api.t("from")}><input type="time" value={form.from} onChange={(e) => setForm({ ...form, from: e.target.value })} /></Field></div>
+                <div style={{ flex: 1 }}><Field label={api.t("to")}><input type="time" value={form.to} onChange={(e) => setForm({ ...form, to: e.target.value })} /></Field></div>
+              </div>
+              <Field label="Napomena (opcionalno)"><input value={form.note} onChange={(e) => setForm({ ...form, note: e.target.value })} /></Field>
+              <div style={{ background: S.greenSoft, borderRadius: 10, padding: "10px 12px", marginBottom: 12, display: "flex", justifyContent: "space-between", fontWeight: 700 }}>
+                <span>{api.t("total")}: <span className="num">{fmtH(h)}</span></span>
+                {w && <span className="num" style={{ color: S.green }}>{money(round2(h * rateFor(data, w, form.date)), wCur(w))}</span>}
+              </div>
+              <Btn onClick={add} style={{ width: "100%" }}>{api.t("addHours")}</Btn>
+            </Card>
+          ) : (
+            <Card>
+              <Field label={api.t("object")}><ObjectSelect data={data} api={api} value={monthForm.objectId} onChange={pickMonthObject} /></Field>
+              <Field label={monthForm.objectId ? `${api.t("worker")} (${api.t("object").toLowerCase()})` : api.t("worker")}>
+                <select value={monthForm.workerId} onChange={(e) => pickMonthWorker(e.target.value)}>
+                  <option value="">{api.t("choose")}</option>
+                  {monthWorkerOptions.map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}
+                </select>
+                {monthForm.objectId && monthWorkerOptions.length === 0 && (
+                  <div style={{ fontSize: 12, color: S.sub, marginTop: 4 }}>Nitko još nije upisan na ovom objektu.</div>
+                )}
+              </Field>
+              <Field label="Mjesec">
+                <input type="month" value={monthForm.month} onChange={(e) => setMonthForm({ ...monthForm, month: e.target.value })} />
+              </Field>
+              <Field label="Ukupno sati za cijeli mjesec">
+                <input inputMode="decimal" value={monthForm.hours} onChange={(e) => setMonthForm({ ...monthForm, hours: e.target.value })} placeholder="npr. 176" />
+              </Field>
+              <div style={{ background: S.greenSoft, borderRadius: 10, padding: "10px 12px", marginBottom: 12, display: "flex", justifyContent: "space-between", fontWeight: 700 }}>
+                <span>{api.t("total")}: <span className="num">{fmtH(mh)}</span></span>
+                {mw && <span className="num" style={{ color: S.green }}>{money(round2(mh * rateFor(data, mw, monthForm.month + "-01")), wCur(mw))}</span>}
+              </div>
+              <Btn onClick={addMonth} style={{ width: "100%" }}>{api.t("addHours")}</Btn>
+              <div style={{ fontSize: 12, color: S.sub, marginTop: 8 }}>Upisuje se kao jedan zbirni unos za cijeli mjesec (bez pojedinačnih dana).</div>
+            </Card>
+          )}
+        </>
       )}
       {recent.length > 0 && (
         <Card>
