@@ -854,7 +854,7 @@ function AdminPanels({ data, api, panel, setPanel }) {
       {panel === "users" && (
         <Card style={{ marginTop: 8 }}>
           <div style={{ fontWeight: 700, marginBottom: 8 }}>👥 Zaposlenici s pristupom</div>
-          {data.profiles.map((p) => (
+          {[...data.profiles].sort((a, b) => (a.name || "").localeCompare(b.name || "", "hr")).map((p) => (
             <div key={p.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 0", borderBottom: `1px solid ${S.line}` }}>
               <span style={{ flex: 1, fontWeight: 600, fontSize: 14 }}>{p.role === "admin" ? "👑 " : ""}{p.name || "(bez imena)"}</span>
               <select value={p.role} onChange={(e) => api.setRole(p, e.target.value)} style={{ width: "auto", padding: "6px 8px", fontSize: 13 }}>
@@ -1529,11 +1529,8 @@ function ObjectDetail({ object, data, api, onBack, onOpenWorker }) {
   const prevM = () => setMonth(mm === 1 ? `${my - 1}-12` : `${my}-${String(mm - 1).padStart(2, "0")}`);
   const nextM = () => setMonth(mm === 12 ? `${my + 1}-01` : `${my}-${String(mm + 1).padStart(2, "0")}`);
 
-  const workers = data.workers.filter((w) => !w.archived).sort((a, b) => {
-    const am = a.objectId === object.id ? 0 : 1, bm = b.objectId === object.id ? 0 : 1;
-    return am - bm || a.name.localeCompare(b.name);
-  });
-  const objectPositions = [...new Set(workers.filter((w) => w.objectId === object.id && w.position).map((w) => w.position))];
+  const workers = sortedWorkers(data.workers.filter((w) => !w.archived));
+  const objectPositions = [...new Set(workers.filter((w) => w.objectId === object.id && w.position).map((w) => w.position))].sort((a, b) => a.localeCompare(b, "hr"));
   const myPositionRates = (data.positionBilling || []).filter((pb) => pb.objectId === object.id)
     .sort((a, b) => a.position.localeCompare(b.position, "hr"));
   const editPositionRate = (pb) => {
@@ -1700,7 +1697,7 @@ function ObjectDetail({ object, data, api, onBack, onOpenWorker }) {
               <div style={{ fontSize: 12.5, fontWeight: 700, color: S.amber, marginBottom: 6 }}>Vidljiv zaposlenicima</div>
               {(data.profiles || []).filter((p) => p.role !== "admin").length === 0 ? (
                 <div style={{ fontSize: 12.5, color: S.sub }}>Još nema zaposlenika.</div>
-              ) : (data.profiles || []).filter((p) => p.role !== "admin").map((p) => {
+              ) : [...(data.profiles || [])].filter((p) => p.role !== "admin").sort((a, b) => (a.name || "").localeCompare(b.name || "", "hr")).map((p) => {
                 const on = (data.objectMembers || []).some((m) => m.object_id === object.id && m.user_id === p.id);
                 return (
                   <label key={p.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 0", fontSize: 13.5, cursor: "pointer" }}>
@@ -2619,7 +2616,7 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
     }));
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(payRows.length ? payRows : [{ "Datum": "" }]), "Isplate i troškovi");
 
-    const objRows = [...byObject.entries()].map(([k, v]) => ({
+    const objRows = [...byObject.entries()].sort(([ka], [kb]) => objName(ka).localeCompare(objName(kb), "hr")).map(([k, v]) => ({
       "Objekt": k === "__none__" ? "Bez objekta" : objName(k), "Sati": v.hours,
       "Zarada radnika (€)": v.gross, "Zarada radnika (Kč)": v.grossKc || 0,
       "Troškovi objekta (€)": v.costs || 0, "Troškovi objekta (Kč)": v.costsKc || 0,
@@ -2824,7 +2821,7 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
                   if (cGroup === "__none__") return key === "__none__";
                   const ob = data.objects.find((o) => o.id === key);
                   return ob && (ob.country || "HR") === cGroup;
-                });
+                }).sort(([ka], [kb]) => objName(ka).localeCompare(objName(kb), "hr"));
                 if (!entries.length) return null;
                 const sub = entries.reduce((t, [, v]) => ({
                   hours: round2(t.hours + v.hours), gross: round2(t.gross + v.gross), grossKc: round2(t.grossKc + (v.grossKc || 0)),
