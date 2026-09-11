@@ -627,9 +627,9 @@ export default function App() {
             {tab === "radnici" && <WorkersTab data={data} api={api} onOpen={setOpenWorker} onOpenObject={setOpenObject} />}
             {tab === "objekti" && <ObjectsTab data={data} api={api} onOpenObject={setOpenObject} />}
             {tab === "imenik" && <DirectoryTab data={data} api={api} onOpen={setOpenWorker} />}
-            {tab === "sati" && <HoursTab data={data} api={api} />}
-            {tab === "isplate" && <PaymentsTab data={data} api={api} />}
-            {tab === "obracun" && <ReportTab data={data} api={api} admin={admin} />}
+            {tab === "sati" && <HoursTab data={data} api={api} onOpenWorker={setOpenWorker} />}
+            {tab === "isplate" && <PaymentsTab data={data} api={api} onOpenWorker={setOpenWorker} />}
+            {tab === "obracun" && <ReportTab data={data} api={api} admin={admin} onOpenWorker={setOpenWorker} />}
           </>
         )}
       </div>
@@ -1734,7 +1734,9 @@ function ObjectDetail({ object, data, api, onBack, onOpenWorker }) {
             <div style={{ fontWeight: 700, marginBottom: 6 }}>👷 Radnici na objektu ovaj mjesec</div>
             {rows2.map((r) => (
               <div key={r.w.id} className="num" style={{ display: "flex", justifyContent: "space-between", padding: "5px 0", borderBottom: `1px solid ${S.line}`, fontSize: 13.5 }}>
-                <span style={{ fontWeight: 600 }}>{r.w.name}{r.w.objectId === object.id ? <span style={{ color: S.blue, fontSize: 11, fontWeight: 700 }}> ★</span> : ""}</span>
+                <span onClick={() => onOpenWorker && onOpenWorker(r.w.id)} style={{ fontWeight: 600, cursor: onOpenWorker ? "pointer" : "default", color: onOpenWorker ? S.blue : "inherit" }}>
+                  {r.w.name}{r.w.objectId === object.id ? <span style={{ color: S.blue, fontSize: 11, fontWeight: 700 }}> ★</span> : ""}
+                </span>
                 <span style={{ fontWeight: 700 }}>{fmtH(r.h)}</span>
               </div>
             ))}
@@ -1898,7 +1900,7 @@ function ObjectDetail({ object, data, api, onBack, onOpenWorker }) {
             <div key={l.id} style={{ borderBottom: `1px solid ${S.line}` }}>
               <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 0" }}>
                 <div style={{ flex: 1 }}>
-                  <span style={{ fontWeight: 600, fontSize: 14 }}>{wName(l.workerId)}</span>
+                  <span onClick={() => onOpenWorker && onOpenWorker(l.workerId)} style={{ fontWeight: 600, fontSize: 14, cursor: onOpenWorker ? "pointer" : "default", color: onOpenWorker ? S.blue : "inherit" }}>{wName(l.workerId)}</span>
                   <div className="num" style={{ fontSize: 12.5, color: S.sub }}>{mode === "month" ? fmtDate(l.date) + " · " : ""}{logSpan(l)}</div>
                 </div>
                 <div className="num" style={{ fontWeight: 700 }}>{fmtH(l.hours)}</div>
@@ -1946,7 +1948,7 @@ function ObjectDetail({ object, data, api, onBack, onOpenWorker }) {
 /* ================================================================== */
 /*  SATI + podsjetnik na neupisane dane                                */
 /* ================================================================== */
-function HoursTab({ data, api }) {
+function HoursTab({ data, api, onOpenWorker }) {
   const [mode, setMode] = useState("day"); // day | month
   const [form, setForm] = useState({ workerId: "", objectId: "", date: todayISO(), from: "07:00", to: "15:00", note: "" });
   const [monthBulk, setMonthBulk] = useState({ month: curMonth(), objectId: "" });
@@ -2074,7 +2076,7 @@ function HoursTab({ data, api }) {
             <div key={l.id} style={{ borderBottom: `1px solid ${S.line}` }}>
               <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 0" }}>
                 <div style={{ flex: 1 }}>
-                  <div style={{ fontWeight: 600, fontSize: 14 }}>{wName(l.workerId)}</div>
+                  <div onClick={() => onOpenWorker && onOpenWorker(l.workerId)} style={{ fontWeight: 600, fontSize: 14, cursor: onOpenWorker ? "pointer" : "default", color: onOpenWorker ? S.blue : "inherit" }}>{wName(l.workerId)}</div>
                   <div style={{ fontSize: 12.5, color: S.sub }}>
                     {fmtDate(l.date)} · {logSpan(l)}{objName(l.objectId) ? " · " + objName(l.objectId) : ""}{l.note && !l.monthly ? " · " + l.note : ""}
                   </div>
@@ -2102,7 +2104,7 @@ function HoursTab({ data, api }) {
 /* ================================================================== */
 /*  AVANSI, BONUSI I TROŠKOVI                                          */
 /* ================================================================== */
-function PaymentsTab({ data, api }) {
+function PaymentsTab({ data, api, onOpenWorker }) {
   const [target, setTarget] = useState("radnik"); // radnik | objekt
   const [filterObj, setFilterObj] = useState("");
   const [cur, setCur] = useState("EUR"); // EUR | CZK
@@ -2275,7 +2277,10 @@ function PaymentsTab({ data, api }) {
               <div key={p.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 0", borderBottom: `1px solid ${S.line}` }}>
                 <Tag color={t.color} bg={t.bg}>{TYPE_LABEL[p.type] || p.type}</Tag>
                 <div style={{ flex: 1 }}>
-                  <div style={{ fontWeight: 600, fontSize: 14 }}>{p.workerId ? wName(p.workerId) : "🏨 " + oName(p.objectId)}</div>
+                  <div onClick={() => p.workerId && onOpenWorker && onOpenWorker(p.workerId)}
+                    style={{ fontWeight: 600, fontSize: 14, cursor: p.workerId && onOpenWorker ? "pointer" : "default", color: p.workerId && onOpenWorker ? S.blue : "inherit" }}>
+                    {p.workerId ? wName(p.workerId) : "🏨 " + oName(p.objectId)}
+                  </div>
                   <div style={{ fontSize: 12.5, color: S.sub }}>{fmtDate(p.date)}{p.note ? " · " + p.note : ""}</div>
                 </div>
                 <div className="num" style={{ fontWeight: 700, color: p.type === "bonus" ? S.green : S.ink }}>{p.type === "bonus" ? "+" : ""}{money(p.amount, p.currency)}</div>
@@ -2321,7 +2326,7 @@ function calcRows(data, filterFn, objFilters) {
   }).filter((r) => (hasFilter ? r.hours > 0 : (r.hours > 0 || r.pays.length > 0)));
 }
 
-function ReportTab({ data, api, admin }) {
+function ReportTab({ data, api, admin, onOpenWorker }) {
   const [view, setView] = useState("month"); // month | year
   const [month, setMonth] = useState(curMonth());
   const [open, setOpen] = useState(null);
@@ -2923,7 +2928,7 @@ function ReportTab({ data, api, admin }) {
                       {view === "month" && !paid && (
                         <input type="checkbox" checked={selected.has(r.w.id)} onChange={(e) => toggleSelect(r.w.id, e)} onClick={(e) => e.stopPropagation()} style={{ width: 18, height: 18 }} />
                       )}
-                      {r.w.name} {paid && <Tag color={S.green} bg={S.greenSoft}>✓ Isplaćeno</Tag>}
+                      <span onClick={(e) => { if (onOpenWorker) { e.stopPropagation(); onOpenWorker(r.w.id); } }} style={{ color: onOpenWorker ? S.blue : "inherit" }}>{r.w.name}</span> {paid && <Tag color={S.green} bg={S.greenSoft}>✓ Isplaćeno</Tag>}
                     </div>
                     <div className="num" style={{ textAlign: "right" }}>
                       <div style={{ fontWeight: 800, color: r.net >= 0 ? S.green : S.red, fontSize: 16 }}>{eur(r.net)}</div>
