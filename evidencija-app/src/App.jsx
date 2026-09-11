@@ -62,7 +62,7 @@ const todayISO = () => new Date().toISOString().slice(0, 10);
 const curMonth = () => { const n = new Date(); return `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, "0")}`; };
 const logSpan = (l) => (l.from && l.to ? `${l.from}–${l.to}` : l.monthly ? "mjesečni zbroj" : "upis sati");
 const parseNum = (v) => parseFloat(String(v || "").replace(",", "."));
-const TYPE_LABEL = { avans: "Avans", bonus: "Bonus", gorivo: "Gorivo", ostalo: "Ostali trošak" };
+const TYPE_LABEL = { avans: "Avans", bonus: "Bonus", gorivo: "Gorivo", ostalo: "Ostali trošak", racun: "Na račun (banka)" };
 const MZDY_NOTE_LABEL = "soc. + zdr.";
 
 /* ---------- jezici (HR / CZ / UK) ---------- */
@@ -335,7 +335,7 @@ async function fetchAll(isAdmin) {
     workers: (workers.data || []).map((w) => ({
       id: w.id, name: w.name, phone: w.phone || "", rate: Number(w.base_rate) || 0,
       objectId: w.object_id || "", note: w.note || "", archived: !!w.archived, archivedDate: w.archived_date || "",
-      permitExpiry: w.permit_expiry || "", contractExpiry: w.contract_expiry || "",
+      permitExpiry: w.permit_expiry || "", contractExpiry: w.contract_expiry || "", position: w.position || "",
       rateCurrency: w.rate_currency === "CZK" ? "CZK" : "EUR",
     })),
     objects: (objects.data || []).map((o) => ({ id: o.id, name: o.name, billRate: billMap[o.id]?.rate || 0, billCur: billMap[o.id]?.cur || countryCur(o.country || "HR"), country: o.country || "HR" })),
@@ -438,15 +438,17 @@ export default function App() {
     addWorker: (f) => act(async () => {
       const { data: w, error } = await supabase.from("workers")
         .insert({ name: f.name, phone: f.phone, base_rate: parseNum(f.rate) || 0, rate_currency: f.rateCur || "EUR", object_id: f.objectId || null, note: f.note,
-          permit_expiry: f.permitExpiry || null, contract_expiry: f.contractExpiry || null, created_by: session.user.id })
+          permit_expiry: f.permitExpiry || null, contract_expiry: f.contractExpiry || null, position: f.position || "", created_by: session.user.id })
         .select().single();
       if (error) throw error;
       if (f.objectId) await ins("assignments", { worker_id: w.id, object_id: f.objectId, from_date: todayISO(), created_by: session.user.id });
     }, `Dodao radnika: ${f.name}`),
     updWorker: (id, f, name) => act(() => upd("workers", id, {
       name: f.name, phone: f.phone, base_rate: parseNum(f.rate) || 0, rate_currency: f.rateCur || "EUR", object_id: f.objectId || null, note: f.note,
-      permit_expiry: f.permitExpiry || null, contract_expiry: f.contractExpiry || null,
+      permit_expiry: f.permitExpiry || null, contract_expiry: f.contractExpiry || null, position: f.position || "",
     }), `Uredio podatke radnika: ${name}`),
+    setPosition: (w, position) => act(() => upd("workers", w.id, { position }),
+      `Postavio poziciju radniku ${w.name}: ${position || "—"}`),
     delWorker: (w) => act(() => softDel("workers", w.id), `Obrisao radnika: ${w.name}`),
     archiveWorker: (w, on) => act(() => upd("workers", w.id, {
       archived: on, archived_date: on ? todayISO() : w.archivedDate || null, object_id: on ? null : (w.objectId || null),
@@ -873,7 +875,7 @@ function expiryWarnings(workers) {
 function WorkersTab({ data, api, onOpen, onOpenObject }) {
   const [adding, setAdding] = useState(false);
   const [showObjects, setShowObjects] = useState(true);
-  const [form, setForm] = useState({ name: "", phone: "", rate: "", rateCur: "EUR", objectId: "", note: "", permitExpiry: "", contractExpiry: "" });
+  const [form, setForm] = useState({ name: "", phone: "", rate: "", rateCur: "EUR", objectId: "", position: "", note: "", permitExpiry: "", contractExpiry: "" });
   const [newObj, setNewObj] = useState("");
   const [confirmObj, setConfirmObj] = useState(null);
 
@@ -883,7 +885,7 @@ function WorkersTab({ data, api, onOpen, onOpenObject }) {
 
   const addWorker = async () => {
     if (!form.name.trim()) return;
-    if (await api.addWorker(form)) { setForm({ name: "", phone: "", rate: "", rateCur: "EUR", objectId: "", note: "", permitExpiry: "", contractExpiry: "" }); setAdding(false); }
+    if (await api.addWorker(form)) { setForm({ name: "", phone: "", rate: "", rateCur: "EUR", objectId: "", position: "", note: "", permitExpiry: "", contractExpiry: "" }); setAdding(false); }
   };
   const addObject = async () => {
     const n = newObj.trim(); if (!n) return;
@@ -968,6 +970,9 @@ function WorkersTab({ data, api, onOpen, onOpenObject }) {
             const ob = data.objects.find((o) => o.id === v);
             setForm({ ...form, objectId: v, rateCur: ob ? countryCur(ob.country) : form.rateCur });
           }} /></Field>
+          <Field label="Pozicija (npr. HSK, kuhinja, bar…) — nije obavezno">
+            <input value={form.position} onChange={(e) => setForm({ ...form, position: e.target.value })} placeholder="npr. HSK" />
+          </Field>
           <div style={{ display: "flex", gap: 10 }}>
             <div style={{ flex: 1 }}><Field label="Istek radne dozvole"><input type="date" value={form.permitExpiry} onChange={(e) => setForm({ ...form, permitExpiry: e.target.value })} /></Field></div>
             <div style={{ flex: 1 }}><Field label="Istek ugovora"><input type="date" value={form.contractExpiry} onChange={(e) => setForm({ ...form, contractExpiry: e.target.value })} /></Field></div>
@@ -985,7 +990,7 @@ function WorkersTab({ data, api, onOpen, onOpenObject }) {
           <Card key={w.id} style={{ cursor: "pointer" }}>
             <div onClick={() => onOpen(w.id)} style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
               <div>
-                <div style={{ fontWeight: 700, fontSize: 15.5 }}>{w.name}</div>
+                <div style={{ fontWeight: 700, fontSize: 15.5 }}>{w.name}{w.position && <span style={{ marginLeft: 6, fontWeight: 600, fontSize: 12, color: S.blue }}>· {w.position}</span>}</div>
                 <div style={{ fontSize: 13, color: S.sub, marginTop: 2 }}>{objName(w.objectId) || "—"} · {w.phone || "bez broja"}</div>
               </div>
               <div style={{ textAlign: "right" }}>
@@ -1116,7 +1121,7 @@ function DirectoryTab({ data, api, onOpen }) {
               <div key={w.id} onClick={() => onOpen(w.id)} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 0", cursor: "pointer",
                 borderBottom: i < g.workers.length - 1 ? `1px solid ${S.line}` : "none", opacity: w.archived ? 0.75 : 1 }}>
                 <div style={{ flex: 1 }}>
-                  <div style={{ fontWeight: 700, fontSize: 15 }}>{w.name}</div>
+                  <div style={{ fontWeight: 700, fontSize: 15 }}>{w.name}{w.position && <span style={{ marginLeft: 6, fontWeight: 600, fontSize: 12, color: S.blue }}>· {w.position}</span>}</div>
                   <div style={{ fontSize: 12.5, color: S.sub, marginTop: 1 }}>
                     {w.phone ? <a href={"tel:" + w.phone} onClick={(e) => e.stopPropagation()} style={{ color: S.sub }}>📞 {w.phone}</a> : "bez broja"}
                   </div>
@@ -1212,7 +1217,7 @@ function WorkerDetail({ worker, data, api, onBack }) {
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
               <div>
                 <div style={{ fontSize: 19, fontWeight: 800 }}>{worker.name}</div>
-                <div style={{ color: S.sub, fontSize: 13.5, marginTop: 3 }}>{worker.archived ? "📁 Bivši radnik · " : ""}{objName(worker.objectId) || "Bez objekta"}</div>
+                <div style={{ color: S.sub, fontSize: 13.5, marginTop: 3 }}>{worker.archived ? "📁 Bivši radnik · " : ""}{objName(worker.objectId) || "Bez objekta"}{worker.position ? " · " + worker.position : ""}</div>
               </div>
               {rateNow(data, worker) > 0
                 ? <Tag color={S.green} bg={S.greenSoft}>{money(rateNow(data, worker), wCur(worker))}/h</Tag>
@@ -1253,6 +1258,7 @@ function WorkerDetail({ worker, data, api, onBack }) {
               </div>
             </Field>
             <Field label="Glavni objekt"><ObjectSelect data={data} api={api} value={form.objectId || ""} onChange={(v) => setForm({ ...form, objectId: v })} /></Field>
+            <Field label="Pozicija (npr. HSK, kuhinja, bar…)"><input value={form.position || ""} onChange={(e) => setForm({ ...form, position: e.target.value })} placeholder="npr. HSK" /></Field>
             <div style={{ display: "flex", gap: 10 }}>
               <div style={{ flex: 1 }}><Field label="Istek radne dozvole"><input type="date" value={form.permitExpiry || ""} onChange={(e) => setForm({ ...form, permitExpiry: e.target.value })} /></Field></div>
               <div style={{ flex: 1 }}><Field label="Istek ugovora"><input type="date" value={form.contractExpiry || ""} onChange={(e) => setForm({ ...form, contractExpiry: e.target.value })} /></Field></div>
@@ -1373,6 +1379,7 @@ function ObjectDetail({ object, data, api, onBack }) {
   const [date, setDate] = useState(todayISO());
   const [month, setMonth] = useState(curMonth());
   const [inputs, setInputs] = useState({});
+  const [posEdit, setPosEdit] = useState({});
   const [editLog, setEditLog] = useState(null);
   const [rateEdit, setRateEdit] = useState(String(object.billRate || ""));
   const [billCur, setBillCur] = useState(object.billCur || "EUR");
@@ -1479,6 +1486,11 @@ function ObjectDetail({ object, data, api, onBack }) {
     if (!hours || hours <= 0) return;
     api.addLog({ workerId: w.id, objectId: object.id, date: month + "-01", from: "", to: "", hours: round2(hours), monthly: true }, w.name, object.name);
     setIn(w.id, { from: "", to: "", hours: "" });
+  };
+  const commitPosition = (w) => {
+    const val = (posEdit[w.id] !== undefined ? posEdit[w.id] : (w.position || "")).trim();
+    setPosEdit((p) => { const n = { ...p }; delete n[w.id]; return n; });
+    if (val !== (w.position || "")) api.setPosition(w, val);
   };
 
   const entries = data.logs.filter((l) => l.objectId === object.id && (mode === "day" ? l.date === date : monthKey(l.date) === month))
@@ -1724,6 +1736,14 @@ function ObjectDetail({ object, data, api, onBack }) {
               </div>
               <div className="num" style={{ fontSize: 12.5, color: S.sub }}>{fmtH(monthHours(w.id))} ovdje ovaj mj.</div>
             </div>
+            <input
+              value={posEdit[w.id] !== undefined ? posEdit[w.id] : (w.position || "")}
+              onChange={(e) => setPosEdit((p) => ({ ...p, [w.id]: e.target.value }))}
+              onBlur={() => commitPosition(w)}
+              onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
+              placeholder="pozicija — npr. HSK, kuhinja, bar…"
+              style={{ fontSize: 12.5, padding: "5px 9px", width: "100%", marginBottom: 8, borderRadius: 8, border: `1px solid ${S.line}`, color: w.position ? S.blue : S.sub, fontWeight: w.position ? 700 : 400 }}
+            />
             {mode === "day" ? (
               <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
                 <input type="time" value={v.from} onChange={(e) => setIn(w.id, { from: e.target.value })} style={{ flex: 1.2, padding: "9px 6px" }} />
@@ -1918,10 +1938,10 @@ function PaymentsTab({ data, api }) {
     if (target === "radnik") {
       if (!form.workerId) return;
       api.addPayment({ workerId: form.workerId, objectId: "", date: form.date, type: form.type, ...m, note: form.note,
-        deduct: form.type === "avans" ? true : form.type === "bonus" ? false : form.deduct }, wName(form.workerId));
+        deduct: form.type === "avans" || form.type === "racun" ? true : form.type === "bonus" ? false : form.deduct }, wName(form.workerId));
     } else {
       if (!form.objectId) return;
-      api.addPayment({ workerId: "", objectId: form.objectId, date: form.date, type: form.type === "bonus" ? "ostalo" : form.type,
+      api.addPayment({ workerId: "", objectId: form.objectId, date: form.date, type: form.type === "bonus" || form.type === "racun" ? "ostalo" : form.type,
         ...m, note: form.note, deduct: false }, "🏨 " + oName(form.objectId));
     }
     setForm({ ...form, amount: "", note: "" });
@@ -1929,6 +1949,7 @@ function PaymentsTab({ data, api }) {
   const recent = [...data.payments].sort((a, b) => b.date.localeCompare(a.date)).slice(0, 15);
   const tagStyle = (p) => p.type === "avans" ? { color: S.amber, bg: S.amberSoft }
     : p.type === "bonus" ? { color: S.green, bg: S.greenSoft }
+    : p.type === "racun" ? { color: S.blue, bg: S.blueSoft }
     : p.deduct ? { color: S.red, bg: S.redSoft } : { color: S.sub, bg: "#EEF0ED" };
   return (
     <>
@@ -1969,6 +1990,7 @@ function PaymentsTab({ data, api }) {
                 <select value={form.type} onChange={(e) => setForm({ ...form, type: e.target.value })}>
                   <option value="avans">Avans (odbija se od plaće)</option>
                   <option value="bonus">Bonus (dodaje se na plaću)</option>
+                  <option value="racun">Isplaćeno na račun (banka) — ostatak ide na kovertu</option>
                   <option value="gorivo">Gorivo</option>
                   <option value="ostalo">Ostali trošak</option>
                 </select>
@@ -1984,7 +2006,7 @@ function PaymentsTab({ data, api }) {
                 }} />
               </Field>
               <Field label={api.t("type")}>
-                <select value={form.type === "bonus" ? "ostalo" : form.type} onChange={(e) => setForm({ ...form, type: e.target.value })}>
+                <select value={form.type === "bonus" || form.type === "racun" ? "ostalo" : form.type} onChange={(e) => setForm({ ...form, type: e.target.value })}>
                   <option value="avans">Avans</option>
                   <option value="gorivo">Gorivo</option>
                   <option value="ostalo">Ostali trošak</option>
@@ -2011,9 +2033,9 @@ function PaymentsTab({ data, api }) {
           </div>
           <Field label={form.type === "bonus" ? "Za što je bonus" : "Napomena"}>
             <input value={form.note} onChange={(e) => setForm({ ...form, note: e.target.value })}
-              placeholder={form.type === "bonus" ? "npr. dobro odrađena sezona…" : "npr. gorivo za put"} />
+              placeholder={form.type === "bonus" ? "npr. dobro odrađena sezona…" : form.type === "racun" ? "npr. uplata na IBAN" : "npr. gorivo za put"} />
           </Field>
-          {target === "radnik" && form.type !== "avans" && form.type !== "bonus" && (
+          {target === "radnik" && form.type !== "avans" && form.type !== "bonus" && form.type !== "racun" && (
             <label style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12, fontSize: 14 }}>
               <input type="checkbox" checked={form.deduct} onChange={(e) => setForm({ ...form, deduct: e.target.checked })} style={{ width: 18, height: 18 }} />
               Odbij radniku od plaće (inače je trošak firme)
@@ -2062,15 +2084,16 @@ function calcRows(data, filterFn, objectId) {
       return {
         bonuses: round2(mine.filter((p) => p.type === "bonus").reduce((s, p) => s + p.amount, 0)),
         advances: round2(mine.filter((p) => p.type === "avans").reduce((s, p) => s + p.amount, 0)),
-        deductions: round2(mine.filter((p) => p.type !== "avans" && p.type !== "bonus" && p.deduct).reduce((s, p) => s + p.amount, 0)),
-        firmCosts: round2(mine.filter((p) => p.type !== "avans" && p.type !== "bonus" && !p.deduct).reduce((s, p) => s + p.amount, 0)),
+        bank: round2(mine.filter((p) => p.type === "racun").reduce((s, p) => s + p.amount, 0)),
+        deductions: round2(mine.filter((p) => p.type !== "avans" && p.type !== "bonus" && p.type !== "racun" && p.deduct).reduce((s, p) => s + p.amount, 0)),
+        firmCosts: round2(mine.filter((p) => p.type !== "avans" && p.type !== "bonus" && p.type !== "racun" && !p.deduct).reduce((s, p) => s + p.amount, 0)),
       };
     };
     const e = by("EUR"), k = by("CZK");
     return { w, logs, pays, hours, gross, grossKc, rateSet,
-      bonuses: e.bonuses, advances: e.advances, deductions: e.deductions, firmCosts: e.firmCosts,
-      net: round2(gross + e.bonuses - e.advances - e.deductions),
-      czk: { ...k, gross: grossKc, net: round2(grossKc + k.bonuses - k.advances - k.deductions) } };
+      bonuses: e.bonuses, advances: e.advances, deductions: e.deductions, firmCosts: e.firmCosts, bank: e.bank,
+      net: round2(gross + e.bonuses - e.advances - e.deductions - e.bank),
+      czk: { ...k, gross: grossKc, net: round2(grossKc + k.bonuses - k.advances - k.deductions - k.bank) } };
   }).filter((r) => (objectId ? r.hours > 0 : (r.hours > 0 || r.pays.length > 0)));
 }
 
@@ -2244,7 +2267,7 @@ function ReportTab({ data, api, admin }) {
       <table><tr><th>Datum</th><th>Vrijeme</th><th>Objekt</th><th class="right">Sati</th><th class="right">Iznos</th></tr>
       ${logsHtml}${paysHtml}
       <tr class="tot"><td colspan="3">UKUPNO ${fmtH(r.hours)}</td><td></td><td class="right">${[r.net !== 0 || r.czk.net === 0 ? eur(r.net) : "", r.czk.net !== 0 ? (r.czk.net > 0 ? "" : "−") + czk(Math.abs(r.czk.net)) : ""].filter(Boolean).join("<br>")}</td></tr></table>
-      <div class="muted">Zarada ${gc === "CZK" ? czk(r.grossKc) : eur(r.gross)}${r.bonuses ? " + bonus " + eur(r.bonuses) : ""}${r.czk.bonuses ? " + bonus " + czk(r.czk.bonuses) : ""}${r.advances ? " − avans " + eur(r.advances) : ""}${r.czk.advances ? " − avans " + czk(r.czk.advances) : ""}${r.deductions ? " − odbici " + eur(r.deductions) : ""}${r.czk.deductions ? " − odbici " + czk(r.czk.deductions) : ""} = <b>za isplatu ${[r.net !== 0 || r.czk.net === 0 ? eur(r.net) : "", r.czk.net !== 0 ? czk(r.czk.net) : ""].filter(Boolean).join(" i ")}</b></div>
+      <div class="muted">Zarada ${gc === "CZK" ? czk(r.grossKc) : eur(r.gross)}${r.bonuses ? " + bonus " + eur(r.bonuses) : ""}${r.czk.bonuses ? " + bonus " + czk(r.czk.bonuses) : ""}${r.advances ? " − avans " + eur(r.advances) : ""}${r.czk.advances ? " − avans " + czk(r.czk.advances) : ""}${r.deductions ? " − odbici " + eur(r.deductions) : ""}${r.czk.deductions ? " − odbici " + czk(r.czk.deductions) : ""}${r.bank ? " − na račun " + eur(r.bank) : ""}${r.czk.bank ? " − na račun " + czk(r.czk.bank) : ""} = <b>za isplatu (kovertom) ${[r.net !== 0 || r.czk.net === 0 ? eur(r.net) : "", r.czk.net !== 0 ? czk(r.czk.net) : ""].filter(Boolean).join(" i ")}</b></div>
       <div class="muted" style="margin-top:24px">Potpis radnika: ______________________ &nbsp;&nbsp; Potpis poslodavca: ______________________</div>`);
   };
 
@@ -2288,6 +2311,7 @@ function ReportTab({ data, api, admin }) {
         r.bonuses ? "bonus +" + eur(r.bonuses) : "", r.czk.bonuses ? "bonus +" + czk(r.czk.bonuses) : "",
         r.advances ? "avans −" + eur(r.advances) : "", r.czk.advances ? "avans −" + czk(r.czk.advances) : "",
         r.deductions ? "odbici −" + eur(r.deductions) : "", r.czk.deductions ? "odbici −" + czk(r.czk.deductions) : "",
+        r.bank ? "na račun −" + eur(r.bank) : "", r.czk.bank ? "na račun −" + czk(r.czk.bank) : "",
         note ? `${noteLabel} −${money(note.amount, note.currency)}` : "",
       ].filter(Boolean).join(" · ");
       return `<div class="env">
@@ -2323,13 +2347,14 @@ function ReportTab({ data, api, admin }) {
       "Satnica": r.rateSet.length === 1 ? r.rateSet[0] : r.rateSet.length === 0 ? rateNow(data, r.w) : "razne",
       "Valuta satnice": wCur(r.w) === "CZK" ? "Kč" : "€",
       "Zarada (€)": r.gross, "Zarada (Kč)": r.grossKc, "Bonus (€)": r.bonuses, "Avans (€)": r.advances, "Odbici (€)": r.deductions,
-      "ZA ISPLATU (€)": r.net, "ZA ISPLATU (Kč)": r.czk.net, "Trošak firme (€)": r.firmCosts, "Trošak firme (Kč)": r.czk.firmCosts,
+      "Na račun (€)": r.bank, "Na račun (Kč)": r.czk.bank,
+      "ZA ISPLATU KOVERTOM (€)": r.net, "ZA ISPLATU KOVERTOM (Kč)": r.czk.net, "Trošak firme (€)": r.firmCosts, "Trošak firme (Kč)": r.czk.firmCosts,
       "Isplaćeno": view === "month" && paidFor(data, r.w.id, month) ? "DA" : "",
     }));
     obrRows.push({ "Radnik": "UKUPNO", "Sati": totals.hours, "Zarada (€)": totals.gross, "Bonus (€)": totals.bonus,
-      "ZA ISPLATU (€)": totals.net, "ZA ISPLATU (Kč)": totals.netKc, "Trošak firme (€)": totals.firm, "Trošak firme (Kč)": totals.firmKc });
+      "ZA ISPLATU KOVERTOM (€)": totals.net, "ZA ISPLATU KOVERTOM (Kč)": totals.netKc, "Trošak firme (€)": totals.firm, "Trošak firme (Kč)": totals.firmKc });
     const ws1 = XLSX.utils.json_to_sheet(obrRows);
-    ws1["!cols"] = [{wch:22},{wch:18},{wch:8},{wch:11},{wch:12},{wch:10},{wch:11},{wch:11},{wch:15},{wch:15},{wch:10}];
+    ws1["!cols"] = [{wch:22},{wch:18},{wch:8},{wch:11},{wch:12},{wch:10},{wch:11},{wch:11},{wch:11},{wch:11},{wch:17},{wch:17},{wch:15},{wch:15},{wch:10}];
     XLSX.utils.book_append_sheet(wb, ws1, "Obračun");
 
     const satiRows = periodLogs.sort((a, b) => a.date.localeCompare(b.date)).map((l) => {
@@ -2653,9 +2678,11 @@ function ReportTab({ data, api, admin }) {
                     {r.bonuses > 0 && <> · bonus +{eur(r.bonuses)}</>}
                     {r.advances > 0 && <> · avans −{eur(r.advances)}</>}
                     {r.deductions > 0 && <> · odbici −{eur(r.deductions)}</>}
+                    {r.bank > 0 && <> · na račun −{eur(r.bank)}</>}
                     {r.czk.advances > 0 && <> · avans −{czk(r.czk.advances)}</>}
                     {r.czk.bonuses > 0 && <> · bonus +{czk(r.czk.bonuses)}</>}
                     {r.czk.deductions > 0 && <> · odbici −{czk(r.czk.deductions)}</>}
+                    {r.czk.bank > 0 && <> · na račun −{czk(r.czk.bank)}</>}
                   </div>
                 </div>
                 {open === r.w.id && (
@@ -2668,7 +2695,7 @@ function ReportTab({ data, api, admin }) {
                     ))}
                     {r.pays.map((p) => (
                       <div key={p.id} className="num" style={{ display: "flex", justifyContent: "space-between", fontSize: 13.5, padding: "4px 0",
-                        color: p.type === "bonus" ? S.green : p.deduct ? S.amber : S.sub }}>
+                        color: p.type === "bonus" ? S.green : p.type === "racun" ? S.blue : p.deduct ? S.amber : S.sub }}>
                         <span>{fmtDate(p.date)} · {TYPE_LABEL[p.type] || p.type}{p.note ? " · " + p.note : ""}</span>
                         <span style={{ fontWeight: 600 }}>{p.type === "bonus" ? "+" : p.deduct ? "−" : ""}{money(p.amount, p.currency)}</span>
                       </div>

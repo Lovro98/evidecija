@@ -177,6 +177,13 @@ create table if not exists settings (
 alter table workers add column if not exists permit_expiry date;
 alter table workers add column if not exists contract_expiry date;
 
+-- Pozicija radnika na objektu (npr. HSK, kuhinja, bar...)
+alter table workers add column if not exists position text default '';
+
+-- Isplata na račun (banka) — nova vrsta isplate, ostatak ide na kovertu (gotovina)
+alter table payments drop constraint if exists payments_type_check;
+alter table payments add constraint payments_type_check check (type in ('avans','bonus','gorivo','ostalo','racun'));
+
 -- ============================================================
 -- SIGURNOST: zaposlenik vidi samo SVOJE, admin vidi SVE
 -- ============================================================
