@@ -184,6 +184,25 @@ alter table workers add column if not exists position text default '';
 alter table payments drop constraint if exists payments_type_check;
 alter table payments add constraint payments_type_check check (type in ('avans','bonus','gorivo','ostalo','racun'));
 
+-- Naplata objekta po poziciji radnika (npr. HSK, kuhinja, bar plaćaju se drugačije)
+-- mode='fixed' → objekt plaća fiksnu cijenu (rate) po satu za tu poziciju
+-- mode='markup' → objekt plaća radnikovu satnicu + markup po satu za tu poziciju
+create table if not exists position_billing (
+  object_id uuid not null references objects on delete cascade,
+  position text not null,
+  mode text not null default 'fixed' check (mode in ('fixed','markup')),
+  rate numeric not null default 0,
+  markup numeric not null default 0,
+  currency text not null default 'EUR',
+  created_by uuid references profiles,
+  created_at timestamptz default now(),
+  primary key (object_id, position)
+);
+alter table position_billing enable row level security;
+drop policy if exists "posb_admin_all" on position_billing;
+create policy "posb_admin_all" on position_billing for all to authenticated
+  using (is_admin()) with check (is_admin());
+
 -- ============================================================
 -- SIGURNOST: zaposlenik vidi samo SVOJE, admin vidi SVE
 -- ============================================================

@@ -196,6 +196,35 @@ function rateFor(data, w, date) {
 const rateNow = (data, w) => rateFor(data, w, todayISO());
 const paidFor = (data, workerId, mo) => (data.payouts || []).find((p) => p.workerId === workerId && p.month === mo);
 
+/* ---------- naplata objekta po poziciji (HSK, kuhinja, bar…) ---------- */
+const positionBillFor = (data, objectId, position) =>
+  (data.positionBilling || []).find((pb) => pb.objectId === objectId && pb.position === (position || ""));
+function billRateForLog(data, object, worker, date) {
+  const pos = worker?.position || "";
+  const entry = pos ? positionBillFor(data, object?.id, pos) : null;
+  if (entry) {
+    if (entry.mode === "markup") return { rate: round2((rateFor(data, worker, date) || 0) + (entry.markup || 0)), cur: entry.currency };
+    return { rate: entry.rate || 0, cur: entry.currency };
+  }
+  return { rate: object?.billRate || 0, cur: object?.billCur || "EUR" };
+}
+function objRevenue(data, object, logs) {
+  let revenue = 0, revenueKc = 0;
+  const byPos = new Map();
+  logs.forEach((l) => {
+    const wk = data.workers.find((x) => x.id === l.workerId);
+    const { rate, cur } = billRateForLog(data, object, wk, l.date);
+    const amt = round2(l.hours * rate);
+    if (cur === "CZK") revenueKc = round2(revenueKc + amt); else revenue = round2(revenue + amt);
+    const key = (wk?.position || "") + "|" + cur;
+    const row = byPos.get(key) || { position: wk?.position || "", cur, hours: 0, rate, amount: 0 };
+    row.hours = round2(row.hours + l.hours);
+    row.amount = round2(row.amount + amt);
+    byPos.set(key, row);
+  });
+  return { revenue, revenueKc, byPosition: [...byPos.values()].sort((a, b) => a.position.localeCompare(b.position, "hr")) };
+}
+
 /* ---------- ispis PDF-a (preglednikov "Spremi kao PDF" / dijeljenje) ---------- */
 function printDoc(title, bodyHtml) {
   const w = window.open("", "_blank");
@@ -307,9 +336,9 @@ async function fetchAll(isAdmin) {
   const err = [workers, objects, logs, payments, assignments, rateChanges, profiles, payouts].find((r) => r.error);
   if (err) throw err.error;
 
-  let billing = [], audit = [], trash = [], members = [], invoicePayments = [], settings = {}, objectInvoices = [], payrollNotes = [];
+  let billing = [], audit = [], trash = [], members = [], invoicePayments = [], settings = {}, objectInvoices = [], payrollNotes = [], positionBilling = [];
   if (isAdmin) {
-    const [b, a, tw, tl, tp, om, ip, st, oi, pn] = await Promise.all([
+    const [b, a, tw, tl, tp, om, ip, st, oi, pn, pb] = await Promise.all([
       supabase.from("object_billing").select("*"),
       supabase.from("audit_log").select("*").order("at", { ascending: false }).limit(80),
       supabase.from("workers").select("*").not("deleted_at", "is", null),
@@ -320,9 +349,11 @@ async function fetchAll(isAdmin) {
       supabase.from("settings").select("*").eq("id", 1).maybeSingle(),
       live(supabase.from("object_invoices").select("*")).order("issue_date", { ascending: false }),
       live(supabase.from("payroll_notes").select("*")),
+      supabase.from("position_billing").select("*"),
     ]);
     billing = b.data || []; audit = a.data || []; members = om.data || [];
     invoicePayments = ip.data || []; settings = st.data || {}; objectInvoices = oi.data || []; payrollNotes = pn.data || [];
+    positionBilling = pb.data || [];
     trash = [
       ...(tw.data || []).map((r) => ({ table: "workers", row: r, label: `Radnik: ${r.name}` })),
       ...(tl.data || []).map((r) => ({ table: "work_logs", row: r, label: `Sati: ${fmtH(r.hours)} (${fmtDate(r.work_date)})` })),
@@ -361,6 +392,10 @@ async function fetchAll(isAdmin) {
     payrollNotes: payrollNotes.map((n) => ({
       id: n.id, workerId: n.worker_id, month: n.month, amount: Number(n.amount) || 0,
       currency: n.currency === "EUR" ? "EUR" : "CZK", sourceCzk: Number(n.source_czk) || 0, note: n.note || "",
+    })),
+    positionBilling: positionBilling.map((pb) => ({
+      objectId: pb.object_id, position: pb.position || "", mode: pb.mode === "markup" ? "markup" : "fixed",
+      rate: Number(pb.rate) || 0, markup: Number(pb.markup) || 0, currency: pb.currency === "CZK" ? "CZK" : "EUR",
     })),
     settings: settings || {},
     profiles: profiles.data || [],
@@ -473,6 +508,14 @@ export default function App() {
     delObject: (o) => act(() => softDel("objects", o.id), `Obrisao objekt: ${o.name}`),
     setBillRate: (o, rate, cur) => act(() => supabase.from("object_billing").upsert({ object_id: o.id, bill_rate: rate, bill_currency: cur || "EUR" })
       .then(({ error }) => { if (error) throw error; }), `Promijenio naplatu objekta ${o.name} na ${money(rate, cur)}/h`),
+    setPositionRate: (o, position, patch) => act(() => supabase.from("position_billing")
+      .upsert({ object_id: o.id, position, mode: patch.mode === "markup" ? "markup" : "fixed",
+        rate: patch.mode === "markup" ? 0 : (patch.value || 0), markup: patch.mode === "markup" ? (patch.value || 0) : 0,
+        currency: patch.currency || "EUR", created_by: session.user.id }, { onConflict: "object_id,position" })
+      .then(({ error }) => { if (error) throw error; }),
+      `Postavio naplatu za poziciju "${position}" (${o.name}): ${patch.mode === "markup" ? "satnica radnika + " + money(patch.value, patch.currency) : money(patch.value, patch.currency)}/h`),
+    delPositionRate: (o, position) => act(() => supabase.from("position_billing").delete().eq("object_id", o.id).eq("position", position)
+      .then(({ error }) => { if (error) throw error; }), `Obrisao naplatu za poziciju "${position}" (${o.name})`),
     addLog: (l, wName, objName) => act(() => { guardPaid(l.workerId, l.date); return ins("work_logs", {
       worker_id: l.workerId, object_id: l.objectId || null, work_date: l.date,
       from_t: l.from, to_t: l.to, hours: l.hours, monthly: !!l.monthly, note: l.note || "", created_by: session.user.id,
@@ -1047,7 +1090,7 @@ function ObjectsTab({ data, api, onOpenObject }) {
           ...data.workers.filter((w) => !w.archived && w.objectId === o.id).map((w) => w.id),
           ...logs.map((l) => l.workerId),
         ]);
-        const revenue = round2(hrs * (o.billRate || 0));
+        const rv = objRevenue(data, o, logs);
         return (
           <Card key={o.id} style={{ cursor: "pointer" }} onClick={() => onOpenObject(o.id)}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
@@ -1057,9 +1100,10 @@ function ObjectsTab({ data, api, onOpenObject }) {
                   {workerIds.size} radnika · {fmtH(hrs)} ovaj mjesec
                 </div>
               </div>
-              {api.admin && o.billRate > 0 && (
+              {api.admin && (rv.revenue > 0 || rv.revenueKc > 0) && (
                 <div className="num" style={{ textAlign: "right" }}>
-                  <div style={{ fontWeight: 700, color: S.amber }}>{money(revenue, o.billCur)}</div>
+                  <div style={{ fontWeight: 700, color: S.amber }}>{rv.revenue > 0 ? eur(rv.revenue) : czk(rv.revenueKc)}</div>
+                  {rv.revenue > 0 && rv.revenueKc > 0 && <div style={{ fontWeight: 700, color: S.amber, fontSize: 12.5 }}>{czk(rv.revenueKc)}</div>}
                   <div style={{ fontSize: 11.5, color: S.sub }}>naplata ovaj mj.</div>
                 </div>
               )}
@@ -1383,6 +1427,8 @@ function ObjectDetail({ object, data, api, onBack }) {
   const [editLog, setEditLog] = useState(null);
   const [rateEdit, setRateEdit] = useState(String(object.billRate || ""));
   const [billCur, setBillCur] = useState(object.billCur || "EUR");
+  const [posRateForm, setPosRateForm] = useState({ position: "", mode: "fixed", value: "", currency: object.billCur || "EUR" });
+  const [posRateEditing, setPosRateEditing] = useState(null); // pozicija koja se trenutno uređuje, ili null za novu
   const [invoices, setInvoices] = useState(null);
   const [invErr, setInvErr] = useState("");
   const [invViewer, setInvViewer] = useState(null);
@@ -1471,6 +1517,20 @@ function ObjectDetail({ object, data, api, onBack }) {
     const am = a.objectId === object.id ? 0 : 1, bm = b.objectId === object.id ? 0 : 1;
     return am - bm || a.name.localeCompare(b.name);
   });
+  const objectPositions = [...new Set(workers.filter((w) => w.objectId === object.id && w.position).map((w) => w.position))];
+  const myPositionRates = (data.positionBilling || []).filter((pb) => pb.objectId === object.id)
+    .sort((a, b) => a.position.localeCompare(b.position, "hr"));
+  const editPositionRate = (pb) => {
+    setPosRateEditing(pb.position);
+    setPosRateForm({ position: pb.position, mode: pb.mode, value: String(pb.mode === "markup" ? pb.markup : pb.rate), currency: pb.currency });
+  };
+  const resetPositionForm = () => { setPosRateEditing(null); setPosRateForm({ position: "", mode: "fixed", value: "", currency: object.billCur || "EUR" }); };
+  const savePositionRate = async () => {
+    const pos = posRateForm.position.trim();
+    const val = round2(parseNum(posRateForm.value) || 0);
+    if (!pos) return;
+    if (await api.setPositionRate(object, pos, { mode: posRateForm.mode, value: val, currency: posRateForm.currency })) resetPositionForm();
+  };
 
   const commitDay = (w) => {
     const v = inputs[w.id] || {};
@@ -1518,8 +1578,7 @@ function ObjectDetail({ object, data, api, onBack }) {
       {api.admin && (() => {
         const mk = mode === "day" ? monthKey(date) : month;
         const objLogs = data.logs.filter((l) => l.objectId === object.id && monthKey(l.date) === mk);
-        const hrs = round2(objLogs.reduce((s, l) => s + l.hours, 0));
-        const revenue = round2(hrs * (object.billRate || 0));
+        const rv = objRevenue(data, object, objLogs);
         const bc = object.billCur || "EUR";
         let costE = 0, costK = 0;
         objLogs.forEach((l) => {
@@ -1540,15 +1599,68 @@ function ObjectDetail({ object, data, api, onBack }) {
                 <CurChips small value={billCur} onChange={setBillCur} />
                 <Btn small onClick={() => api.setBillRate(object, parseNum(rateEdit) || 0, billCur)}>Spremi</Btn>
               </div>
+              <div style={{ fontSize: 11.5, color: S.sub, marginTop: 4 }}>Ovo je zadana (default) cijena za sve pozicije koje nemaju svoju cijenu ispod.</div>
             </Field>
+
+            <div style={{ borderTop: `1px dashed #EBD9B4`, marginTop: 4, paddingTop: 10 }}>
+              <div style={{ fontSize: 12.5, fontWeight: 700, color: S.amber, marginBottom: 6 }}>Različita cijena po poziciji (opcionalno)</div>
+              {myPositionRates.length > 0 && (
+                <div style={{ marginBottom: 8 }}>
+                  {myPositionRates.map((pb) => (
+                    <div key={pb.position} style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 0", borderBottom: `1px solid #EBD9B4`, fontSize: 13 }}>
+                      <span style={{ flex: 1, fontWeight: 700 }}>{pb.position}</span>
+                      <span className="num" style={{ color: S.sub }}>
+                        {pb.mode === "markup" ? <>satnica radnika + {money(pb.markup, pb.currency)}</> : <>{money(pb.rate, pb.currency)}/h</>}
+                      </span>
+                      <button onClick={() => editPositionRate(pb)} style={{ background: "none", border: "none", color: S.blue, fontSize: 14, cursor: "pointer", padding: 4 }}>✎</button>
+                      <button onClick={() => api.delPositionRate(object, pb.position)} style={{ background: "none", border: "none", color: S.red, fontSize: 15, cursor: "pointer", padding: 4 }}>✕</button>
+                    </div>
+                  ))}
+                </div>
+              )}
+              <div style={{ display: "flex", gap: 8, alignItems: "flex-end", flexWrap: "wrap" }}>
+                <div style={{ flex: "1 1 130px" }}>
+                  <Field label="Pozicija">
+                    <input list="obj-positions" value={posRateForm.position} disabled={!!posRateEditing}
+                      onChange={(e) => setPosRateForm({ ...posRateForm, position: e.target.value })} placeholder="npr. HSK" />
+                    <datalist id="obj-positions">{objectPositions.map((p) => <option key={p} value={p} />)}</datalist>
+                  </Field>
+                </div>
+                <div style={{ flex: "1 1 150px" }}>
+                  <Field label="Način">
+                    <select value={posRateForm.mode} onChange={(e) => setPosRateForm({ ...posRateForm, mode: e.target.value })}>
+                      <option value="fixed">Fiksna cijena / sat</option>
+                      <option value="markup">Satnica radnika + toliko</option>
+                    </select>
+                  </Field>
+                </div>
+                <div style={{ flex: "1 1 110px" }}>
+                  <Field label={posRateForm.mode === "markup" ? "+ po satu" : "cijena / sat"}>
+                    <input inputMode="decimal" value={posRateForm.value} onChange={(e) => setPosRateForm({ ...posRateForm, value: e.target.value })} placeholder="0.00" />
+                  </Field>
+                </div>
+                <CurChips small value={posRateForm.currency} onChange={(v) => setPosRateForm({ ...posRateForm, currency: v })} />
+                <div style={{ marginBottom: 10, display: "flex", gap: 6 }}>
+                  <Btn small onClick={savePositionRate}>{posRateEditing ? "Spremi" : "Dodaj"}</Btn>
+                  {posRateEditing && <Btn small kind="ghost" onClick={resetPositionForm}>Odustani</Btn>}
+                </div>
+              </div>
+            </div>
+
             {(() => {
-              const revE = bc === "EUR" ? revenue : 0;
-              const revK = bc === "CZK" ? revenue : 0;
+              const revE = rv.revenue, revK = rv.revenueKc;
               const profitE = round2(revE - costE - extraCost);
               const profitK = round2(revK - costK - extraCostKc);
               return (
-                <div className="num" style={{ fontSize: 14 }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", padding: "3px 0" }}><span>Naplata ({fmtH(hrs)} × {money(object.billRate || 0, bc)})</span><b>{money(revenue, bc)}</b></div>
+                <div className="num" style={{ fontSize: 14, borderTop: `1px dashed #EBD9B4`, marginTop: 10, paddingTop: 10 }}>
+                  {rv.byPosition.length === 0 && (
+                    <div style={{ display: "flex", justifyContent: "space-between", padding: "3px 0" }}><span>Naplata (0 h)</span><b>{money(0, bc)}</b></div>
+                  )}
+                  {rv.byPosition.map((row, i) => (
+                    <div key={i} style={{ display: "flex", justifyContent: "space-between", padding: "3px 0" }}>
+                      <span>Naplata{row.position ? " · " + row.position : ""} ({fmtH(row.hours)} × {money(row.rate, row.cur)})</span><b>{money(row.amount, row.cur)}</b>
+                    </div>
+                  ))}
                   {costE > 0 && <div style={{ display: "flex", justifyContent: "space-between", padding: "3px 0" }}><span>Plaća radnika (€)</span><b>−{eur(costE)}</b></div>}
                   {costK > 0 && <div style={{ display: "flex", justifyContent: "space-between", padding: "3px 0" }}><span>Plaća radnika (Kč)</span><b>−{czk(costK)}</b></div>}
                   {extraCost > 0 && <div style={{ display: "flex", justifyContent: "space-between", padding: "3px 0" }}><span>Troškovi objekta (€)</span><b>−{eur(extraCost)}</b></div>}
@@ -2211,8 +2323,9 @@ function ReportTab({ data, api, admin }) {
     cur.hours = round2(cur.hours + l.hours);
     const gv = l.hours * rateFor(data, wk, l.date);
     if (wCur(wk) === "CZK") cur.grossKc = round2(cur.grossKc + gv); else cur.gross = round2(cur.gross + gv);
-    const rv = l.hours * (ob?.billRate || 0);
-    if ((ob?.billCur || "EUR") === "CZK") cur.revenueKc = round2(cur.revenueKc + rv); else cur.revenue = round2(cur.revenue + rv);
+    const { rate: brate, cur: bcur } = billRateForLog(data, ob, wk, l.date);
+    const rv = l.hours * brate;
+    if (bcur === "CZK") cur.revenueKc = round2(cur.revenueKc + rv); else cur.revenue = round2(cur.revenue + rv);
     byObject.set(key, cur);
   });
   objPays.forEach((p) => {
@@ -2241,8 +2354,9 @@ function ReportTab({ data, api, admin }) {
       ls.forEach((l) => {
         const ob = data.objects.find((o) => o.id === l.objectId);
         const wk = data.workers.find((x) => x.id === l.workerId);
-        const rv = l.hours * (ob?.billRate || 0);
-        if ((ob?.billCur || "EUR") === "CZK") revK += rv; else revE += rv;
+        const { rate: brate, cur: bcur } = billRateForLog(data, ob, wk, l.date);
+        const rv = l.hours * brate;
+        if (bcur === "CZK") revK += rv; else revE += rv;
         const cv = l.hours * rateFor(data, wk, l.date);
         if (wCur(wk) === "CZK") costK2 += cv; else costE2 += cv;
       });
@@ -2278,16 +2392,23 @@ function ReportTab({ data, api, admin }) {
     const ls = periodLogs.filter((l) => l.objectId === key).sort((a, b) => a.date.localeCompare(b.date));
     const rowsHtml = ls.map((l) => {
       const wk = data.workers.find((x) => x.id === l.workerId);
-      return `<tr><td>${fmtDate(l.date)}</td><td>${wk?.name || ""}</td><td>${logSpan(l)}</td><td class="right">${fmtH(l.hours)}</td></tr>`;
+      return `<tr><td>${fmtDate(l.date)}</td><td>${wk?.name || ""}${wk?.position ? " · " + wk.position : ""}</td><td>${logSpan(l)}</td><td class="right">${fmtH(l.hours)}</td></tr>`;
     }).join("");
+    const rv = objRevenue(data, ob, ls);
+    const priceRowsHtml = rv.byPosition.map((row) =>
+      `<tr><td>${row.position || "Naplata"}: ${fmtH(row.hours)} × ${money(row.rate, row.cur)}/h</td><td class="right">${money(row.amount, row.cur)}</td></tr>`).join("");
+    const totalRowsHtml = [
+      rv.revenue ? `<tr class="tot"><td>ZA NAPLATU (€)</td><td class="right">${eur(rv.revenue)}</td></tr>` : "",
+      rv.revenueKc ? `<tr class="tot"><td>ZA NAPLATU (Kč)</td><td class="right">${czk(rv.revenueKc)}</td></tr>` : "",
+    ].join("");
     printDoc(`Specifikacija ${ob?.name}`, `
       ${firmHead(st)}
       <h1>Specifikacija sati — ${ob?.name}</h1><h2>${periodLabel}</h2>
       <table><tr><th>Datum</th><th>Radnik</th><th>Vrijeme</th><th class="right">Sati</th></tr>${rowsHtml}
       <tr class="tot"><td colspan="3">UKUPNO</td><td class="right">${fmtH(v.hours)}</td></tr></table>
       <table><tr><th></th><th class="right">Iznos</th></tr>
-      <tr><td>${fmtH(v.hours)} × ${money(ob?.billRate || 0, ob?.billCur)}/h</td><td class="right">${money((ob?.billCur === "CZK" ? v.revenueKc : v.revenue), ob?.billCur)}</td></tr>
-      <tr class="tot"><td>ZA NAPLATU</td><td class="right">${money((ob?.billCur === "CZK" ? v.revenueKc : v.revenue), ob?.billCur)}</td></tr></table>
+      ${priceRowsHtml}
+      ${totalRowsHtml}</table>
       ${st.iban ? `<div class="muted">Uplata na IBAN: <b>${st.iban}</b></div>` : ""}`);
   };
 
