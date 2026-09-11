@@ -2291,9 +2291,11 @@ function PaymentsTab({ data, api }) {
 /* ================================================================== */
 /*  OBRAČUN: mjesec/godina, isplaćeno, PDF, naplata, grafovi           */
 /* ================================================================== */
-function calcRows(data, filterFn, objectId) {
+function calcRows(data, filterFn, objFilters) {
+  const hasFilter = objFilters && objFilters.size > 0;
+  const matchObj = (oid) => !hasFilter || objFilters.has(oid);
   return data.workers.map((w) => {
-    const logs = data.logs.filter((l) => l.workerId === w.id && filterFn(l.date) && (!objectId || l.objectId === objectId));
+    const logs = data.logs.filter((l) => l.workerId === w.id && filterFn(l.date) && matchObj(l.objectId));
     const pays = data.payments.filter((p) => p.workerId === w.id && filterFn(p.date));
     const hours = round2(logs.reduce((s, l) => s + l.hours, 0));
     const grossAll = round2(logs.reduce((s, l) => s + l.hours * rateFor(data, w, l.date), 0));
@@ -2315,7 +2317,7 @@ function calcRows(data, filterFn, objectId) {
       bonuses: e.bonuses, advances: e.advances, deductions: e.deductions, firmCosts: e.firmCosts, bank: e.bank,
       net: round2(gross + e.bonuses - e.advances - e.deductions - e.bank),
       czk: { ...k, gross: grossKc, net: round2(grossKc + k.bonuses - k.advances - k.deductions - k.bank) } };
-  }).filter((r) => (objectId ? r.hours > 0 : (r.hours > 0 || r.pays.length > 0)));
+  }).filter((r) => (hasFilter ? r.hours > 0 : (r.hours > 0 || r.pays.length > 0)));
 }
 
 function ReportTab({ data, api, admin }) {
@@ -2323,7 +2325,8 @@ function ReportTab({ data, api, admin }) {
   const [month, setMonth] = useState(curMonth());
   const [open, setOpen] = useState(null);
   const [uplata, setUplata] = useState({});
-  const [objFilter, setObjFilter] = useState(""); // "" = svi objekti
+  const [objFilters, setObjFilters] = useState(() => new Set()); // prazan skup = svi objekti
+  const [objPickerOpen, setObjPickerOpen] = useState(false);
   const [selected, setSelected] = useState(() => new Set());
   const [bulkBusy, setBulkBusy] = useState(false);
   const [mzdyBusy, setMzdyBusy] = useState(false);
@@ -2334,12 +2337,16 @@ function ReportTab({ data, api, admin }) {
   const prev = () => setMonth(m === 1 ? `${y - 1}-12` : `${y}-${String(m - 1).padStart(2, "0")}`);
   const next = () => setMonth(m === 12 ? `${y + 1}-01` : `${y}-${String(m + 1).padStart(2, "0")}`);
   const objName = (id) => data.objects.find((o) => o.id === id)?.name || "";
-  const objFilterName = objFilter ? objName(objFilter) : "";
+  const objFilterName = objFilters.size === 0 ? "" : [...objFilters].map(objName).join(", ");
+  const objFilterLabel = objFilters.size === 0 ? api.t("allObjects")
+    : objFilters.size <= 3 ? [...objFilters].map(objName).join(", ")
+    : `${objFilters.size} objekata odabrano`;
+  const toggleObjFilter = (id) => setObjFilters((prev) => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
 
   const inMonth = (d) => monthKey(d) === month;
-  useEffect(() => { setSelected(new Set()); }, [month, view, objFilter]);
+  useEffect(() => { setSelected(new Set()); }, [month, view, objFilters]);
   const inYear = (d) => (d || "").slice(0, 4) === String(y);
-  const rows = calcRows(data, view === "month" ? inMonth : inYear, objFilter || undefined).sort((a, b) => a.w.name.localeCompare(b.w.name, "hr"));
+  const rows = calcRows(data, view === "month" ? inMonth : inYear, objFilters).sort((a, b) => a.w.name.localeCompare(b.w.name, "hr"));
   const unpaidRows = view === "month" ? rows.filter((r) => !paidFor(data, r.w.id, month)) : [];
   const allSelected = unpaidRows.length > 0 && unpaidRows.every((r) => selected.has(r.w.id));
   const toggleSelectAll = () => setSelected(allSelected ? new Set() : new Set(unpaidRows.map((r) => r.w.id)));
@@ -2410,7 +2417,7 @@ function ReportTab({ data, api, admin }) {
     setMzdyReview(null);
   };
 
-  const periodLogs = data.logs.filter((l) => (view === "month" ? inMonth : inYear)(l.date) && (!objFilter || l.objectId === objFilter));
+  const periodLogs = data.logs.filter((l) => (view === "month" ? inMonth : inYear)(l.date) && (objFilters.size === 0 || objFilters.has(l.objectId)));
   const periodLabel = view === "month" ? `${MONTHS[m - 1]} ${y}.` : `${y}. godina`;
 
   const totals = rows.reduce((t, r) => ({
@@ -2634,19 +2641,38 @@ function ReportTab({ data, api, admin }) {
         <Btn small kind="ghost" onClick={view === "month" ? next : () => setMonth(`${y + 1}-${String(m).padStart(2, "0")}`)}>→</Btn>
       </div>
 
-      <Field label={api.t("showFor")}>
-        <select value={objFilter} onChange={(e) => setObjFilter(e.target.value)}>
-          <option value="">{api.t("allObjects")}</option>
-          {["HR", "CZ"].map((c) => {
-            const objs = sortedObjects(data.objects.filter((o) => (o.country || "HR") === c));
-            return objs.length ? (
-              <optgroup key={c} label={`${FLAG[c]} ${COUNTRY_NAME[c]}`}>
-                {objs.map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}
-              </optgroup>
-            ) : null;
-          })}
-        </select>
-      </Field>
+      <div style={{ marginBottom: 12 }}>
+        <div style={{ fontSize: 12.5, fontWeight: 600, color: S.sub, marginBottom: 5 }}>{api.t("showFor")}</div>
+        <div onClick={() => setObjPickerOpen(!objPickerOpen)} style={{
+          border: `1px solid ${S.line}`, borderRadius: 10, padding: "10px 12px", cursor: "pointer", background: "#fff",
+          display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+          <span>{objFilterLabel}</span>
+          <span style={{ color: S.sub, fontWeight: 700 }}>{objPickerOpen ? "▲" : "▼"}</span>
+        </div>
+        {objPickerOpen && (
+          <div style={{ border: `1px solid ${S.line}`, borderRadius: 10, marginTop: 6, padding: "6px 12px", maxHeight: 280, overflowY: "auto" }}>
+            <label style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 0", fontWeight: 700, borderBottom: `1px solid ${S.line}`, cursor: "pointer" }}>
+              <input type="checkbox" checked={objFilters.size === 0} onChange={() => setObjFilters(new Set())} style={{ width: 17, height: 17 }} />
+              {api.t("allObjects")}
+            </label>
+            {["HR", "CZ"].map((c) => {
+              const objs = sortedObjects(data.objects.filter((o) => (o.country || "HR") === c));
+              if (!objs.length) return null;
+              return (
+                <div key={c}>
+                  <div style={{ fontSize: 11.5, fontWeight: 700, color: S.sub, margin: "8px 0 2px" }}>{FLAG[c]} {COUNTRY_NAME[c]}</div>
+                  {objs.map((o) => (
+                    <label key={o.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 0", fontSize: 13.5, cursor: "pointer" }}>
+                      <input type="checkbox" checked={objFilters.has(o.id)} onChange={() => toggleObjFilter(o.id)} style={{ width: 17, height: 17 }} />
+                      {o.name}
+                    </label>
+                  ))}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
 
       {admin && view === "month" && (
         <div style={{ marginBottom: 12 }}>
@@ -2720,7 +2746,7 @@ function ReportTab({ data, api, admin }) {
         </div>
       )}
 
-      {rows.length === 0 ? <Empty text={objFilter ? `Za ${objFilterName} u ovom razdoblju nema upisanih sati.` : "Za ovo razdoblje nema upisanih sati ni isplata."} /> : (
+      {rows.length === 0 ? <Empty text={objFilters.size > 0 ? `Za ${objFilterName} u ovom razdoblju nema upisanih sati.` : "Za ovo razdoblje nema upisanih sati ni isplata."} /> : (
         <>
           <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
             <Btn kind="excel" onClick={exportExcel} style={{ flex: 1 }}>📊 {api.t("excelBtn")}{objFilterName ? " — " + objFilterName : ""}</Btn>
