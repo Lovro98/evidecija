@@ -1472,6 +1472,8 @@ function ObjectDetail({ object, data, api, onBack, onOpenWorker }) {
   const [monthSel, setMonthSel] = useState(() => new Set()); // odabrani radnici za grupnu izmjenu
   const [monthBulkVal, setMonthBulkVal] = useState("");
   const [monthSaving, setMonthSaving] = useState(false);
+  const [hourEdit, setHourEdit] = useState(null); // { workerId, value } — brzo uređivanje broja sati u sažetku
+  const [hourSaving, setHourSaving] = useState(false);
   const [editLog, setEditLog] = useState(null);
   const [rateEdit, setRateEdit] = useState(String(object.billRate || ""));
   const [billCur, setBillCur] = useState(object.billCur || "EUR");
@@ -1608,6 +1610,14 @@ function ObjectDetail({ object, data, api, onBack, onOpenWorker }) {
     setMonthSaving(true);
     await api.setMonthlyHoursBulk(entries, object.id, month, object.name);
     setMonthSaving(false);
+  };
+  const saveHourEdit = async (mo) => {
+    if (!hourEdit) return;
+    const hours = round2(parseNum(hourEdit.value) || 0);
+    setHourSaving(true);
+    await api.setMonthlyHoursBulk([{ workerId: hourEdit.workerId, hours }], object.id, mo, object.name);
+    setHourSaving(false);
+    setHourEdit(null);
   };
   const commitPosition = (w) => {
     const val = (posEdit[w.id] !== undefined ? posEdit[w.id] : (w.position || "")).trim();
@@ -1783,7 +1793,20 @@ function ObjectDetail({ object, data, api, onBack, onOpenWorker }) {
                 <span onClick={() => onOpenWorker && onOpenWorker(r.w.id)} style={{ fontWeight: 600, cursor: onOpenWorker ? "pointer" : "default", color: onOpenWorker ? S.blue : "inherit" }}>
                   {r.w.name}{r.w.objectId === object.id ? <span style={{ color: S.blue, fontSize: 11, fontWeight: 700 }}> ★</span> : ""}
                 </span>
-                <span style={{ fontWeight: 700 }}>{fmtH(r.h)}</span>
+                {hourEdit && hourEdit.workerId === r.w.id ? (
+                  <span style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                    <input inputMode="decimal" autoFocus value={hourEdit.value}
+                      onChange={(e) => setHourEdit({ workerId: r.w.id, value: e.target.value })}
+                      onKeyDown={(e) => e.key === "Enter" && saveHourEdit(mk2)}
+                      style={{ width: 72, padding: "4px 6px", fontSize: 13 }} />
+                    <button onClick={() => saveHourEdit(mk2)} disabled={hourSaving} style={{ background: "none", border: "none", color: S.green, fontWeight: 800, cursor: "pointer", fontSize: 17, padding: 2 }}>✓</button>
+                    <button onClick={() => setHourEdit(null)} style={{ background: "none", border: "none", color: S.red, fontWeight: 800, cursor: "pointer", fontSize: 15, padding: 2 }}>✕</button>
+                  </span>
+                ) : (
+                  <span onClick={() => setHourEdit({ workerId: r.w.id, value: String(r.h) })} style={{ fontWeight: 700, cursor: "pointer", color: S.blue }}>
+                    {fmtH(r.h)} <span style={{ fontSize: 12 }}>✎</span>
+                  </span>
+                )}
               </div>
             ))}
             <div className="num" style={{ display: "flex", justifyContent: "space-between", paddingTop: 7, fontWeight: 800 }}>
