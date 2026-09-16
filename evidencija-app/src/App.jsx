@@ -43,6 +43,8 @@ const CurChips = ({ value, onChange, small }) => (
 );
 const COUNTRY_NAME = { HR: "Hrvatska", CZ: "Češka" };
 const round2 = (n) => Math.round(n * 100) / 100;
+const MONTH_HOURS_WARN = 320; // iznad ovoga upozoravamo da su sati vjerojatno krivo upisani
+const isHoursSuspicious = (h) => h > MONTH_HOURS_WARN;
 const MONTHS = ["Siječanj","Veljača","Ožujak","Travanj","Svibanj","Lipanj","Srpanj","Kolovoz","Rujan","Listopad","Studeni","Prosinac"];
 const MONTHS_SHORT = ["sij","vlj","ožu","tra","svi","lip","srp","kol","ruj","lis","stu","pro"];
 
@@ -195,6 +197,13 @@ function rateFor(data, w, date) {
 }
 const rateNow = (data, w) => rateFor(data, w, todayISO());
 const paidFor = (data, workerId, mo) => (data.payouts || []).find((p) => p.workerId === workerId && p.month === mo);
+
+/* ---------- red za slanje kad nema interneta (trenutno: upis sati) ---------- */
+const OFFLINE_QUEUE_KEY = "evidencija_offline_queue";
+const readOfflineQueue = () => { try { return JSON.parse(localStorage.getItem(OFFLINE_QUEUE_KEY) || "[]"); } catch { return []; } };
+const writeOfflineQueue = (q) => { try { localStorage.setItem(OFFLINE_QUEUE_KEY, JSON.stringify(q)); } catch {} };
+const isNetworkError = (e) => (typeof navigator !== "undefined" && navigator.onLine === false)
+  || /fetch|network|failed to fetch/i.test(String(e?.message || e || ""));
 
 /* ---------- naplata objekta po poziciji (HSK, kuhinja, bar…) ---------- */
 const positionBillFor = (data, objectId, position) =>
@@ -412,6 +421,7 @@ export default function App() {
   const [data, setData] = useState(null);
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
+  const [offlineQueue, setOfflineQueue] = useState(() => readOfflineQueue());
   const [tab, setTab] = useState("radnici");
   const [openWorker, setOpenWorker] = useState(null);
   const [openObject, setOpenObject] = useState(null);
@@ -432,6 +442,35 @@ export default function App() {
     catch (e) { setErr("Greška pri učitavanju: " + (e.message || e)); }
   }, [profile]);
 
+  const queuePush = (type, payload) => {
+    const q = readOfflineQueue();
+    q.push({ id: Date.now() + "_" + Math.random().toString(36).slice(2), type, payload, createdAt: Date.now() });
+    writeOfflineQueue(q);
+    setOfflineQueue(q);
+  };
+  const insertQueued = async (item) => {
+    const table = item.type === "work_log" ? "work_logs" : item.type;
+    const { error } = await supabase.from(table).insert(item.payload);
+    if (error) throw error;
+  };
+  const flushOfflineQueue = useCallback(async () => {
+    const q = readOfflineQueue();
+    if (!q.length || typeof navigator !== "undefined" && navigator.onLine === false) return;
+    const remaining = [];
+    for (const item of q) {
+      try { await insertQueued(item); } catch { remaining.push(item); }
+    }
+    writeOfflineQueue(remaining);
+    setOfflineQueue(remaining);
+    if (remaining.length !== q.length) await reload();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reload]);
+  useEffect(() => {
+    flushOfflineQueue();
+    window.addEventListener("online", flushOfflineQueue);
+    return () => window.removeEventListener("online", flushOfflineQueue);
+  }, [flushOfflineQueue]);
+
   useEffect(() => {
     if (!session) { setProfile(null); setData(null); return; }
     (async () => {
@@ -448,6 +487,22 @@ export default function App() {
     window.addEventListener("focus", onFocus);
     return () => window.removeEventListener("focus", onFocus);
   }, [profile, reload]);
+
+  // lokalna obavijest (dok je app otvorena/pokrenuta) — jednom dnevno, ako ima isteklih/uskoro isteklih dokumenata
+  useEffect(() => {
+    if (!data || typeof Notification === "undefined" || Notification.permission !== "granted") return;
+    const key = "evidencija_notif_" + todayISO();
+    try { if (localStorage.getItem(key)) return; } catch { return; }
+    const warns = expiryWarnings(data.workers);
+    if (!warns.length) return;
+    const expired = warns.filter((w) => w.past).length;
+    const soon = warns.length - expired;
+    const body = [expired ? `${expired} isteklo` : "", soon ? `${soon} uskoro ističe` : ""].filter(Boolean).join(" · ");
+    try {
+      new Notification("Evidencija rada — istek dokumenata", { body, icon: "/icon-192.png" });
+      localStorage.setItem(key, "1");
+    } catch {}
+  }, [data]);
 
   const act = async (fn, auditText) => {
     setBusy(true);
@@ -516,10 +571,30 @@ export default function App() {
       `Postavio naplatu za poziciju "${position}" (${o.name}): ${patch.mode === "markup" ? "satnica radnika + " + money(patch.value, patch.currency) : money(patch.value, patch.currency)}/h`),
     delPositionRate: (o, position) => act(() => supabase.from("position_billing").delete().eq("object_id", o.id).eq("position", position)
       .then(({ error }) => { if (error) throw error; }), `Obrisao naplatu za poziciju "${position}" (${o.name})`),
-    addLog: (l, wName, objName) => act(() => { guardPaid(l.workerId, l.date); return ins("work_logs", {
-      worker_id: l.workerId, object_id: l.objectId || null, work_date: l.date,
-      from_t: l.from, to_t: l.to, hours: l.hours, monthly: !!l.monthly, note: l.note || "", created_by: session.user.id,
-    }); }, `Upisao sate: ${wName} ${fmtH(l.hours)}${objName ? " (" + objName + ")" : ""} (${fmtDate(l.date)})`),
+    addLog: async (l, wName, objName) => {
+      try { guardPaid(l.workerId, l.date); } catch (e) { setErr("Greška: " + e.message); return false; }
+      const row = { worker_id: l.workerId, object_id: l.objectId || null, work_date: l.date,
+        from_t: l.from, to_t: l.to, hours: l.hours, monthly: !!l.monthly, note: l.note || "", created_by: session.user.id };
+      // bez interneta (ili net baš otpao): spremi lokalno i pošalji čim se veza vrati
+      if (typeof navigator !== "undefined" && navigator.onLine === false) {
+        queuePush("work_log", row);
+        setErr("");
+        return true;
+      }
+      setBusy(true);
+      try {
+        await ins("work_logs", row);
+      } catch (e) {
+        if (isNetworkError(e)) { queuePush("work_log", row); setErr(""); setBusy(false); return true; }
+        setErr("Greška: " + (e.message || e)); setBusy(false); return false;
+      }
+      try { await supabase.from("audit_log").insert({ user_id: session.user.id, user_name: profile?.name || "",
+        action: `Upisao sate: ${wName} ${fmtH(l.hours)}${objName ? " (" + objName + ")" : ""} (${fmtDate(l.date)})` }); } catch {}
+      await reload();
+      setErr("");
+      setBusy(false);
+      return true;
+    },
     addLogsBulk: (entries, mo) => act(async () => {
       entries.forEach((e) => guardPaid(e.workerId, mo));
       const { error } = await supabase.from("work_logs").insert(entries.map((e) => ({
@@ -643,6 +718,15 @@ export default function App() {
           </div>
         )}
         {busy && <div style={{ fontSize: 12.5, color: S.sub, marginBottom: 8 }}>Spremam…</div>}
+        {offlineQueue.length > 0 && (
+          <div style={{ background: S.amberSoft, color: S.amber, borderRadius: 10, padding: "9px 12px", marginBottom: 12, fontSize: 13, fontWeight: 600,
+            display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+            <span>📴 {offlineQueue.length} {offlineQueue.length === 1 ? "upis čeka" : "upisa čeka"} slanje (nema interneta)</span>
+            <button onClick={flushOfflineQueue} style={{ background: "none", border: `1px solid ${S.amber}`, color: S.amber, borderRadius: 8, padding: "4px 9px", fontWeight: 700, cursor: "pointer", fontSize: 12.5 }}>
+              Pokušaj sad
+            </button>
+          </div>
+        )}
 
         {admin && !detailOpen && <AdminPanels data={data} api={api} panel={adminPanel} setPanel={setAdminPanel} />}
 
@@ -962,6 +1046,7 @@ function expiryWarnings(workers) {
 function WorkersTab({ data, api, onOpen, onOpenObject }) {
   const [adding, setAdding] = useState(false);
   const [showObjects, setShowObjects] = useState(true);
+  const [showToday, setShowToday] = useState(false);
   const [form, setForm] = useState({ name: "", phone: "", rate: "", rateCur: "EUR", objectId: "", position: "", note: "", permitExpiry: "", contractExpiry: "" });
   const [newObj, setNewObj] = useState("");
   const [confirmObj, setConfirmObj] = useState(null);
@@ -969,6 +1054,8 @@ function WorkersTab({ data, api, onOpen, onOpenObject }) {
   const objName = (id) => data.objects.find((o) => o.id === id)?.name || "";
   const mk = curMonth();
   const warns = expiryWarnings(data.workers);
+  const [q, setQ] = useState("");
+  const nameDupe = form.name.trim() && data.workers.find((w) => w.name.trim().toLowerCase() === form.name.trim().toLowerCase());
 
   const addWorker = async () => {
     if (!form.name.trim()) return;
@@ -990,6 +1077,46 @@ function WorkersTab({ data, api, onOpen, onOpenObject }) {
 
   return (
     <>
+      {(() => {
+        const today = todayISO();
+        const todayLogs = data.logs.filter((l) => l.date === today);
+        const todayHours = round2(todayLogs.reduce((s, l) => s + l.hours, 0));
+        const workedIds = new Set(todayLogs.map((l) => l.workerId));
+        const notLoggedToday = actives.filter((w) => !workedIds.has(w.id));
+        return (
+          <Card style={{ background: S.greenSoft, borderColor: "#C5DED2" }}>
+            <div onClick={() => setShowToday(!showToday)} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", cursor: "pointer" }}>
+              <div style={{ fontWeight: 700, color: S.green }}>📊 Danas — {fmtDate(today)}</div>
+              <span style={{ color: S.green, fontWeight: 700 }}>{showToday ? "▲" : "▼"}</span>
+            </div>
+            <div className="num" style={{ fontSize: 13.5, marginTop: 6 }}>
+              <b>{fmtH(todayHours)}</b> upisano danas · {workedIds.size}/{actives.length} radnika upisalo sate
+            </div>
+            {showToday && (
+              <div style={{ marginTop: 8, borderTop: "1px dashed #C5DED2", paddingTop: 8 }}>
+                {notLoggedToday.length === 0 ? (
+                  <div style={{ fontSize: 12.5, color: S.sub }}>Svi aktivni radnici imaju upis za danas. 🎉</div>
+                ) : (
+                  <>
+                    <div style={{ fontSize: 12.5, color: S.sub, marginBottom: 4 }}>Bez upisa danas ({notLoggedToday.length}) — nije nužno problem, možda nisu radili:</div>
+                    {notLoggedToday.map((w) => (
+                      <span key={w.id} onClick={() => onOpen(w.id)} style={{
+                        display: "inline-block", fontSize: 12.5, color: S.sub, background: "#fff", border: "1px solid #C5DED2",
+                        borderRadius: 999, padding: "3px 9px", margin: "2px 4px 2px 0", cursor: "pointer" }}>{w.name}</span>
+                    ))}
+                  </>
+                )}
+                {typeof Notification !== "undefined" && Notification.permission === "default" && (
+                  <Btn small kind="ghost" onClick={() => Notification.requestPermission()} style={{ marginTop: 10 }}>
+                    🔔 Uključi obavijesti za istek dokumenata
+                  </Btn>
+                )}
+              </div>
+            )}
+          </Card>
+        );
+      })()}
+
       {warns.length > 0 && (
         <Card style={{ background: S.redSoft, borderColor: "#EED0C8" }}>
           <div style={{ fontWeight: 700, color: S.red, marginBottom: 6 }}>⚠️ Istek dokumenata</div>
@@ -1046,6 +1173,11 @@ function WorkersTab({ data, api, onOpen, onOpenObject }) {
       {adding && (
         <Card>
           <Field label={api.t("fullName")}><input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="npr. Ivan Horvat" /></Field>
+          {nameDupe && (
+            <div style={{ fontSize: 12.5, color: S.amber, fontWeight: 600, margin: "-6px 0 10px" }}>
+              ⚠️ Radnik s ovim imenom već postoji{nameDupe.archived ? " (u arhivi)" : ""} — provjeri da ne dupliraš.
+            </div>
+          )}
           <Field label={api.t("phone")}><input value={form.phone} inputMode="tel" onChange={(e) => setForm({ ...form, phone: e.target.value })} /></Field>
           <Field label={`Satnica (${form.rateCur === "CZK" ? "Kč" : "€"} / sat) — nije obavezno`}>
             <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
@@ -1069,9 +1201,16 @@ function WorkersTab({ data, api, onOpen, onOpenObject }) {
         </Card>
       )}
 
+      {actives.length > 5 && (
+        <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="🔍 Traži po imenu, telefonu, poziciji…" style={{ marginBottom: 10 }} />
+      )}
+
       {actives.length === 0 && !adding && <Empty text={api.t("noWorkersYet")} />}
 
-      {actives.map((w) => {
+      {actives.filter((w) => {
+        const t = q.trim().toLowerCase();
+        return !t || w.name.toLowerCase().includes(t) || (w.phone || "").includes(t) || (w.position || "").toLowerCase().includes(t);
+      }).map((w) => {
         const h = data.logs.filter((l) => l.workerId === w.id && monthKey(l.date) === mk).reduce((s, l) => s + l.hours, 0);
         return (
           <Card key={w.id} style={{ cursor: "pointer" }}>
@@ -1118,6 +1257,7 @@ function ObjectsTab({ data, api, onOpenObject }) {
   const mk = curMonth();
   const [newObj, setNewObj] = useState("");
   const [country, setCountry] = useState("HR"); // aktivni filter/tab — i zadana država za novi objekt
+  const [q, setQ] = useState("");
   const addObject = async () => {
     const n = newObj.trim(); if (!n) return;
     if (data.objects.find((o) => o.name.toLowerCase() === n.toLowerCase())) { setNewObj(""); return; }
@@ -1171,7 +1311,13 @@ function ObjectsTab({ data, api, onOpenObject }) {
         <input value={newObj} onChange={(e) => setNewObj(e.target.value)} onKeyDown={(e) => e.key === "Enter" && addObject()} placeholder={`${api.t("newObjectPh")} ${COUNTRY_NAME[country]}…`} />
         <Btn small onClick={addObject}>{api.t("addBtn")}</Btn>
       </div>
-      {shown.length === 0 ? <Empty text={`Još nema objekata u: ${COUNTRY_NAME[country]}.`} /> : shown.map(renderObject)}
+      {shown.length > 5 && (
+        <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="🔍 Traži objekt po imenu…" style={{ marginBottom: 12 }} />
+      )}
+      {shown.length === 0 ? <Empty text={`Još nema objekata u: ${COUNTRY_NAME[country]}.`} /> : (() => {
+        const filtered = shown.filter((o) => o.name.toLowerCase().includes(q.trim().toLowerCase()));
+        return filtered.length === 0 ? <Empty text="Nema rezultata." /> : filtered.map(renderObject);
+      })()}
     </>
   );
 }
@@ -1474,6 +1620,7 @@ function ObjectDetail({ object, data, api, onBack, onOpenWorker }) {
   const [monthSaving, setMonthSaving] = useState(false);
   const [hourEdit, setHourEdit] = useState(null); // { workerId, value } — brzo uređivanje broja sati u sažetku
   const [hourSaving, setHourSaving] = useState(false);
+  const [q, setQ] = useState("");
   const [editLog, setEditLog] = useState(null);
   const [rateEdit, setRateEdit] = useState(String(object.billRate || ""));
   const [billCur, setBillCur] = useState(object.billCur || "EUR");
@@ -1563,8 +1710,10 @@ function ObjectDetail({ object, data, api, onBack, onOpenWorker }) {
   const prevM = () => setMonth(mm === 1 ? `${my - 1}-12` : `${my}-${String(mm - 1).padStart(2, "0")}`);
   const nextM = () => setMonth(mm === 12 ? `${my + 1}-01` : `${my}-${String(mm + 1).padStart(2, "0")}`);
 
-  const workers = sortedWorkers(data.workers.filter((w) => !w.archived));
-  const objectPositions = [...new Set(workers.filter((w) => w.objectId === object.id && w.position).map((w) => w.position))].sort((a, b) => a.localeCompare(b, "hr"));
+  const allActiveWorkers = sortedWorkers(data.workers.filter((w) => !w.archived));
+  const wq = q.trim().toLowerCase();
+  const workers = wq ? allActiveWorkers.filter((w) => w.name.toLowerCase().includes(wq) || (w.position || "").toLowerCase().includes(wq)) : allActiveWorkers;
+  const objectPositions = [...new Set(allActiveWorkers.filter((w) => w.objectId === object.id && w.position).map((w) => w.position))].sort((a, b) => a.localeCompare(b, "hr"));
   const myPositionRates = (data.positionBilling || []).filter((pb) => pb.objectId === object.id)
     .sort((a, b) => a.position.localeCompare(b.position, "hr"));
   const editPositionRate = (pb) => {
@@ -1803,8 +1952,11 @@ function ObjectDetail({ object, data, api, onBack, onOpenWorker }) {
                     <button onClick={() => setHourEdit(null)} style={{ background: "none", border: "none", color: S.red, fontWeight: 800, cursor: "pointer", fontSize: 15, padding: 2 }}>✕</button>
                   </span>
                 ) : (
-                  <span onClick={() => setHourEdit({ workerId: r.w.id, value: String(r.h) })} style={{ fontWeight: 700, cursor: "pointer", color: S.blue }}>
-                    {fmtH(r.h)} <span style={{ fontSize: 12 }}>✎</span>
+                  <span style={{ display: "flex", alignItems: "center", gap: 5 }}>
+                    {isHoursSuspicious(r.h) && <span title={`Više od ${MONTH_HOURS_WARN}h u mjesecu — provjeri unos`}>⚠️</span>}
+                    <span onClick={() => setHourEdit({ workerId: r.w.id, value: String(r.h) })} style={{ fontWeight: 700, cursor: "pointer", color: isHoursSuspicious(r.h) ? S.red : S.blue }}>
+                      {fmtH(r.h)} <span style={{ fontSize: 12 }}>✎</span>
+                    </span>
                   </span>
                 )}
               </div>
@@ -1942,6 +2094,11 @@ function ObjectDetail({ object, data, api, onBack, onOpenWorker }) {
           </Card>
         </>
       )}
+
+      {allActiveWorkers.length > 5 && (
+        <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="🔍 Traži radnika po imenu ili poziciji…" style={{ marginBottom: 10 }} />
+      )}
+      {q.trim() && workers.length === 0 && <Empty text="Nema rezultata." />}
 
       {workers.map((w) => {
         const v = inputs[w.id] || { from: "", to: "", hours: "" };
@@ -3033,6 +3190,7 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
                     </div>
                   </div>
                   <div className="num" style={{ fontSize: 13, color: S.sub, marginTop: 3 }}>
+                    {view === "month" && isHoursSuspicious(r.hours) && <span title={`Više od ${MONTH_HOURS_WARN}h u mjesecu — provjeri unos`} style={{ color: S.red }}>⚠️ </span>}
                     {fmtH(r.hours)}{r.rateSet.length === 1 ? <> × {money(r.rateSet[0], wCur(r.w))}</> : r.rateSet.length > 1 ? <> (više satnica)</> : null} = {wCur(r.w) === "CZK" ? czk(r.grossKc) : eur(r.gross)}
                     {r.bonuses > 0 && <> · bonus +{eur(r.bonuses)}</>}
                     {r.advances > 0 && <> · avans −{eur(r.advances)}</>}
