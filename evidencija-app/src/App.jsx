@@ -47,6 +47,8 @@ const MONTH_HOURS_WARN = 320; // iznad ovoga upozoravamo da su sati vjerojatno k
 const isHoursSuspicious = (h) => h > MONTH_HOURS_WARN;
 const DAY_HOURS_WARN = 20; // iznad ovoga upozoravamo za jedan dan (jednokratan upis, ne mjesečni zbroj)
 const isDayHoursSuspicious = (h) => h > DAY_HOURS_WARN;
+// širok raspon "normalne" satnice po valuti — samo za hvatanje očitih grešaka u tipkanju (npr. 70 umjesto 7)
+const isRateSuspicious = (rate, cur) => { const r = Number(rate) || 0; if (!r) return false; return cur === "CZK" ? (r < 50 || r > 600) : (r < 2 || r > 30); };
 const MONTHS = ["Siječanj","Veljača","Ožujak","Travanj","Svibanj","Lipanj","Srpanj","Kolovoz","Rujan","Listopad","Studeni","Prosinac"];
 const MONTHS_SHORT = ["sij","vlj","ožu","tra","svi","lip","srp","kol","ruj","lis","stu","pro"];
 
@@ -581,6 +583,12 @@ export default function App() {
       await upd("workers", w.id, { object_id: objectId || null });
       await ins("assignments", { worker_id: w.id, object_id: objectId || null, from_date: from, created_by: session.user.id });
     }, `Prebacio ${w.name} na: ${targetName} (od ${fmtDate(from)})`),
+    transferBulk: (workerIds, objectId, targetName, from) => act(async () => {
+      for (const wid of workerIds) {
+        await upd("workers", wid, { object_id: objectId || null });
+        await ins("assignments", { worker_id: wid, object_id: objectId || null, from_date: from, created_by: session.user.id });
+      }
+    }, `Grupno prebacio ${workerIds.length} radnika na: ${targetName} (od ${fmtDate(from)})`),
     delAssignment: (a, wName) => act(() => softDel("assignments", a.id), `Obrisao premještaj radnika ${wName}`),
     changeRate: (w, rate, from) => act(() => ins("rate_changes", { worker_id: w.id, rate, from_date: from, created_by: session.user.id }),
       `Promijenio satnicu: ${w.name} → ${eur(rate)}/h od ${fmtDate(from)}`),
@@ -1274,6 +1282,19 @@ function WorkersTab({ data, api, onOpen, onOpenObject }) {
 
   return (
     <>
+      {!api.admin && (() => {
+        const mine = data.logs.filter((l) => l.createdBy === api.uid() && monthKey(l.date) === mk);
+        if (!mine.length) return null;
+        const hrs = round2(mine.reduce((s, l) => s + l.hours, 0));
+        const touched = new Set(mine.map((l) => l.workerId)).size;
+        return (
+          <Card style={{ background: S.blueSoft, borderColor: "#CBDCEA" }}>
+            <div style={{ fontWeight: 700, color: S.blue, marginBottom: 4 }}>👤 Tvoj unos ovaj mjesec</div>
+            <div className="num" style={{ fontSize: 13.5 }}>Upisano <b>{fmtH(hrs)}</b> za {touched} {touched === 1 ? "radnika" : "radnika"}.</div>
+          </Card>
+        );
+      })()}
+
       {(() => {
         const today = todayISO();
         const todayLogs = data.logs.filter((l) => l.date === today);
@@ -1418,6 +1439,11 @@ function WorkersTab({ data, api, onOpen, onOpenObject }) {
               <CurChips small value={form.rateCur} onChange={(v) => setForm({ ...form, rateCur: v })} />
             </div>
           </Field>
+          {isRateSuspicious(form.rate, form.rateCur) && (
+            <div style={{ fontSize: 12.5, color: S.amber, fontWeight: 600, margin: "-6px 0 10px" }}>
+              ⚠️ Ova satnica izgleda neobično — provjeri nisi li se utipkala (npr. višak/manjak nule).
+            </div>
+          )}
           <Field label="Glavni objekt"><ObjectSelect data={data} api={api} value={form.objectId} onChange={(v) => {
             const ob = data.objects.find((o) => o.id === v);
             setForm({ ...form, objectId: v, rateCur: ob ? countryCur(ob.country) : form.rateCur });
@@ -1740,6 +1766,11 @@ function WorkerDetail({ worker, data, api, onBack }) {
                 <CurChips small value={form.rateCur} onChange={(v) => setForm({ ...form, rateCur: v })} />
               </div>
             </Field>
+            {isRateSuspicious(form.rate, form.rateCur) && (
+              <div style={{ fontSize: 12.5, color: S.amber, fontWeight: 600, margin: "-6px 0 10px" }}>
+                ⚠️ Ova satnica izgleda neobično — provjeri nisi li se utipkala.
+              </div>
+            )}
             <Field label="Glavni objekt"><ObjectSelect data={data} api={api} value={form.objectId || ""} onChange={(v) => setForm({ ...form, objectId: v })} /></Field>
             <Field label="Pozicija (npr. HSK, kuhinja, bar…)"><input value={form.position || ""} onChange={(e) => setForm({ ...form, position: e.target.value })} placeholder="npr. HSK" /></Field>
             <div style={{ display: "flex", gap: 10 }}>
@@ -1787,6 +1818,11 @@ function WorkerDetail({ worker, data, api, onBack }) {
           <div style={{ flex: "1 1 130px" }}><Field label="Vrijedi od"><input type="date" value={rateFrom} onChange={(e) => setRateFrom(e.target.value)} /></Field></div>
           <div style={{ marginBottom: 10 }}><Btn small onClick={changeRate}>Promijeni</Btn></div>
         </div>
+        {isRateSuspicious(rateNew, wCur(worker)) && (
+          <div style={{ fontSize: 12.5, color: S.amber, fontWeight: 600, margin: "-6px 0 10px" }}>
+            ⚠️ Ova satnica izgleda neobično — provjeri nisi li se utipkala.
+          </div>
+        )}
         <div style={{ fontSize: 12.5, fontWeight: 700, color: S.green, marginBottom: 2 }}>Povijest satnice</div>
         <div className="num" style={{ fontSize: 13.5, padding: "4px 0", color: S.sub }}>početna · <b>{worker.rate > 0 ? money(worker.rate, wCur(worker)) + "/h" : "—"}</b></div>
         {myRates.map((r) => (
@@ -1889,6 +1925,10 @@ function ObjectDetail({ object, data, api, onBack, onOpenWorker }) {
   const [hourEdit, setHourEdit] = useState(null); // { workerId, value } — brzo uređivanje broja sati u sažetku
   const [hourSaving, setHourSaving] = useState(false);
   const [q, setQ] = useState("");
+  const [showTransfer, setShowTransfer] = useState(false);
+  const [transferSel, setTransferSel] = useState(() => new Set());
+  const [transferDate, setTransferDate] = useState(todayISO());
+  const [transferBusy, setTransferBusy] = useState(false);
   const [editLog, setEditLog] = useState(null);
   const [rateEdit, setRateEdit] = useState(String(object.billRate || ""));
   const [billCur, setBillCur] = useState(object.billCur || "EUR");
@@ -2040,6 +2080,13 @@ function ObjectDetail({ object, data, api, onBack, onOpenWorker }) {
     const val = (posEdit[w.id] !== undefined ? posEdit[w.id] : (w.position || "")).trim();
     setPosEdit((p) => { const n = { ...p }; delete n[w.id]; return n; });
     if (val !== (w.position || "")) api.setPosition(w, val);
+  };
+  const submitTransfer = async () => {
+    const ids = [...transferSel].filter((id) => data.workers.find((w) => w.id === id)?.objectId !== object.id);
+    if (!ids.length) return;
+    setTransferBusy(true);
+    if (await api.transferBulk(ids, object.id, object.name, transferDate)) setTransferSel(new Set());
+    setTransferBusy(false);
   };
 
   const entries = data.logs.filter((l) => l.objectId === object.id && (mode === "day" ? l.date === date : monthKey(l.date) === month))
@@ -2362,6 +2409,36 @@ function ObjectDetail({ object, data, api, onBack, onOpenWorker }) {
           </Card>
         </>
       )}
+
+      <Card style={{ background: S.blueSoft, borderColor: "#CBDCEA" }}>
+        <div onClick={() => setShowTransfer(!showTransfer)} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", cursor: "pointer" }}>
+          <div style={{ fontWeight: 700, color: S.blue }}>👥 Grupni transfer na ovaj objekt{transferSel.size > 0 ? ` (${transferSel.size})` : ""}</div>
+          <span style={{ color: S.blue, fontWeight: 700 }}>{showTransfer ? "▲" : "▼"}</span>
+        </div>
+        {showTransfer && (
+          <div style={{ marginTop: 10 }}>
+            <div style={{ fontSize: 12, color: S.sub, marginBottom: 8 }}>Označi radnike koje seliš na ovaj objekt (npr. za novu sezonu) i klikni jednom "Prebaci odabrane".</div>
+            <Field label="Prebačeni od datuma"><input type="date" value={transferDate} onChange={(e) => setTransferDate(e.target.value)} /></Field>
+            <div style={{ maxHeight: 260, overflowY: "auto", marginBottom: 10 }}>
+              {allActiveWorkers.filter((w) => w.objectId !== object.id).map((w) => (
+                <label key={w.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 0", borderBottom: "1px solid #CBDCEA", fontSize: 13.5, cursor: "pointer" }}>
+                  <input type="checkbox" checked={transferSel.has(w.id)}
+                    onChange={(e) => setTransferSel((p) => { const n = new Set(p); e.target.checked ? n.add(w.id) : n.delete(w.id); return n; })}
+                    style={{ width: 17, height: 17 }} />
+                  <span style={{ flex: 1 }}>{w.name}</span>
+                  <span style={{ fontSize: 12, color: S.sub }}>{objName(w.objectId) || "bez objekta"}</span>
+                </label>
+              ))}
+              {allActiveWorkers.filter((w) => w.objectId !== object.id).length === 0 && (
+                <div style={{ fontSize: 12.5, color: S.sub }}>Svi aktivni radnici su već na ovom objektu.</div>
+              )}
+            </div>
+            <Btn small onClick={submitTransfer} disabled={transferBusy || transferSel.size === 0} style={{ width: "100%" }}>
+              {transferBusy ? "Prebacujem…" : `✓ Prebaci odabrane (${transferSel.size})`}
+            </Btn>
+          </div>
+        )}
+      </Card>
 
       {allActiveWorkers.length > 5 && (
         <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="🔍 Traži radnika po imenu ili poziciji…" style={{ marginBottom: 10 }} />
@@ -2868,6 +2945,7 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
   const [objFilters, setObjFilters] = useState(() => new Set()); // prazan skup = svi objekti
   const [objPickerOpen, setObjPickerOpen] = useState(false);
   const [showPayoutCal, setShowPayoutCal] = useState(false);
+  const [showCombinedEur, setShowCombinedEur] = useState(false);
   const [signatures, setSignatures] = useState({}); // workerId -> dataURL, samo za trenutnu sesiju (ne sprema se u bazu)
   const [sigTarget, setSigTarget] = useState(null); // { id, name } radnika koji trenutno potpisuje
   const [selected, setSelected] = useState(() => new Set());
@@ -3358,20 +3436,29 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
             <Btn kind="ghost" onClick={printEnvelopes} style={{ flex: 1, fontWeight: 700 }}>🖨 {api.t("envelopesBtn")}{objFilterName ? " — " + objFilterName : ""}</Btn>
           </div>
 
+          {(totals.grossKc !== 0 || totals.netKc !== 0 || totals.firmKc !== 0) && (
+            <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: S.sub, cursor: "pointer", justifyContent: "flex-end", margin: "0 2px 6px" }}>
+              <input type="checkbox" checked={showCombinedEur} onChange={(e) => setShowCombinedEur(e.target.checked)} style={{ width: 15, height: 15 }} />
+              Prikaži i zbroj u € (tečaj {czkRate})
+            </label>
+          )}
           <Card style={{ background: S.ink, color: "#fff", border: "none" }}>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, fontSize: 13.5 }}>
               <div><div style={{ color: "#9DB3A8" }}>{api.t("totalHours")}</div><div className="num" style={{ fontSize: 18, fontWeight: 800 }}>{fmtH(totals.hours)}</div></div>
               <div><div style={{ color: "#9DB3A8" }}>{api.t("earningsBonus")}</div>
                 <div className="num" style={{ fontSize: 18, fontWeight: 800 }}>{eur(round2(totals.gross + totals.bonus))}</div>
                 {round2(totals.grossKc + totals.bonusKc) !== 0 && <div className="num" style={{ fontSize: 13.5, fontWeight: 700 }}>{czk(round2(totals.grossKc + totals.bonusKc))}</div>}
+                {showCombinedEur && round2(totals.grossKc + totals.bonusKc) !== 0 && <div className="num" style={{ fontSize: 11.5, color: "#9DB3A8" }}>≈ {eur(round2(totals.gross + totals.bonus + (totals.grossKc + totals.bonusKc) / czkRate))} ukupno</div>}
               </div>
               <div><div style={{ color: "#9DB3A8" }}>{api.t("toPay")}</div>
                 <div className="num" style={{ fontSize: 18, fontWeight: 800, color: "#7FD6B4" }}>{eur(totals.net)}</div>
                 {totals.netKc !== 0 && <div className="num" style={{ fontSize: 13.5, fontWeight: 700, color: "#7FD6B4" }}>{totals.netKc > 0 ? "" : "−"}{czk(Math.abs(totals.netKc))} u Kč</div>}
+                {showCombinedEur && totals.netKc !== 0 && <div className="num" style={{ fontSize: 11.5, color: "#9DB3A8" }}>≈ {eur(round2(totals.net + totals.netKc / czkRate))} ukupno</div>}
               </div>
               <div><div style={{ color: "#9DB3A8" }}>{api.t("firmCosts")}</div>
                 <div className="num" style={{ fontSize: 18, fontWeight: 800 }}>{eur(round2(totals.firm + objCostsTotal))}</div>
                 {round2(totals.firmKc + objCostsTotalKc) !== 0 && <div className="num" style={{ fontSize: 13.5, fontWeight: 700 }}>{czk(round2(totals.firmKc + objCostsTotalKc))}</div>}
+                {showCombinedEur && round2(totals.firmKc + objCostsTotalKc) !== 0 && <div className="num" style={{ fontSize: 11.5, color: "#9DB3A8" }}>≈ {eur(round2(totals.firm + objCostsTotal + (totals.firmKc + objCostsTotalKc) / czkRate))} ukupno</div>}
               </div>
             </div>
           </Card>
