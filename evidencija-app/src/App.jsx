@@ -501,21 +501,31 @@ export default function App() {
     return () => window.removeEventListener("focus", onFocus);
   }, [profile, reload]);
 
-  // lokalna obavijest (dok je app otvorena/pokrenuta) — jednom dnevno, ako ima isteklih/uskoro isteklih dokumenata
+  // lokalna obavijest (dok je app otvorena/pokrenuta) — jednom dnevno: istek dokumenata + (admin) neisplaćeni prošli mjesec
   useEffect(() => {
     if (!data || typeof Notification === "undefined" || Notification.permission !== "granted") return;
     const key = "evidencija_notif_" + todayISO();
     try { if (localStorage.getItem(key)) return; } catch { return; }
+    const parts = [];
     const warns = expiryWarnings(data.workers);
-    if (!warns.length) return;
-    const expired = warns.filter((w) => w.past).length;
-    const soon = warns.length - expired;
-    const body = [expired ? `${expired} isteklo` : "", soon ? `${soon} uskoro ističe` : ""].filter(Boolean).join(" · ");
+    if (warns.length) {
+      const expired = warns.filter((w) => w.past).length;
+      const soon = warns.length - expired;
+      parts.push([expired ? `${expired} dokument(a) isteklo` : "", soon ? `${soon} uskoro ističe` : ""].filter(Boolean).join(", "));
+    }
+    if (admin) {
+      const d = new Date(); d.setDate(1); d.setMonth(d.getMonth() - 1);
+      const prevMo = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+      const withHours = new Set(data.logs.filter((l) => monthKey(l.date) === prevMo).map((l) => l.workerId));
+      const unpaid = [...withHours].filter((wid) => !paidFor(data, wid, prevMo)).length;
+      if (unpaid > 0) parts.push(`${unpaid} radnika još nije isplaćeno za ${MONTHS[Number(prevMo.slice(5, 7)) - 1]}`);
+    }
+    if (!parts.length) return;
     try {
-      new Notification("Evidencija rada — istek dokumenata", { body, icon: "/icon-192.png" });
+      new Notification("Evidencija rada", { body: parts.join(" · "), icon: "/icon-192.png" });
       localStorage.setItem(key, "1");
     } catch {}
-  }, [data]);
+  }, [data, admin]);
 
   const act = async (fn, auditText) => {
     setBusy(true);
@@ -879,6 +889,52 @@ function Field({ label, children }) {
   );
 }
 function Empty({ text }) { return <div style={{ textAlign: "center", color: S.sub, padding: "34px 10px", fontSize: 14.5 }}>{text}</div>; }
+function SignaturePad({ title, onSave, onClose }) {
+  const canvasRef = useRef(null);
+  const drawing = useRef(false);
+  const last = useRef({ x: 0, y: 0 });
+  const [empty, setEmpty] = useState(true);
+  useEffect(() => {
+    const ctx = canvasRef.current.getContext("2d");
+    ctx.lineWidth = 2.5; ctx.lineCap = "round"; ctx.lineJoin = "round"; ctx.strokeStyle = S.ink;
+  }, []);
+  const pos = (e) => {
+    const c = canvasRef.current;
+    const rect = c.getBoundingClientRect();
+    const t = e.touches ? e.touches[0] : e;
+    return { x: (t.clientX - rect.left) * (c.width / rect.width), y: (t.clientY - rect.top) * (c.height / rect.height) };
+  };
+  const start = (e) => { e.preventDefault(); drawing.current = true; last.current = pos(e); };
+  const move = (e) => {
+    if (!drawing.current) return;
+    e.preventDefault();
+    const ctx = canvasRef.current.getContext("2d");
+    const p = pos(e);
+    ctx.beginPath(); ctx.moveTo(last.current.x, last.current.y); ctx.lineTo(p.x, p.y); ctx.stroke();
+    last.current = p;
+    setEmpty(false);
+  };
+  const end = () => { drawing.current = false; };
+  const clear = () => { const c = canvasRef.current; c.getContext("2d").clearRect(0, 0, c.width, c.height); setEmpty(true); };
+  const save = () => { if (empty) return; onSave(canvasRef.current.toDataURL("image/png")); };
+  return (
+    <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(10,14,12,.92)", zIndex: 60,
+      display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ background: "#fff", borderRadius: 14, padding: 16, maxWidth: 420, width: "100%" }}>
+        <div style={{ fontWeight: 700, marginBottom: 8 }}>✍️ {title || "Potpis"}</div>
+        <canvas ref={canvasRef} width={380} height={180}
+          onMouseDown={start} onMouseMove={move} onMouseUp={end} onMouseLeave={end}
+          onTouchStart={start} onTouchMove={move} onTouchEnd={end}
+          style={{ width: "100%", height: 180, border: `1px solid ${S.line}`, borderRadius: 10, touchAction: "none", background: "#FAFBF9", display: "block" }} />
+        <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+          <Btn small kind="ghost" onClick={clear}>Obriši</Btn>
+          <Btn small onClick={save} disabled={empty} style={{ flex: 1 }}>✓ Spremi potpis</Btn>
+          <Btn small kind="ghost" onClick={onClose}>Zatvori</Btn>
+        </div>
+      </div>
+    </div>
+  );
+}
 function Tag({ children, color, bg }) {
   return <span style={{ background: bg, color, borderRadius: 999, padding: "3px 10px", fontSize: 12, fontWeight: 700, whiteSpace: "nowrap" }}>{children}</span>;
 }
@@ -1738,6 +1794,23 @@ function WorkerDetail({ worker, data, api, onBack }) {
           </div>
         ))}
       </Card>
+
+      {(() => {
+        const y = new Date().getFullYear();
+        const ytdRows = calcRows(data, (d) => (d || "").slice(0, 4) === String(y), new Set());
+        const r = ytdRows.find((x) => x.w.id === worker.id);
+        if (!r || (r.hours === 0 && r.pays.length === 0)) return null;
+        return (
+          <Card style={{ background: S.greenSoft, borderColor: "#C5DED2" }}>
+            <div style={{ fontWeight: 700, color: S.green, marginBottom: 6 }}>📆 Ukupno u {y}.</div>
+            <div className="num" style={{ fontSize: 14 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", padding: "3px 0" }}><span>Sati</span><b>{fmtH(r.hours)}</b></div>
+              {(r.net !== 0 || r.czk.net === 0) && <div style={{ display: "flex", justifyContent: "space-between", padding: "3px 0" }}><span>Zarada (€)</span><b>{eur(r.net)}</b></div>}
+              {r.czk.net !== 0 && <div style={{ display: "flex", justifyContent: "space-between", padding: "3px 0" }}><span>Zarada (Kč)</span><b>{czk(r.czk.net)}</b></div>}
+            </div>
+          </Card>
+        );
+      })()}
 
       <Card>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
@@ -2782,6 +2855,8 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
   const [objFilters, setObjFilters] = useState(() => new Set()); // prazan skup = svi objekti
   const [objPickerOpen, setObjPickerOpen] = useState(false);
   const [showPayoutCal, setShowPayoutCal] = useState(false);
+  const [signatures, setSignatures] = useState({}); // workerId -> dataURL, samo za trenutnu sesiju (ne sprema se u bazu)
+  const [sigTarget, setSigTarget] = useState(null); // { id, name } radnika koji trenutno potpisuje
   const [selected, setSelected] = useState(() => new Set());
   const [bulkBusy, setBulkBusy] = useState(false);
   const [mzdyBusy, setMzdyBusy] = useState(false);
@@ -2814,6 +2889,11 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
     for (const r of list) { await api.markPaid(r.w, month, r.net, r.czk.net); }
     setSelected(new Set());
     setBulkBusy(false);
+  };
+  const payAndPrintMany = async (list) => {
+    if (!list.length) return;
+    printEnvelopes(list);
+    await payMany(list);
   };
 
   const czkRate = Number(data.settings.czk_rate) || 25;
@@ -2953,7 +3033,10 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
       ${logsHtml}${paysHtml}
       <tr class="tot"><td colspan="3">UKUPNO ${fmtH(r.hours)}</td><td></td><td class="right">${[r.net !== 0 || r.czk.net === 0 ? eur(r.net) : "", r.czk.net !== 0 ? (r.czk.net > 0 ? "" : "−") + czk(Math.abs(r.czk.net)) : ""].filter(Boolean).join("<br>")}</td></tr></table>
       <div class="muted">Zarada ${gc === "CZK" ? czk(r.grossKc) : eur(r.gross)}${r.extraPay ? " + vikend/praznik " + eur(r.extraPay) : ""}${r.extraPayKc ? " + vikend/praznik " + czk(r.extraPayKc) : ""}${r.bonuses ? " + bonus " + eur(r.bonuses) : ""}${r.czk.bonuses ? " + bonus " + czk(r.czk.bonuses) : ""}${r.advances ? " − avans " + eur(r.advances) : ""}${r.czk.advances ? " − avans " + czk(r.czk.advances) : ""}${r.deductions ? " − odbici " + eur(r.deductions) : ""}${r.czk.deductions ? " − odbici " + czk(r.czk.deductions) : ""}${r.bank ? " − na račun " + eur(r.bank) : ""}${r.czk.bank ? " − na račun " + czk(r.czk.bank) : ""} = <b>za isplatu (kovertom) ${[r.net !== 0 || r.czk.net === 0 ? eur(r.net) : "", r.czk.net !== 0 ? czk(r.czk.net) : ""].filter(Boolean).join(" i ")}</b></div>
-      <div class="muted" style="margin-top:24px">Potpis radnika: ______________________ &nbsp;&nbsp; Potpis poslodavca: ______________________</div>`);
+      <div class="muted" style="margin-top:24px;display:flex;gap:28px;align-items:flex-end">
+        <div>Potpis radnika:${signatures[r.w.id] ? `<br><img src="${signatures[r.w.id]}" style="height:60px;display:block;margin-top:2px" />` : " ______________________"}</div>
+        <div>Potpis poslodavca: ______________________</div>
+      </div>`);
   };
 
   /* PDF specifikacija za hotel */
@@ -2984,8 +3067,8 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
   };
 
   /* ---------- Koverte za isplatu (jedna po radniku, za ispis) ---------- */
-  const printEnvelopes = () => {
-    const pages = rows.map((r) => {
+  const printEnvelopes = (list) => {
+    const pages = (list || rows).map((r) => {
       const objs = [...new Set(r.logs.map((l) => objName(l.objectId)).filter(Boolean))];
       const objLine = objs.length ? objs.join(", ") : (objName(r.w.objectId) || "");
       const note = view === "month" ? (data.payrollNotes || []).find((n) => n.workerId === r.w.id && n.month === month) : null;
@@ -3318,6 +3401,35 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
             </Card>
           )}
 
+          {/* rang objekata po dobiti */}
+          {admin && byObject.size > 1 && (() => {
+            const ranked = [...byObject.entries()]
+              .filter(([key]) => key !== "__none__")
+              .map(([key, v]) => {
+                const profitE = round2(v.revenue - v.gross - (v.costs || 0));
+                const profitK = round2((v.revenueKc || 0) - (v.grossKc || 0) - (v.costsKc || 0));
+                return { key, name: objName(key), profitE, profitK, combined: round2(profitE + profitK / czkRate) };
+              })
+              .sort((a, b) => b.combined - a.combined);
+            if (!ranked.length) return null;
+            return (
+              <Card>
+                <div style={{ fontWeight: 700, marginBottom: 8 }}>🏆 Rang objekata po dobiti</div>
+                {ranked.map((r, i) => (
+                  <div key={r.key} className="num" style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 0", borderBottom: `1px solid ${S.line}`, fontSize: 13.5 }}>
+                    <span style={{ color: S.sub, width: 18 }}>{i + 1}.</span>
+                    <span style={{ flex: 1, fontWeight: 600 }}>{r.name}</span>
+                    <span style={{ fontWeight: 700, color: r.combined >= 0 ? S.green : S.red }}>
+                      {r.profitE !== 0 && eur(r.profitE)}{r.profitE !== 0 && r.profitK !== 0 ? " + " : ""}{r.profitK !== 0 && czk(r.profitK)}
+                      {r.profitE === 0 && r.profitK === 0 && eur(0)}
+                    </span>
+                  </div>
+                ))}
+                <div style={{ fontSize: 11, color: S.sub, marginTop: 6 }}>Poredano po zbroju u €+Kč (po tečaju iz postavki, samo za rang — knjiži se odvojeno).</div>
+              </Card>
+            );
+          })()}
+
           {/* po objektima + naplata od hotela */}
           {byObject.size > 0 && (
             <Card style={{ background: S.blueSoft, borderColor: "#CBDCEA" }}>
@@ -3406,16 +3518,26 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
                   Odaberi sve neisplaćene ({unpaidRows.length})
                 </label>
               )}
-              <div style={{ display: "flex", gap: 8, marginLeft: "auto" }}>
+              <div style={{ display: "flex", gap: 8, marginLeft: "auto", flexWrap: "wrap" }}>
                 {selected.size > 0 && (
-                  <Btn small onClick={() => payMany(rows.filter((r) => selected.has(r.w.id)))} disabled={bulkBusy}>
-                    ✓ Isplati odabrane ({selected.size})
-                  </Btn>
+                  <>
+                    <Btn small kind="ghost" onClick={() => payMany(rows.filter((r) => selected.has(r.w.id)))} disabled={bulkBusy}>
+                      ✓ Isplati odabrane ({selected.size})
+                    </Btn>
+                    <Btn small onClick={() => payAndPrintMany(rows.filter((r) => selected.has(r.w.id)))} disabled={bulkBusy}>
+                      🖨✓ Isplati i ispiši ({selected.size})
+                    </Btn>
+                  </>
                 )}
                 {unpaidRows.length > 0 && (
-                  <Btn small kind={selected.size > 0 ? "ghost" : "primary"} onClick={() => payMany(unpaidRows)} disabled={bulkBusy}>
-                    {bulkBusy ? "Isplaćujem…" : `✓✓ Isplati sve (${unpaidRows.length})`}
-                  </Btn>
+                  <>
+                    <Btn small kind="ghost" onClick={() => payMany(unpaidRows)} disabled={bulkBusy}>
+                      ✓✓ Isplati sve ({unpaidRows.length})
+                    </Btn>
+                    <Btn small kind={selected.size > 0 ? "ghost" : "primary"} onClick={() => payAndPrintMany(unpaidRows)} disabled={bulkBusy}>
+                      {bulkBusy ? "Isplaćujem…" : `🖨✓✓ Isplati i ispiši sve (${unpaidRows.length})`}
+                    </Btn>
+                  </>
                 )}
               </div>
             </div>
@@ -3497,6 +3619,9 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
                     })()}
                     <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
                       <Btn small kind="ghost" onClick={() => printPayslip(r)}>📄 PDF obračun</Btn>
+                      <Btn small kind="ghost" onClick={() => setSigTarget({ id: r.w.id, name: r.w.name })} style={signatures[r.w.id] ? { color: S.green, borderColor: "#C5DED2" } : undefined}>
+                        {signatures[r.w.id] ? "✓ Potpisano (promijeni)" : "✍️ Potpis"}
+                      </Btn>
                       {view === "month" && !paid && (
                         <Btn small onClick={() => api.markPaid(r.w, month, r.net, r.czk.net)}>✓ Označi isplaćeno</Btn>
                       )}
@@ -3518,6 +3643,12 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
             );
           })}
         </>
+      )}
+
+      {sigTarget && (
+        <SignaturePad title={`Potpis — ${sigTarget.name}`}
+          onSave={(dataUrl) => { setSignatures((p) => ({ ...p, [sigTarget.id]: dataUrl })); setSigTarget(null); }}
+          onClose={() => setSigTarget(null)} />
       )}
     </>
   );
