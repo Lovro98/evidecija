@@ -442,3 +442,29 @@ drop policy if exists "invoices_admin_all" on storage.objects;
 create policy "invoices_admin_all" on storage.objects for all to authenticated
   using (bucket_id = 'invoices' and is_admin())
   with check (bucket_id = 'invoices' and is_admin());
+
+-- ============================================================
+-- ZATVARANJE OBJEKATA (arhiva, kao kod radnika) — bez brisanja povijesti
+-- ============================================================
+alter table objects add column if not exists archived boolean default false;
+alter table objects add column if not exists archived_date date;
+
+-- Koliko dana unaprijed upozoravamo na istek dokumenata radnika (podesivo)
+alter table settings add column if not exists expiry_warn_days numeric default 30;
+
+-- ============================================================
+-- PODSJETNICI: slobodni tekstualni podsjetnici s datumom — samo admin
+-- ============================================================
+create table if not exists reminders (
+  id uuid primary key default gen_random_uuid(),
+  text text not null,
+  due_date date,
+  done boolean default false,
+  created_by uuid references profiles,
+  created_at timestamptz default now(),
+  deleted_at timestamptz
+);
+alter table reminders enable row level security;
+drop policy if exists "rem_admin_all" on reminders;
+create policy "rem_admin_all" on reminders for all to authenticated
+  using (is_admin()) with check (is_admin());

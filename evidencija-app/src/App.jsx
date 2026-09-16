@@ -362,9 +362,9 @@ async function fetchAll(isAdmin) {
   const err = [workers, objects, logs, payments, assignments, rateChanges, profiles, payouts].find((r) => r.error);
   if (err) throw err.error;
 
-  let billing = [], audit = [], trash = [], members = [], invoicePayments = [], settings = {}, objectInvoices = [], payrollNotes = [], positionBilling = [];
+  let billing = [], audit = [], trash = [], members = [], invoicePayments = [], settings = {}, objectInvoices = [], payrollNotes = [], positionBilling = [], reminders = [];
   if (isAdmin) {
-    const [b, a, tw, tl, tp, om, ip, st, oi, pn, pb] = await Promise.all([
+    const [b, a, tw, tl, tp, om, ip, st, oi, pn, pb, rm] = await Promise.all([
       supabase.from("object_billing").select("*"),
       supabase.from("audit_log").select("*").order("at", { ascending: false }).limit(80),
       supabase.from("workers").select("*").not("deleted_at", "is", null),
@@ -376,10 +376,11 @@ async function fetchAll(isAdmin) {
       live(supabase.from("object_invoices").select("*")).order("issue_date", { ascending: false }),
       live(supabase.from("payroll_notes").select("*")),
       supabase.from("position_billing").select("*"),
+      live(supabase.from("reminders").select("*")),
     ]);
     billing = b.data || []; audit = a.data || []; members = om.data || [];
     invoicePayments = ip.data || []; settings = st.data || {}; objectInvoices = oi.data || []; payrollNotes = pn.data || [];
-    positionBilling = pb.data || [];
+    positionBilling = pb.data || []; reminders = rm.data || [];
     trash = [
       ...(tw.data || []).map((r) => ({ table: "workers", row: r, label: `Radnik: ${r.name}` })),
       ...(tl.data || []).map((r) => ({ table: "work_logs", row: r, label: `Sati: ${fmtH(r.hours)} (${fmtDate(r.work_date)})` })),
@@ -395,7 +396,10 @@ async function fetchAll(isAdmin) {
       permitExpiry: w.permit_expiry || "", contractExpiry: w.contract_expiry || "", position: w.position || "",
       rateCurrency: w.rate_currency === "CZK" ? "CZK" : "EUR",
     })),
-    objects: (objects.data || []).map((o) => ({ id: o.id, name: o.name, billRate: billMap[o.id]?.rate || 0, billCur: billMap[o.id]?.cur || countryCur(o.country || "HR"), country: o.country || "HR" })),
+    objects: (objects.data || []).map((o) => ({
+      id: o.id, name: o.name, billRate: billMap[o.id]?.rate || 0, billCur: billMap[o.id]?.cur || countryCur(o.country || "HR"), country: o.country || "HR",
+      archived: !!o.archived, archivedDate: o.archived_date || "",
+    })),
     logs: (logs.data || []).map((l) => ({
       id: l.id, workerId: l.worker_id, objectId: l.object_id || "", date: l.work_date,
       from: l.from_t || "", to: l.to_t || "", hours: Number(l.hours), monthly: !!l.monthly, note: l.note || "",
@@ -423,6 +427,7 @@ async function fetchAll(isAdmin) {
       objectId: pb.object_id, position: pb.position || "", mode: pb.mode === "markup" ? "markup" : "fixed",
       rate: Number(pb.rate) || 0, markup: Number(pb.markup) || 0, currency: pb.currency === "CZK" ? "CZK" : "EUR",
     })),
+    reminders: reminders.map((r) => ({ id: r.id, text: r.text, dueDate: r.due_date || "", done: !!r.done })),
     settings: settings || {},
     profiles: profiles.data || [],
     objectMembers: members,
@@ -511,7 +516,7 @@ export default function App() {
     const key = "evidencija_notif_" + todayISO();
     try { if (localStorage.getItem(key)) return; } catch { return; }
     const parts = [];
-    const warns = expiryWarnings(data.workers);
+    const warns = expiryWarnings(data.workers, data.settings.expiry_warn_days);
     if (warns.length) {
       const expired = warns.filter((w) => w.past).length;
       const soon = warns.length - expired;
@@ -523,6 +528,8 @@ export default function App() {
       const withHours = new Set(data.logs.filter((l) => monthKey(l.date) === prevMo).map((l) => l.workerId));
       const unpaid = [...withHours].filter((wid) => !paidFor(data, wid, prevMo)).length;
       if (unpaid > 0) parts.push(`${unpaid} radnika još nije isplaćeno za ${MONTHS[Number(prevMo.slice(5, 7)) - 1]}`);
+      const dueReminders = (data.reminders || []).filter((r) => !r.done && r.dueDate && r.dueDate <= todayISO());
+      if (dueReminders.length) parts.push(`${dueReminders.length} podsjetnik(a) dospjelo`);
     }
     if (!parts.length) return;
     try {
@@ -579,6 +586,9 @@ export default function App() {
     archiveWorker: (w, on) => act(() => upd("workers", w.id, {
       archived: on, archived_date: on ? todayISO() : w.archivedDate || null, object_id: on ? null : (w.objectId || null),
     }), on ? `Označio da je ${w.name} završio s radom` : `Vratio ${w.name} u aktivne`),
+    archiveWorkersBulk: (workerIds) => act(async () => {
+      for (const wid of workerIds) await upd("workers", wid, { archived: true, archived_date: todayISO(), object_id: null });
+    }, `Grupno označio ${workerIds.length} radnika kao završene`),
     transfer: (w, objectId, from, targetName) => act(async () => {
       await upd("workers", w.id, { object_id: objectId || null });
       await ins("assignments", { worker_id: w.id, object_id: objectId || null, from_date: from, created_by: session.user.id });
@@ -603,6 +613,8 @@ export default function App() {
     setObjectCountry: (o, country) => act(() => upd("objects", o.id, { country }),
       `Premjestio objekt ${o.name} u: ${COUNTRY_NAME[country] || country}`),
     delObject: (o) => act(() => softDel("objects", o.id), `Obrisao objekt: ${o.name}`),
+    archiveObject: (o, on) => act(() => upd("objects", o.id, { archived: on, archived_date: on ? todayISO() : null }),
+      on ? `Zatvorio objekt: ${o.name}` : `Ponovno otvorio objekt: ${o.name}`),
     setBillRate: (o, rate, cur) => act(() => supabase.from("object_billing").upsert({ object_id: o.id, bill_rate: rate, bill_currency: cur || "EUR" })
       .then(({ error }) => { if (error) throw error; }), `Promijenio naplatu objekta ${o.name} na ${money(rate, cur)}/h`),
     setPositionRate: (o, position, patch) => act(() => supabase.from("position_billing")
@@ -730,6 +742,11 @@ export default function App() {
       ).then(({ error }) => { if (error) throw error; }),
       on ? `Dodijelio objekt ${object.name} zaposleniku ${p.name}` : `Maknuo objekt ${object.name} zaposleniku ${p.name}`),
     logDoc: (text) => supabase.from("audit_log").insert({ user_id: session.user.id, user_name: profile?.name || "", action: text }),
+    addReminder: (text, dueDate) => act(() => ins("reminders", { text, due_date: dueDate || null, created_by: session.user.id }),
+      `Dodao podsjetnik: ${text}${dueDate ? " (" + fmtDate(dueDate) + ")" : ""}`),
+    toggleReminder: (r, done) => act(() => upd("reminders", r.id, { done }),
+      done ? `Označio podsjetnik kao gotov: ${r.text}` : `Vratio podsjetnik: ${r.text}`),
+    delReminder: (r) => act(() => softDel("reminders", r.id), `Obrisao podsjetnik: ${r.text}`),
   };
 
   if (session === undefined) return <Center>Učitavam…</Center>;
@@ -1013,7 +1030,7 @@ function ObjectSelect({ data, api, value, onChange }) {
     <select value={value} onChange={(e) => (e.target.value === "__new__" ? setAdding(true) : onChange(e.target.value))}>
       <option value="">— bez objekta —</option>
       {["HR", "CZ"].map((c) => {
-        const objs = sortedObjects(data.objects.filter((o) => (o.country || "HR") === c));
+        const objs = sortedObjects(data.objects.filter((o) => (o.country || "HR") === c && (!o.archived || o.id === value)));
         return objs.length ? (
           <optgroup key={c} label={`${FLAG[c]} ${COUNTRY_NAME[c]}`}>
             {objs.map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}
@@ -1069,12 +1086,13 @@ function exportAllData(data) {
 /*  ADMIN PANELI                                                       */
 /* ================================================================== */
 function AdminPanels({ data, api, panel, setPanel }) {
-  const [firm, setFirm] = useState({ company_name: "", address: "", oib: "", iban: "", czk_rate: "25", weekend_pct: "0", holiday_pct: "0" });
+  const [firm, setFirm] = useState({ company_name: "", address: "", oib: "", iban: "", czk_rate: "25", weekend_pct: "0", holiday_pct: "0", expiry_warn_days: "30" });
   const [auditQ, setAuditQ] = useState("");
   useEffect(() => setFirm({
     company_name: data.settings.company_name || "", address: data.settings.address || "",
     oib: data.settings.oib || "", iban: data.settings.iban || "", czk_rate: String(data.settings.czk_rate || 25),
     weekend_pct: String(data.settings.weekend_pct || 0), holiday_pct: String(data.settings.holiday_pct || 0),
+    expiry_warn_days: String(data.settings.expiry_warn_days || 30),
   }), [data.settings]);
 
   return (
@@ -1175,7 +1193,10 @@ function AdminPanels({ data, api, panel, setPanel }) {
           <div style={{ fontSize: 12, color: S.sub, margin: "-6px 0 10px" }}>
             Automatski se dodaje na zaradu radnika za sate upisane vikendom/na praznik (0 = bez dodatka). Ne utječe na naplatu objekta.
           </div>
-          <Btn small onClick={() => api.saveSettings({ ...firm, czk_rate: parseNum(firm.czk_rate) || 25, weekend_pct: parseNum(firm.weekend_pct) || 0, holiday_pct: parseNum(firm.holiday_pct) || 0 })}>Spremi</Btn>
+          <Field label="Upozori na istek dokumenata koliko dana unaprijed">
+            <input inputMode="decimal" value={firm.expiry_warn_days} onChange={(e) => setFirm({ ...firm, expiry_warn_days: e.target.value })} placeholder="npr. 30" />
+          </Field>
+          <Btn small onClick={() => api.saveSettings({ ...firm, czk_rate: parseNum(firm.czk_rate) || 25, weekend_pct: parseNum(firm.weekend_pct) || 0, holiday_pct: parseNum(firm.holiday_pct) || 0, expiry_warn_days: parseNum(firm.expiry_warn_days) || 30 })}>Spremi</Btn>
           <div style={{ borderTop: `1px dashed ${S.line}`, marginTop: 14, paddingTop: 12 }}>
             <div style={{ fontWeight: 700, marginBottom: 6 }}>⬇ Backup</div>
             <div style={{ fontSize: 12.5, color: S.sub, marginBottom: 8 }}>Sve podatke (radnici, objekti, svi upisani sati, sve isplate, isplaćeni mjeseci) u jednu Excel datoteku, neovisno o odabranom mjesecu.</div>
@@ -1190,8 +1211,8 @@ function AdminPanels({ data, api, panel, setPanel }) {
 /* ================================================================== */
 /*  RADNICI + OBJEKTI + upozorenja na dokumente                        */
 /* ================================================================== */
-function expiryWarnings(workers) {
-  const soon = addDaysISO(todayISO(), 30);
+function expiryWarnings(workers, days) {
+  const soon = addDaysISO(todayISO(), days || 30);
   const out = [];
   workers.filter((w) => !w.archived).forEach((w) => {
     [["permitExpiry", "radna dozvola"], ["contractExpiry", "ugovor"]].forEach(([k, label]) => {
@@ -1200,6 +1221,19 @@ function expiryWarnings(workers) {
     });
   });
   return out.sort((a, b) => a.date.localeCompare(b.date));
+}
+
+const RATE_STALE_DAYS = 365;
+// samo za radnike koji IMAJU zabilježenu promjenu satnice — ako je nikad nisu imali, ne znamo otkad stoji ista pa ne upozoravamo
+function rateStaleWarnings(workers, rateChanges) {
+  const cutoff = addDaysISO(todayISO(), -RATE_STALE_DAYS);
+  const out = [];
+  workers.filter((w) => !w.archived).forEach((w) => {
+    const changes = (rateChanges || []).filter((r) => r.workerId === w.id).sort((a, b) => b.from.localeCompare(a.from));
+    if (!changes.length) return;
+    if (changes[0].from <= cutoff) out.push({ w, since: changes[0].from });
+  });
+  return out.sort((a, b) => a.since.localeCompare(b.since));
 }
 
 function WorkersTab({ data, api, onOpen, onOpenObject }) {
@@ -1212,10 +1246,16 @@ function WorkersTab({ data, api, onOpen, onOpenObject }) {
   const [importReview, setImportReview] = useState(null);
   const [importBusy, setImportBusy] = useState(false);
   const importFileRef = useRef(null);
+  const [showBulkArchive, setShowBulkArchive] = useState(false);
+  const [reminderText, setReminderText] = useState("");
+  const [reminderDate, setReminderDate] = useState("");
+  const [archiveSel, setArchiveSel] = useState(() => new Set());
+  const [archiveBusy, setArchiveBusy] = useState(false);
 
   const objName = (id) => data.objects.find((o) => o.id === id)?.name || "";
   const mk = curMonth();
-  const warns = expiryWarnings(data.workers);
+  const warns = expiryWarnings(data.workers, data.settings?.expiry_warn_days);
+  const staleRates = rateStaleWarnings(data.workers, data.rateChanges);
   const [q, setQ] = useState("");
   const nameDupe = form.name.trim() && data.workers.find((w) => w.name.trim().toLowerCase() === form.name.trim().toLowerCase());
 
@@ -1266,6 +1306,17 @@ function WorkersTab({ data, api, onOpen, onOpenObject }) {
     if (await api.addWorkersBulk(toImport)) setImportReview(null);
     setImportBusy(false);
   };
+  const submitBulkArchive = async () => {
+    if (!archiveSel.size) return;
+    setArchiveBusy(true);
+    if (await api.archiveWorkersBulk([...archiveSel])) setArchiveSel(new Set());
+    setArchiveBusy(false);
+  };
+  const addReminderClick = async () => {
+    const t = reminderText.trim();
+    if (!t) return;
+    if (await api.addReminder(t, reminderDate)) { setReminderText(""); setReminderDate(""); }
+  };
   const addObject = async () => {
     const n = newObj.trim(); if (!n) return;
     if (data.objects.find((o) => o.name.toLowerCase() === n.toLowerCase())) { setNewObj(""); return; }
@@ -1278,7 +1329,7 @@ function WorkersTab({ data, api, onOpen, onOpenObject }) {
 
   const actives = sortedWorkers(data.workers.filter((w) => !w.archived));
   const formerWorkers = sortedWorkers(data.workers.filter((w) => w.archived));
-  const objectsSorted = sortedObjects(data.objects);
+  const objectsSorted = sortedObjects(data.objects.filter((o) => !o.archived));
 
   return (
     <>
@@ -1335,6 +1386,32 @@ function WorkersTab({ data, api, onOpen, onOpenObject }) {
         );
       })()}
 
+      {api.admin && (() => {
+        const list = [...(data.reminders || [])].filter((r) => !r.done).sort((a, b) => (a.dueDate || "9999").localeCompare(b.dueDate || "9999"));
+        return (
+          <Card style={{ background: S.blueSoft, borderColor: "#CBDCEA" }}>
+            <div style={{ fontWeight: 700, color: S.blue, marginBottom: 8 }}>📌 Podsjetnici</div>
+            {list.length === 0 ? (
+              <div style={{ fontSize: 12.5, color: S.sub, marginBottom: 8 }}>Nema podsjetnika.</div>
+            ) : list.map((r) => (
+              <div key={r.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 0", borderBottom: "1px solid #CBDCEA" }}>
+                <div style={{ flex: 1, fontSize: 13.5 }}>
+                  {r.text}{r.dueDate ? <span className="num" style={{ color: r.dueDate < todayISO() ? S.red : S.sub, marginLeft: 6 }}>· {fmtDate(r.dueDate)}</span> : null}
+                </div>
+                <button onClick={() => api.toggleReminder(r, true)} title="Gotovo" style={{ background: "none", border: "none", color: S.green, fontSize: 17, cursor: "pointer", padding: 4 }}>✓</button>
+                <button onClick={() => api.delReminder(r)} title="Obriši" style={{ background: "none", border: "none", color: S.red, fontSize: 15, cursor: "pointer", padding: 4 }}>✕</button>
+              </div>
+            ))}
+            <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+              <input value={reminderText} onChange={(e) => setReminderText(e.target.value)} onKeyDown={(e) => e.key === "Enter" && addReminderClick()}
+                placeholder="npr. produži ugovor s hotelom X" style={{ flex: 2 }} />
+              <input type="date" value={reminderDate} onChange={(e) => setReminderDate(e.target.value)} style={{ flex: 1 }} />
+              <Btn small onClick={addReminderClick}>+</Btn>
+            </div>
+          </Card>
+        );
+      })()}
+
       {warns.length > 0 && (
         <Card style={{ background: S.redSoft, borderColor: "#EED0C8" }}>
           <div style={{ fontWeight: 700, color: S.red, marginBottom: 6 }}>⚠️ Istek dokumenata</div>
@@ -1346,9 +1423,20 @@ function WorkersTab({ data, api, onOpen, onOpenObject }) {
         </Card>
       )}
 
+      {api.admin && staleRates.length > 0 && (
+        <Card style={{ background: S.amberSoft, borderColor: "#EBD9B4" }}>
+          <div style={{ fontWeight: 700, color: S.amber, marginBottom: 6 }}>💰 Bez promjene satnice godinu+ dana</div>
+          {staleRates.map((x, i) => (
+            <div key={i} onClick={() => onOpen(x.w.id)} style={{ fontSize: 13.5, padding: "4px 0", cursor: "pointer" }}>
+              <b>{x.w.name}</b> — ista satnica od <span className="num">{fmtDate(x.since)}</span>
+            </div>
+          ))}
+        </Card>
+      )}
+
       <Card style={{ background: S.blueSoft, borderColor: "#CBDCEA" }}>
         <div onClick={() => setShowObjects(!showObjects)} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", cursor: "pointer" }}>
-          <div style={{ fontWeight: 700, color: S.blue }}>🏨 Objekti ({data.objects.length})</div>
+          <div style={{ fontWeight: 700, color: S.blue }}>🏨 Objekti ({objectsSorted.length})</div>
           <span style={{ color: S.blue, fontWeight: 700 }}>{showObjects ? "▲" : "▼"}</span>
         </div>
         {showObjects && (
@@ -1394,6 +1482,34 @@ function WorkersTab({ data, api, onOpen, onOpenObject }) {
         <Btn small kind="ghost" onClick={() => importFileRef.current?.click()} style={{ flex: 1 }}>📥 Uvezi iz Excela</Btn>
         <input ref={importFileRef} type="file" accept=".xlsx,.xls,.csv" onChange={handleImportFile} style={{ display: "none" }} />
       </div>
+
+      {actives.length > 0 && (
+        <Card style={{ background: S.amberSoft, borderColor: "#EBD9B4" }}>
+          <div onClick={() => setShowBulkArchive(!showBulkArchive)} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", cursor: "pointer" }}>
+            <div style={{ fontWeight: 700, color: S.amber }}>📁 Grupno arhiviranje (kraj sezone){archiveSel.size > 0 ? ` (${archiveSel.size})` : ""}</div>
+            <span style={{ color: S.amber, fontWeight: 700 }}>{showBulkArchive ? "▲" : "▼"}</span>
+          </div>
+          {showBulkArchive && (
+            <div style={{ marginTop: 10 }}>
+              <div style={{ fontSize: 12, color: S.sub, marginBottom: 8 }}>Označi radnike koji su završili s radom i klikni jednom "Označi odabrane kao završene".</div>
+              <div style={{ maxHeight: 260, overflowY: "auto", marginBottom: 10 }}>
+                {actives.map((w) => (
+                  <label key={w.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 0", borderBottom: "1px solid #EBD9B4", fontSize: 13.5, cursor: "pointer" }}>
+                    <input type="checkbox" checked={archiveSel.has(w.id)}
+                      onChange={(e) => setArchiveSel((p) => { const n = new Set(p); e.target.checked ? n.add(w.id) : n.delete(w.id); return n; })}
+                      style={{ width: 17, height: 17 }} />
+                    <span style={{ flex: 1 }}>{w.name}</span>
+                    <span style={{ fontSize: 12, color: S.sub }}>{objName(w.objectId) || "bez objekta"}</span>
+                  </label>
+                ))}
+              </div>
+              <Btn small onClick={submitBulkArchive} disabled={archiveBusy || archiveSel.size === 0} style={{ width: "100%" }}>
+                {archiveBusy ? "Spremam…" : `📁 Označi odabrane kao završene (${archiveSel.size})`}
+              </Btn>
+            </div>
+          )}
+        </Card>
+      )}
 
       {importReview && (
         <Card style={{ background: S.blueSoft, borderColor: "#CBDCEA" }}>
@@ -1522,7 +1638,8 @@ function ObjectsTab({ data, api, onOpenObject }) {
     if (data.objects.find((o) => o.name.toLowerCase() === n.toLowerCase())) { setNewObj(""); return; }
     await api.addObject(n, country); setNewObj("");
   };
-  const list = sortedObjects(data.objects);
+  const list = sortedObjects(data.objects.filter((o) => !o.archived));
+  const closedList = sortedObjects(data.objects.filter((o) => o.archived));
   const countHR = list.filter((o) => (o.country || "HR") === "HR").length;
   const countCZ = list.filter((o) => o.country === "CZ").length;
   const shown = list.filter((o) => (o.country || "HR") === country);
@@ -1577,6 +1694,23 @@ function ObjectsTab({ data, api, onOpenObject }) {
         const filtered = shown.filter((o) => o.name.toLowerCase().includes(q.trim().toLowerCase()));
         return filtered.length === 0 ? <Empty text="Nema rezultata." /> : filtered.map(renderObject);
       })()}
+
+      {closedList.length > 0 && (
+        <>
+          <div style={{ fontSize: 15, fontWeight: 700, color: S.sub, margin: "18px 0 8px" }}>📁 Zatvoreni objekti ({closedList.length})</div>
+          {closedList.map((o) => (
+            <Card key={o.id} style={{ opacity: 0.8 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <div onClick={() => onOpenObject(o.id)} style={{ cursor: "pointer" }}>
+                  <div style={{ fontWeight: 700, fontSize: 15 }}>{FLAG[o.country || "HR"]} {o.name}</div>
+                  <div style={{ fontSize: 12.5, color: S.sub, marginTop: 2 }}>{o.archivedDate ? "zatvoren " + fmtDate(o.archivedDate) : ""}</div>
+                </div>
+                {api.admin && <Btn small kind="ghost" onClick={() => api.archiveObject(o, false)}>↩ Otvori</Btn>}
+              </div>
+            </Card>
+          ))}
+        </>
+      )}
     </>
   );
 }
@@ -2098,8 +2232,8 @@ function ObjectDetail({ object, data, api, onBack, onOpenWorker }) {
     <>
       <button onClick={onBack} style={{ background: "none", border: "none", color: S.green, fontWeight: 700, fontSize: 14.5, padding: "2px 0 12px", cursor: "pointer" }}>← Natrag</button>
       <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10, flexWrap: "wrap" }}>
-        <div style={{ fontSize: 19, fontWeight: 800 }}>🏨 {object.name}</div>
-        <div style={{ display: "flex", gap: 6, marginLeft: "auto" }}>
+        <div style={{ fontSize: 19, fontWeight: 800 }}>🏨 {object.name}{object.archived && <Tag color={S.sub} bg="#EEF0ED"> 📁 zatvoren</Tag>}</div>
+        <div style={{ display: "flex", gap: 6, marginLeft: "auto", alignItems: "center" }}>
           {["HR", "CZ"].map((c) => (
             <button key={c} onClick={() => (object.country || "HR") !== c && api.setObjectCountry(object, c)} style={{
               padding: "5px 11px", borderRadius: 999, fontWeight: 700, fontSize: 12.5, cursor: "pointer",
@@ -2108,6 +2242,11 @@ function ObjectDetail({ object, data, api, onBack, onOpenWorker }) {
               {FLAG[c]} {c}
             </button>
           ))}
+          {api.admin && (
+            <Btn small kind="ghost" onClick={() => api.archiveObject(object, !object.archived)} style={{ color: object.archived ? S.green : S.amber, fontWeight: 700 }}>
+              {object.archived ? "↩ Otvori objekt" : "📁 Zatvori objekt"}
+            </Btn>
+          )}
         </div>
       </div>
 
@@ -3110,14 +3249,13 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
   }
 
   /* PDF obračun za radnika */
-  const printPayslip = (r) => {
-    const st = api.settings;
+  const payslipBody = (r, st) => {
     const gc = wCur(r.w);
     const logsHtml = r.logs.sort((a, b) => a.date.localeCompare(b.date)).map((l) =>
       `<tr><td>${fmtDate(l.date)}</td><td>${logSpan(l)}</td><td>${objName(l.objectId) || ""}</td><td class="right">${fmtH(l.hours)}</td><td class="right">${money(round2(l.hours * rateFor(data, r.w, l.date)), gc)}</td></tr>`).join("");
     const paysHtml = r.pays.map((p) =>
       `<tr><td>${fmtDate(p.date)}</td><td colspan="2">${TYPE_LABEL[p.type]}${p.note ? " — " + p.note : ""}</td><td></td><td class="right">${p.type === "bonus" ? "+" : p.deduct ? "−" : ""}${money(p.amount, p.currency)}</td></tr>`).join("");
-    printDoc(`Obračun ${r.w.name}`, `
+    return `
       ${firmHead(st)}
       <h1>Obračun plaće — ${r.w.name}</h1><h2>${periodLabel}</h2>
       <table><tr><th>Datum</th><th>Vrijeme</th><th>Objekt</th><th class="right">Sati</th><th class="right">Iznos</th></tr>
@@ -3127,7 +3265,21 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
       <div class="muted" style="margin-top:24px;display:flex;gap:28px;align-items:flex-end">
         <div>Potpis radnika:${signatures[r.w.id] ? `<br><img src="${signatures[r.w.id]}" style="height:60px;display:block;margin-top:2px" />` : " ______________________"}</div>
         <div>Potpis poslodavca: ______________________</div>
-      </div>`);
+      </div>`;
+  };
+  const printPayslip = (r) => printDoc(`Obračun ${r.w.name}`, payslipBody(r, api.settings));
+  // dijeli tekstualni sažetak (ne i sam PDF — pravo dijeljenje PDF datoteke traži dodatnu biblioteku)
+  const shareSummary = async (r) => {
+    const iznos = [r.net !== 0 || r.czk.net === 0 ? eur(r.net) : "", r.czk.net !== 0 ? czk(r.czk.net) : ""].filter(Boolean).join(" i ");
+    const text = `Obračun — ${r.w.name}\n${periodLabel}\nSati: ${fmtH(r.hours)}\nZa isplatu: ${iznos}`;
+    if (navigator.share) { try { await navigator.share({ title: `Obračun ${r.w.name}`, text }); } catch {} }
+    else if (navigator.clipboard) { try { await navigator.clipboard.writeText(text); alert("Dijeljenje nije podržano u ovom pregledniku — sažetak je kopiran u međuspremnik."); } catch { alert(text); } }
+    else alert(text);
+  };
+  const printAllPayslips = () => {
+    const st = api.settings;
+    const body = rows.map((r) => `<div style="page-break-after:always">${payslipBody(r, st)}</div>`).join("");
+    printDoc(`Svi obračuni ${periodLabel}`, body);
   };
 
   /* PDF specifikacija za hotel */
@@ -3431,9 +3583,10 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
 
       {rows.length === 0 ? <Empty text={objFilters.size > 0 ? `Za ${objFilterName} u ovom razdoblju nema upisanih sati.` : "Za ovo razdoblje nema upisanih sati ni isplata."} /> : (
         <>
-          <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+          <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
             <Btn kind="excel" onClick={exportExcel} style={{ flex: 1 }}>📊 {api.t("excelBtn")}{objFilterName ? " — " + objFilterName : ""}</Btn>
             <Btn kind="ghost" onClick={printEnvelopes} style={{ flex: 1, fontWeight: 700 }}>🖨 {api.t("envelopesBtn")}{objFilterName ? " — " + objFilterName : ""}</Btn>
+            <Btn kind="ghost" onClick={printAllPayslips} style={{ flex: 1, fontWeight: 700 }}>🖨 Svi PDF obračuni{objFilterName ? " — " + objFilterName : ""}</Btn>
           </div>
 
           {(totals.grossKc !== 0 || totals.netKc !== 0 || totals.firmKc !== 0) && (
@@ -3719,6 +3872,7 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
                     })()}
                     <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
                       <Btn small kind="ghost" onClick={() => printPayslip(r)}>📄 PDF obračun</Btn>
+                      <Btn small kind="ghost" onClick={() => shareSummary(r)}>📤 Podijeli sažetak</Btn>
                       <Btn small kind="ghost" onClick={() => setSigTarget({ id: r.w.id, name: r.w.name })} style={signatures[r.w.id] ? { color: S.green, borderColor: "#C5DED2" } : undefined}>
                         {signatures[r.w.id] ? "✓ Potpisano (promijeni)" : "✍️ Potpis"}
                       </Btn>
