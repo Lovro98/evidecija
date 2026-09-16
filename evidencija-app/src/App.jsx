@@ -528,6 +528,34 @@ export default function App() {
       })));
       if (error) throw error;
     }, `Upisao mjesečne sate za ${entries.length} radnika (${mo})`),
+    // postavlja (ne dodaje) mjesečni zbroj sati po radniku za objekt — jedan, svi ili odabrani odjednom.
+    // ako radnik već ima mjesečni unos za taj mjesec, mijenja ga; ako je uneseno 0, briše ga.
+    setMonthlyHoursBulk: (entries, objectId, mo, objName) => act(async () => {
+      for (const e of entries) {
+        guardPaid(e.workerId, mo);
+        const existing = data.logs.filter((l) => l.workerId === e.workerId && l.objectId === objectId && l.monthly && monthKey(l.date) === mo);
+        if (e.hours > 0) {
+          if (existing.length) {
+            const { error } = await supabase.from("work_logs").update({ hours: e.hours }).eq("id", existing[0].id);
+            if (error) throw error;
+            for (const dup of existing.slice(1)) {
+              const { error: derr } = await supabase.from("work_logs").update({ deleted_at: new Date().toISOString() }).eq("id", dup.id);
+              if (derr) throw derr;
+            }
+          } else {
+            await ins("work_logs", {
+              worker_id: e.workerId, object_id: objectId, work_date: mo + "-01",
+              from_t: "", to_t: "", hours: e.hours, monthly: true, created_by: session.user.id,
+            });
+          }
+        } else if (existing.length) {
+          for (const ex of existing) {
+            const { error } = await supabase.from("work_logs").update({ deleted_at: new Date().toISOString() }).eq("id", ex.id);
+            if (error) throw error;
+          }
+        }
+      }
+    }, `Promijenio mjesečne sate za ${entries.length} radnika (${objName}, ${mo})`),
     delLog: (l, wName) => act(() => { guardPaid(l.workerId, l.date); return softDel("work_logs", l.id); },
       `Obrisao sate: ${wName} ${fmtH(l.hours)} (${fmtDate(l.date)})`),
     updLog: (l, patch, wName) => act(() => {
@@ -1440,6 +1468,10 @@ function ObjectDetail({ object, data, api, onBack, onOpenWorker }) {
   const [month, setMonth] = useState(curMonth());
   const [inputs, setInputs] = useState({});
   const [posEdit, setPosEdit] = useState({});
+  const [monthVals, setMonthVals] = useState({}); // workerId -> string, sati za odabrani mjesec
+  const [monthSel, setMonthSel] = useState(() => new Set()); // odabrani radnici za grupnu izmjenu
+  const [monthBulkVal, setMonthBulkVal] = useState("");
+  const [monthSaving, setMonthSaving] = useState(false);
   const [editLog, setEditLog] = useState(null);
   const [rateEdit, setRateEdit] = useState(String(object.billRate || ""));
   const [billCur, setBillCur] = useState(object.billCur || "EUR");
@@ -1554,11 +1586,28 @@ function ObjectDetail({ object, data, api, onBack, onOpenWorker }) {
     api.addLog({ workerId: w.id, objectId: object.id, date, from, to, hours: round2(hours) }, w.name, object.name);
     setIn(w.id, { from: "", to: "", hours: "" });
   };
-  const commitMonth = (w) => {
-    const hours = parseNum((inputs[w.id] || {}).hours);
-    if (!hours || hours <= 0) return;
-    api.addLog({ workerId: w.id, objectId: object.id, date: month + "-01", from: "", to: "", hours: round2(hours), monthly: true }, w.name, object.name);
-    setIn(w.id, { from: "", to: "", hours: "" });
+  // pri promjeni mjeseca/objekta učitaj postojeće mjesečne sate u polja za uređivanje
+  useEffect(() => {
+    const vals = {};
+    data.workers.filter((w) => !w.archived).forEach((w) => {
+      const existing = data.logs.filter((l) => l.workerId === w.id && l.objectId === object.id && l.monthly && monthKey(l.date) === month);
+      const sum = round2(existing.reduce((s, l) => s + l.hours, 0));
+      vals[w.id] = sum > 0 ? String(sum) : "";
+    });
+    setMonthVals(vals);
+    setMonthSel(new Set());
+    setMonthBulkVal("");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [month, object.id]);
+  const applyMonthBulkVal = () => {
+    if (!monthBulkVal || monthSel.size === 0) return;
+    setMonthVals((p) => { const n = { ...p }; monthSel.forEach((id) => { n[id] = monthBulkVal; }); return n; });
+  };
+  const saveMonthBulk = async () => {
+    const entries = data.workers.filter((w) => !w.archived).map((w) => ({ workerId: w.id, hours: round2(parseNum(monthVals[w.id]) || 0) }));
+    setMonthSaving(true);
+    await api.setMonthlyHoursBulk(entries, object.id, month, object.name);
+    setMonthSaving(false);
   };
   const commitPosition = (w) => {
     const val = (posEdit[w.id] !== undefined ? posEdit[w.id] : (w.position || "")).trim();
@@ -1728,7 +1777,7 @@ function ObjectDetail({ object, data, api, onBack, onOpenWorker }) {
         const tot = round2(rows2.reduce((s, r) => s + r.h, 0));
         return (
           <Card>
-            <div style={{ fontWeight: 700, marginBottom: 6 }}>👷 Radnici na objektu ovaj mjesec</div>
+            <div style={{ fontWeight: 700, marginBottom: 6 }}>👷 Radnici na objektu — {mode === "day" ? "ovaj mjesec" : `${MONTHS[mm - 1]} ${my}.`}</div>
             {rows2.map((r) => (
               <div key={r.w.id} className="num" style={{ display: "flex", justifyContent: "space-between", padding: "5px 0", borderBottom: `1px solid ${S.line}`, fontSize: 13.5 }}>
                 <span onClick={() => onOpenWorker && onOpenWorker(r.w.id)} style={{ fontWeight: 600, cursor: onOpenWorker ? "pointer" : "default", color: onOpenWorker ? S.blue : "inherit" }}>
@@ -1843,13 +1892,32 @@ function ObjectDetail({ object, data, api, onBack, onOpenWorker }) {
           </div>
         </Card>
       ) : (
-        <Card style={{ background: S.blueSoft, borderColor: "#CBDCEA", padding: "10px 14px" }}>
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-            <Btn small kind="ghost" onClick={prevM}>←</Btn>
-            <div style={{ fontWeight: 800 }}>{MONTHS[mm - 1]} {my}.</div>
-            <Btn small kind="ghost" onClick={nextM}>→</Btn>
-          </div>
-        </Card>
+        <>
+          <Card style={{ background: S.blueSoft, borderColor: "#CBDCEA", padding: "10px 14px" }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+              <Btn small kind="ghost" onClick={prevM}>←</Btn>
+              <div style={{ fontWeight: 800 }}>{MONTHS[mm - 1]} {my}.</div>
+              <Btn small kind="ghost" onClick={nextM}>→</Btn>
+            </div>
+          </Card>
+          <Card style={{ padding: "12px 14px" }}>
+            <label style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10, cursor: "pointer" }}>
+              <input type="checkbox" checked={workers.length > 0 && monthSel.size === workers.length}
+                onChange={(e) => setMonthSel(e.target.checked ? new Set(workers.map((w) => w.id)) : new Set())}
+                style={{ width: 18, height: 18 }} />
+              <span style={{ fontSize: 13.5, fontWeight: 700 }}>Odaberi sve ({monthSel.size}/{workers.length})</span>
+            </label>
+            <div style={{ display: "flex", gap: 8 }}>
+              <input inputMode="decimal" placeholder="sati" value={monthBulkVal} onChange={(e) => setMonthBulkVal(e.target.value)} style={{ flex: 1 }} />
+              <Btn small kind="ghost" onClick={applyMonthBulkVal} disabled={monthSel.size === 0 || !monthBulkVal}>
+                Postavi odabranima {monthSel.size > 0 ? `(${monthSel.size})` : ""}
+              </Btn>
+            </div>
+            <div style={{ fontSize: 12, color: S.sub, marginTop: 6 }}>
+              Označi radnike kvačicom i upiši sate pa "Postavi odabranima" — postavlja se svima odjednom (za jednoga, za sve ili samo za odabrane). Svaki broj možeš i ručno urediti u retku ispod. Za kraj klikni "Spremi sate za mjesec".
+            </div>
+          </Card>
+        </>
       )}
 
       {workers.map((w) => {
@@ -1862,7 +1930,7 @@ function ObjectDetail({ object, data, api, onBack, onOpenWorker }) {
                 {onOpenWorker && <span style={{ color: S.blue, fontWeight: 700 }}> ›</span>}
                 {w.objectId === object.id && <span style={{ marginLeft: 6, fontSize: 11, color: S.blue, fontWeight: 700 }}>★ ovaj objekt</span>}
               </div>
-              <div className="num" style={{ fontSize: 12.5, color: S.sub }}>{fmtH(monthHours(w.id))} ovdje ovaj mj.</div>
+              <div className="num" style={{ fontSize: 12.5, color: S.sub }}>{fmtH(monthHours(w.id))} {mode === "day" ? "ovdje ovaj mj." : "ovdje taj mjesec"}</div>
             </div>
             <input
               value={posEdit[w.id] !== undefined ? posEdit[w.id] : (w.position || "")}
@@ -1882,13 +1950,22 @@ function ObjectDetail({ object, data, api, onBack, onOpenWorker }) {
               </div>
             ) : (
               <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                <input inputMode="decimal" placeholder="ukupno sati za mjesec" value={v.hours} onChange={(e) => setIn(w.id, { hours: e.target.value })} />
-                <Btn small onClick={() => commitMonth(w)}>Upiši</Btn>
+                <input type="checkbox" checked={monthSel.has(w.id)}
+                  onChange={(e) => setMonthSel((p) => { const n = new Set(p); e.target.checked ? n.add(w.id) : n.delete(w.id); return n; })}
+                  style={{ width: 18, height: 18, flex: "0 0 auto" }} />
+                <input inputMode="decimal" placeholder="ukupno sati za mjesec" value={monthVals[w.id] || ""}
+                  onChange={(e) => setMonthVals((p) => ({ ...p, [w.id]: e.target.value }))} />
               </div>
             )}
           </Card>
         );
       })}
+
+      {mode === "month" && workers.length > 0 && (
+        <Btn onClick={saveMonthBulk} disabled={monthSaving} style={{ width: "100%", marginBottom: 12 }}>
+          {monthSaving ? "Spremam…" : "💾 Spremi sate za mjesec"}
+        </Btn>
+      )}
 
       {entries.length > 0 && (
         <Card>
