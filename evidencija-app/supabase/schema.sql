@@ -405,6 +405,10 @@ create policy "pn_admin_all" on payroll_notes for all to authenticated
 -- Tečaj CZK→EUR, koristi se SAMO za automatski izračun mzdy napomene iznad
 alter table settings add column if not exists czk_rate numeric default 25;
 
+-- Dodatak na satnicu vikendom / praznikom, u % (npr. 25 = +25%). 0 = bez dodatka.
+alter table settings add column if not exists weekend_pct numeric default 0;
+alter table settings add column if not exists holiday_pct numeric default 0;
+
 -- ============================================================
 -- GENERIRANE FAKTURE ZA OBJEKTE (izlazne fakture prema hotelima)
 -- ============================================================

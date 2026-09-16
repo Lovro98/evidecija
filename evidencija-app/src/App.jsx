@@ -198,6 +198,19 @@ function rateFor(data, w, date) {
 const rateNow = (data, w) => rateFor(data, w, todayISO());
 const paidFor = (data, workerId, mo) => (data.payouts || []).find((p) => p.workerId === workerId && p.month === mo);
 
+/* ---------- dodatak na satnicu vikendom / praznikom (postavke firme) ---------- */
+const payMultiplier = (settings, dateISO) => {
+  if (holidayName(dateISO)) return 1 + (Number(settings?.holiday_pct) || 0) / 100;
+  if (isWeekend(dateISO)) return 1 + (Number(settings?.weekend_pct) || 0) / 100;
+  return 1;
+};
+// samo VIŠAK iznad normalne satnice za taj upis (0 ako je radni dan ili nema postavljen dodatak)
+const extraPayForLog = (data, w, l) => {
+  const mult = payMultiplier(data.settings, l.date);
+  if (mult <= 1) return 0;
+  return round2(l.hours * rateFor(data, w, l.date) * (mult - 1));
+};
+
 /* ---------- red za slanje kad nema interneta (trenutno: upis sati) ---------- */
 const OFFLINE_QUEUE_KEY = "evidencija_offline_queue";
 const readOfflineQueue = () => { try { return JSON.parse(localStorage.getItem(OFFLINE_QUEUE_KEY) || "[]"); } catch { return []; } };
@@ -533,6 +546,15 @@ export default function App() {
       if (error) throw error;
       if (f.objectId) await ins("assignments", { worker_id: w.id, object_id: f.objectId, from_date: todayISO(), created_by: session.user.id });
     }, `Dodao radnika: ${f.name}`),
+    addWorkersBulk: (rows) => act(async () => {
+      const payload = rows.map((r) => ({
+        name: r.name, phone: r.phone || "", base_rate: parseNum(r.rate) || 0, rate_currency: r.rateCur || "EUR",
+        object_id: r.objectId || null, position: r.position || "", note: r.note || "",
+        permit_expiry: r.permitExpiry || null, contract_expiry: r.contractExpiry || null, created_by: session.user.id,
+      }));
+      const { error } = await supabase.from("workers").insert(payload);
+      if (error) throw error;
+    }, `Uvezao ${rows.length} radnika iz Excela`),
     updWorker: (id, f, name) => act(() => upd("workers", id, {
       name: f.name, phone: f.phone, base_rate: parseNum(f.rate) || 0, rate_currency: f.rateCur || "EUR", object_id: f.objectId || null, note: f.note,
       permit_expiry: f.permitExpiry || null, contract_expiry: f.contractExpiry || null, position: f.position || "",
@@ -937,14 +959,56 @@ function ObjectSelect({ data, api, value, onChange }) {
   );
 }
 
+function exportAllData(data) {
+  const objName = (id) => data.objects.find((o) => o.id === id)?.name || "";
+  const wName = (id) => data.workers.find((w) => w.id === id)?.name || "";
+  const sheet = (rows, placeholder) => XLSX.utils.json_to_sheet(rows.length ? rows : [{ [placeholder]: "" }]);
+  const wb = XLSX.utils.book_new();
+
+  XLSX.utils.book_append_sheet(wb, sheet(data.workers.map((w) => ({
+    "Ime": w.name, "Telefon": w.phone, "Objekt": objName(w.objectId), "Pozicija": w.position,
+    "Satnica": w.rate, "Valuta": w.rateCurrency, "Arhiviran": w.archived ? "DA" : "",
+    "Istek dozvole": w.permitExpiry ? fmtDate(w.permitExpiry) : "", "Istek ugovora": w.contractExpiry ? fmtDate(w.contractExpiry) : "",
+    "Napomena": w.note,
+  })), "Radnik"), "Radnici");
+
+  XLSX.utils.book_append_sheet(wb, sheet(data.objects.map((o) => ({
+    "Naziv": o.name, "Država": o.country, "Naplata/h": o.billRate, "Valuta naplate": o.billCur,
+  })), "Naziv"), "Objekti");
+
+  XLSX.utils.book_append_sheet(wb, sheet(data.logs.map((l) => ({
+    "Datum": fmtDate(l.date), "Radnik": wName(l.workerId), "Objekt": objName(l.objectId), "Od": l.from, "Do": l.to,
+    "Sati": l.hours, "Mjesečni zbroj": l.monthly ? "DA" : "", "Napomena": l.note,
+  })), "Datum"), "Sati");
+
+  XLSX.utils.book_append_sheet(wb, sheet(data.payments.map((p) => ({
+    "Datum": fmtDate(p.date), "Radnik": p.workerId ? wName(p.workerId) : "", "Objekt": p.objectId ? objName(p.objectId) : "",
+    "Vrsta": TYPE_LABEL[p.type] || p.type, "Iznos": p.amount, "Valuta": p.currency, "Odbija se": p.deduct ? "DA" : "", "Napomena": p.note,
+  })), "Datum"), "Isplate");
+
+  XLSX.utils.book_append_sheet(wb, sheet((data.payouts || []).map((p) => ({
+    "Radnik": wName(p.workerId), "Mjesec": p.month, "Iznos (€)": p.amount, "Iznos (Kč)": p.amountKc,
+    "Datum isplate": p.paidAt ? fmtDate(p.paidAt) : "",
+  })), "Radnik"), "Isplaćeni mjeseci");
+
+  XLSX.utils.book_append_sheet(wb, sheet((data.positionBilling || []).map((pb) => ({
+    "Objekt": objName(pb.objectId), "Pozicija": pb.position, "Način": pb.mode === "markup" ? "satnica radnika + dodatak" : "fiksna cijena",
+    "Iznos": pb.mode === "markup" ? pb.markup : pb.rate, "Valuta": pb.currency,
+  })), "Objekt"), "Cijene po poziciji");
+
+  XLSX.writeFile(wb, `Backup_${todayISO()}.xlsx`);
+}
+
 /* ================================================================== */
 /*  ADMIN PANELI                                                       */
 /* ================================================================== */
 function AdminPanels({ data, api, panel, setPanel }) {
-  const [firm, setFirm] = useState({ company_name: "", address: "", oib: "", iban: "", czk_rate: "25" });
+  const [firm, setFirm] = useState({ company_name: "", address: "", oib: "", iban: "", czk_rate: "25", weekend_pct: "0", holiday_pct: "0" });
+  const [auditQ, setAuditQ] = useState("");
   useEffect(() => setFirm({
     company_name: data.settings.company_name || "", address: data.settings.address || "",
     oib: data.settings.oib || "", iban: data.settings.iban || "", czk_rate: String(data.settings.czk_rate || 25),
+    weekend_pct: String(data.settings.weekend_pct || 0), holiday_pct: String(data.settings.holiday_pct || 0),
   }), [data.settings]);
 
   return (
@@ -984,12 +1048,21 @@ function AdminPanels({ data, api, panel, setPanel }) {
       {panel === "audit" && (
         <Card style={{ marginTop: 8 }}>
           <div style={{ fontWeight: 700, marginBottom: 8 }}>📜 Tko je što radio</div>
-          {data.audit.length === 0 ? <div style={{ color: S.sub, fontSize: 13.5 }}>Još nema zabilježenih radnji.</div>
-            : data.audit.map((a) => (
-              <div key={a.id} style={{ padding: "6px 0", borderBottom: `1px solid ${S.line}`, fontSize: 13 }}>
-                <span className="num" style={{ color: S.sub }}>{fmtDT(a.at)}</span>{" · "}<b>{a.user_name}</b> — {a.action}
-              </div>
-            ))}
+          {data.audit.length === 0 ? <div style={{ color: S.sub, fontSize: 13.5 }}>Još nema zabilježenih radnji.</div> : (
+            <>
+              <input value={auditQ} onChange={(e) => setAuditQ(e.target.value)} placeholder="🔍 Traži po osobi ili radnji…" style={{ marginBottom: 8 }} />
+              {(() => {
+                const t = auditQ.trim().toLowerCase();
+                const filtered = t ? data.audit.filter((a) => (a.user_name || "").toLowerCase().includes(t) || (a.action || "").toLowerCase().includes(t)) : data.audit;
+                return filtered.length === 0 ? <div style={{ color: S.sub, fontSize: 13.5 }}>Nema rezultata (pretražuje se zadnjih {data.audit.length} zabilježenih radnji).</div>
+                  : filtered.map((a) => (
+                    <div key={a.id} style={{ padding: "6px 0", borderBottom: `1px solid ${S.line}`, fontSize: 13 }}>
+                      <span className="num" style={{ color: S.sub }}>{fmtDT(a.at)}</span>{" · "}<b>{a.user_name}</b> — {a.action}
+                    </div>
+                  ));
+              })()}
+            </>
+          )}
         </Card>
       )}
 
@@ -1021,7 +1094,27 @@ function AdminPanels({ data, api, panel, setPanel }) {
           <Field label="Tečaj 1 € = ? Kč (koristi se samo za automatski izračun iz Mzdy PDF-a)">
             <input inputMode="decimal" value={firm.czk_rate} onChange={(e) => setFirm({ ...firm, czk_rate: e.target.value })} placeholder="npr. 25" />
           </Field>
-          <Btn small onClick={() => api.saveSettings({ ...firm, czk_rate: parseNum(firm.czk_rate) || 25 })}>Spremi</Btn>
+          <div style={{ display: "flex", gap: 10 }}>
+            <div style={{ flex: 1 }}>
+              <Field label="Dodatak vikendom (%)">
+                <input inputMode="decimal" value={firm.weekend_pct} onChange={(e) => setFirm({ ...firm, weekend_pct: e.target.value })} placeholder="npr. 25" />
+              </Field>
+            </div>
+            <div style={{ flex: 1 }}>
+              <Field label="Dodatak praznikom (%)">
+                <input inputMode="decimal" value={firm.holiday_pct} onChange={(e) => setFirm({ ...firm, holiday_pct: e.target.value })} placeholder="npr. 50" />
+              </Field>
+            </div>
+          </div>
+          <div style={{ fontSize: 12, color: S.sub, margin: "-6px 0 10px" }}>
+            Automatski se dodaje na zaradu radnika za sate upisane vikendom/na praznik (0 = bez dodatka). Ne utječe na naplatu objekta.
+          </div>
+          <Btn small onClick={() => api.saveSettings({ ...firm, czk_rate: parseNum(firm.czk_rate) || 25, weekend_pct: parseNum(firm.weekend_pct) || 0, holiday_pct: parseNum(firm.holiday_pct) || 0 })}>Spremi</Btn>
+          <div style={{ borderTop: `1px dashed ${S.line}`, marginTop: 14, paddingTop: 12 }}>
+            <div style={{ fontWeight: 700, marginBottom: 6 }}>⬇ Backup</div>
+            <div style={{ fontSize: 12.5, color: S.sub, marginBottom: 8 }}>Sve podatke (radnici, objekti, svi upisani sati, sve isplate, isplaćeni mjeseci) u jednu Excel datoteku, neovisno o odabranom mjesecu.</div>
+            <Btn small kind="excel" onClick={() => exportAllData(data)}>📊 Izvezi sve podatke (Excel)</Btn>
+          </div>
         </Card>
       )}
     </div>
@@ -1050,6 +1143,9 @@ function WorkersTab({ data, api, onOpen, onOpenObject }) {
   const [form, setForm] = useState({ name: "", phone: "", rate: "", rateCur: "EUR", objectId: "", position: "", note: "", permitExpiry: "", contractExpiry: "" });
   const [newObj, setNewObj] = useState("");
   const [confirmObj, setConfirmObj] = useState(null);
+  const [importReview, setImportReview] = useState(null);
+  const [importBusy, setImportBusy] = useState(false);
+  const importFileRef = useRef(null);
 
   const objName = (id) => data.objects.find((o) => o.id === id)?.name || "";
   const mk = curMonth();
@@ -1060,6 +1156,49 @@ function WorkersTab({ data, api, onOpen, onOpenObject }) {
   const addWorker = async () => {
     if (!form.name.trim()) return;
     if (await api.addWorker(form)) { setForm({ name: "", phone: "", rate: "", rateCur: "EUR", objectId: "", position: "", note: "", permitExpiry: "", contractExpiry: "" }); setAdding(false); }
+  };
+
+  const downloadWorkerTemplate = () => {
+    const wb = XLSX.utils.book_new();
+    const sample = [{
+      "Ime i prezime": "Ivan Horvat", "Telefon": "091 234 5678", "Satnica": 7.5, "Valuta satnice": "EUR",
+      "Glavni objekt": data.objects[0]?.name || "", "Pozicija": "HSK", "Istek radne dozvole": "", "Istek ugovora": "", "Napomena": "",
+    }];
+    const ws = XLSX.utils.json_to_sheet(sample);
+    ws["!cols"] = [{ wch: 22 }, { wch: 15 }, { wch: 9 }, { wch: 13 }, { wch: 18 }, { wch: 14 }, { wch: 17 }, { wch: 14 }, { wch: 22 }];
+    XLSX.utils.book_append_sheet(wb, ws, "Radnici");
+    XLSX.writeFile(wb, "Predlozak_radnici.xlsx");
+  };
+  const handleImportFile = async (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    const buf = await file.arrayBuffer();
+    const wbk = XLSX.read(buf, { type: "array", cellDates: true });
+    const sheet = wbk.Sheets[wbk.SheetNames[0]];
+    const json = XLSX.utils.sheet_to_json(sheet, { raw: false, dateNF: "yyyy-mm-dd", defval: "" });
+    const rows = json.map((row) => {
+      const name = String(row["Ime i prezime"] || row["Ime"] || "").trim();
+      const objectName = String(row["Glavni objekt"] || "").trim();
+      const ob = objectName ? data.objects.find((o) => o.name.toLowerCase() === objectName.toLowerCase()) : null;
+      const curRaw = String(row["Valuta satnice"] || "EUR").toUpperCase();
+      return {
+        name, phone: String(row["Telefon"] || "").trim(), rate: String(row["Satnica"] || ""),
+        rateCur: curRaw.includes("K") ? "CZK" : "EUR",
+        objectName, objectId: ob?.id || "", objectMissing: !!objectName && !ob,
+        position: String(row["Pozicija"] || "").trim(),
+        permitExpiry: String(row["Istek radne dozvole"] || "").trim(), contractExpiry: String(row["Istek ugovora"] || "").trim(),
+        note: String(row["Napomena"] || "").trim(), include: true,
+      };
+    }).filter((r) => r.name);
+    setImportReview(rows);
+  };
+  const confirmImport = async () => {
+    const toImport = importReview.filter((r) => r.include);
+    if (!toImport.length) return;
+    setImportBusy(true);
+    if (await api.addWorkersBulk(toImport)) setImportReview(null);
+    setImportBusy(false);
   };
   const addObject = async () => {
     const n = newObj.trim(); if (!n) return;
@@ -1165,10 +1304,46 @@ function WorkersTab({ data, api, onOpen, onOpenObject }) {
         )}
       </Card>
 
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10, flexWrap: "wrap", gap: 8 }}>
         <div style={{ fontSize: 17, fontWeight: 700 }}>{api.t("workersTitle")} ({actives.length})</div>
-        <Btn small onClick={() => setAdding(!adding)}>{adding ? api.t("close") : api.t("addWorker")}</Btn>
+        <div style={{ display: "flex", gap: 6 }}>
+          <Btn small onClick={() => setAdding(!adding)}>{adding ? api.t("close") : api.t("addWorker")}</Btn>
+        </div>
       </div>
+      <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+        <Btn small kind="ghost" onClick={downloadWorkerTemplate} style={{ flex: 1 }}>⬇ Predložak (Excel)</Btn>
+        <Btn small kind="ghost" onClick={() => importFileRef.current?.click()} style={{ flex: 1 }}>📥 Uvezi iz Excela</Btn>
+        <input ref={importFileRef} type="file" accept=".xlsx,.xls,.csv" onChange={handleImportFile} style={{ display: "none" }} />
+      </div>
+
+      {importReview && (
+        <Card style={{ background: S.blueSoft, borderColor: "#CBDCEA" }}>
+          <div style={{ fontWeight: 700, color: S.blue, marginBottom: 8 }}>📥 Pregled uvoza — {importReview.length} radnika u datoteci</div>
+          {importReview.map((r, i) => (
+            <div key={i} style={{ display: "flex", alignItems: "flex-start", gap: 8, padding: "7px 0", borderBottom: "1px solid #CBDCEA" }}>
+              <input type="checkbox" checked={r.include} onChange={(e) => setImportReview((p) => p.map((row, j) => j === i ? { ...row, include: e.target.checked } : row))}
+                style={{ width: 18, height: 18, marginTop: 2 }} />
+              <div style={{ flex: 1, fontSize: 13 }}>
+                <div style={{ fontWeight: 700 }}>{r.name}</div>
+                <div className="num" style={{ color: S.sub, fontSize: 12 }}>
+                  {r.phone || "bez broja"} · {r.rate ? money(parseNum(r.rate) || 0, r.rateCur) + "/h" : "bez satnice"}{r.position ? " · " + r.position : ""}
+                </div>
+                {r.objectName && (
+                  <div style={{ fontSize: 12, color: r.objectMissing ? S.red : S.sub }}>
+                    {r.objectMissing ? `⚠️ objekt "${r.objectName}" ne postoji — dodaj ga prvo pa ponovi uvoz, ili će radnik ostati bez objekta` : "🏨 " + r.objectName}
+                  </div>
+                )}
+              </div>
+            </div>
+          ))}
+          <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+            <Btn small onClick={confirmImport} disabled={importBusy || !importReview.some((r) => r.include)}>
+              {importBusy ? "Uvozim…" : `✓ Uvezi (${importReview.filter((r) => r.include).length})`}
+            </Btn>
+            <Btn small kind="ghost" onClick={() => setImportReview(null)}>Odustani</Btn>
+          </div>
+        </Card>
+      )}
 
       {adding && (
         <Card>
@@ -1331,6 +1506,21 @@ function DirectoryTab({ data, api, onOpen }) {
     .filter((w) => { const t = q.trim().toLowerCase(); return !t || w.name.toLowerCase().includes(t) || (w.phone || "").includes(t); });
   const active = data.workers.filter((w) => !w.archived).length;
   const former = data.workers.length - active;
+  const objName = (id) => data.objects.find((o) => o.id === id)?.name || "";
+  const exportDirectory = () => {
+    const wb = XLSX.utils.book_new();
+    const rows = [...data.workers].sort((a, b) => a.name.localeCompare(b.name, "hr")).map((w) => ({
+      "Ime i prezime": w.name, "Telefon": w.phone || "", "Objekt": objName(w.objectId), "Pozicija": w.position || "",
+      "Satnica": rateNow(data, w) || "", "Valuta satnice": wCur(w) === "CZK" ? "Kč" : "€",
+      "Istek radne dozvole": w.permitExpiry ? fmtDate(w.permitExpiry) : "", "Istek ugovora": w.contractExpiry ? fmtDate(w.contractExpiry) : "",
+      "Status": w.archived ? "Bivši" + (w.archivedDate ? " (" + fmtDate(w.archivedDate) + ")" : "") : "Aktivan",
+      "Napomena": w.note || "",
+    }));
+    const ws = XLSX.utils.json_to_sheet(rows);
+    ws["!cols"] = [{ wch: 22 }, { wch: 15 }, { wch: 18 }, { wch: 14 }, { wch: 9 }, { wch: 10 }, { wch: 16 }, { wch: 14 }, { wch: 16 }, { wch: 22 }];
+    XLSX.utils.book_append_sheet(wb, ws, "Imenik");
+    XLSX.writeFile(wb, "Imenik_radnika.xlsx");
+  };
   const groups = [];
   let last = "";
   list.forEach((w) => {
@@ -1346,6 +1536,7 @@ function DirectoryTab({ data, api, onOpen }) {
           <span style={{ color: S.green, fontWeight: 700 }}>{active} aktivnih</span>{former > 0 && <> · {former} bivših</>}
         </div>
       </div>
+      {api.admin && <Btn small kind="excel" onClick={exportDirectory} style={{ width: "100%", marginBottom: 10 }}>📊 Izvezi cijeli imenik (Excel)</Btn>}
       <input value={q} onChange={(e) => setQ(e.target.value)} placeholder={api.t("searchPh")} style={{ marginBottom: 12 }} />
       {list.length === 0 ? <Empty text="Nema rezultata." /> : groups.map((g) => (
         <div key={g.letter}>
@@ -1804,7 +1995,7 @@ function ObjectDetail({ object, data, api, onBack, onOpenWorker }) {
         let costE = 0, costK = 0;
         objLogs.forEach((l) => {
           const wk = data.workers.find((x) => x.id === l.workerId);
-          const v = l.hours * rateFor(data, wk, l.date);
+          const v = l.hours * rateFor(data, wk, l.date) + extraPayForLog(data, wk, l);
           if (wCur(wk) === "CZK") costK += v; else costE += v;
         });
         costE = round2(costE); costK = round2(costK);
@@ -2561,6 +2752,9 @@ function calcRows(data, filterFn, objFilters) {
     const grossAll = round2(logs.reduce((s, l) => s + l.hours * rateFor(data, w, l.date), 0));
     const gross = wCur(w) === "CZK" ? 0 : grossAll;
     const grossKc = wCur(w) === "CZK" ? grossAll : 0;
+    const extraAll = round2(logs.reduce((s, l) => s + extraPayForLog(data, w, l), 0));
+    const extraPay = wCur(w) === "CZK" ? 0 : extraAll;
+    const extraPayKc = wCur(w) === "CZK" ? extraAll : 0;
     const rateSet = [...new Set(logs.map((l) => rateFor(data, w, l.date)))];
     const by = (c) => {
       const mine = pays.filter((p) => (p.currency || "EUR") === c);
@@ -2573,10 +2767,10 @@ function calcRows(data, filterFn, objFilters) {
       };
     };
     const e = by("EUR"), k = by("CZK");
-    return { w, logs, pays, hours, gross, grossKc, rateSet,
+    return { w, logs, pays, hours, gross, grossKc, rateSet, extraPay, extraPayKc,
       bonuses: e.bonuses, advances: e.advances, deductions: e.deductions, firmCosts: e.firmCosts, bank: e.bank,
-      net: round2(gross + e.bonuses - e.advances - e.deductions - e.bank),
-      czk: { ...k, gross: grossKc, net: round2(grossKc + k.bonuses - k.advances - k.deductions - k.bank) } };
+      net: round2(gross + extraPay + e.bonuses - e.advances - e.deductions - e.bank),
+      czk: { ...k, gross: grossKc, net: round2(grossKc + extraPayKc + k.bonuses - k.advances - k.deductions - k.bank) } };
   }).filter((r) => (hasFilter ? r.hours > 0 : (r.hours > 0 || r.pays.length > 0)));
 }
 
@@ -2587,6 +2781,7 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
   const [uplata, setUplata] = useState({});
   const [objFilters, setObjFilters] = useState(() => new Set()); // prazan skup = svi objekti
   const [objPickerOpen, setObjPickerOpen] = useState(false);
+  const [showPayoutCal, setShowPayoutCal] = useState(false);
   const [selected, setSelected] = useState(() => new Set());
   const [bulkBusy, setBulkBusy] = useState(false);
   const [mzdyBusy, setMzdyBusy] = useState(false);
@@ -2697,7 +2892,7 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
     const ob = data.objects.find((o) => o.id === l.objectId);
     const cur = byObject.get(key) || { hours: 0, gross: 0, grossKc: 0, revenue: 0, revenueKc: 0, costs: 0, costsKc: 0 };
     cur.hours = round2(cur.hours + l.hours);
-    const gv = l.hours * rateFor(data, wk, l.date);
+    const gv = l.hours * rateFor(data, wk, l.date) + extraPayForLog(data, wk, l);
     if (wCur(wk) === "CZK") cur.grossKc = round2(cur.grossKc + gv); else cur.gross = round2(cur.gross + gv);
     const { rate: brate, cur: bcur } = billRateForLog(data, ob, wk, l.date);
     const rv = l.hours * brate;
@@ -2733,7 +2928,7 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
         const { rate: brate, cur: bcur } = billRateForLog(data, ob, wk, l.date);
         const rv = l.hours * brate;
         if (bcur === "CZK") revK += rv; else revE += rv;
-        const cv = l.hours * rateFor(data, wk, l.date);
+        const cv = l.hours * rateFor(data, wk, l.date) + extraPayForLog(data, wk, l);
         if (wCur(wk) === "CZK") costK2 += cv; else costE2 += cv;
       });
       const extraOf = (c) => data.payments.filter((p) => monthKey(p.date) === mk2 && (p.currency || "EUR") === c && (!p.workerId ? !!p.objectId : (p.type === "bonus" || (!p.deduct && p.type !== "avans")))).reduce((s, p) => s + p.amount, 0);
@@ -2757,7 +2952,7 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
       <table><tr><th>Datum</th><th>Vrijeme</th><th>Objekt</th><th class="right">Sati</th><th class="right">Iznos</th></tr>
       ${logsHtml}${paysHtml}
       <tr class="tot"><td colspan="3">UKUPNO ${fmtH(r.hours)}</td><td></td><td class="right">${[r.net !== 0 || r.czk.net === 0 ? eur(r.net) : "", r.czk.net !== 0 ? (r.czk.net > 0 ? "" : "−") + czk(Math.abs(r.czk.net)) : ""].filter(Boolean).join("<br>")}</td></tr></table>
-      <div class="muted">Zarada ${gc === "CZK" ? czk(r.grossKc) : eur(r.gross)}${r.bonuses ? " + bonus " + eur(r.bonuses) : ""}${r.czk.bonuses ? " + bonus " + czk(r.czk.bonuses) : ""}${r.advances ? " − avans " + eur(r.advances) : ""}${r.czk.advances ? " − avans " + czk(r.czk.advances) : ""}${r.deductions ? " − odbici " + eur(r.deductions) : ""}${r.czk.deductions ? " − odbici " + czk(r.czk.deductions) : ""}${r.bank ? " − na račun " + eur(r.bank) : ""}${r.czk.bank ? " − na račun " + czk(r.czk.bank) : ""} = <b>za isplatu (kovertom) ${[r.net !== 0 || r.czk.net === 0 ? eur(r.net) : "", r.czk.net !== 0 ? czk(r.czk.net) : ""].filter(Boolean).join(" i ")}</b></div>
+      <div class="muted">Zarada ${gc === "CZK" ? czk(r.grossKc) : eur(r.gross)}${r.extraPay ? " + vikend/praznik " + eur(r.extraPay) : ""}${r.extraPayKc ? " + vikend/praznik " + czk(r.extraPayKc) : ""}${r.bonuses ? " + bonus " + eur(r.bonuses) : ""}${r.czk.bonuses ? " + bonus " + czk(r.czk.bonuses) : ""}${r.advances ? " − avans " + eur(r.advances) : ""}${r.czk.advances ? " − avans " + czk(r.czk.advances) : ""}${r.deductions ? " − odbici " + eur(r.deductions) : ""}${r.czk.deductions ? " − odbici " + czk(r.czk.deductions) : ""}${r.bank ? " − na račun " + eur(r.bank) : ""}${r.czk.bank ? " − na račun " + czk(r.czk.bank) : ""} = <b>za isplatu (kovertom) ${[r.net !== 0 || r.czk.net === 0 ? eur(r.net) : "", r.czk.net !== 0 ? czk(r.czk.net) : ""].filter(Boolean).join(" i ")}</b></div>
       <div class="muted" style="margin-top:24px">Potpis radnika: ______________________ &nbsp;&nbsp; Potpis poslodavca: ______________________</div>`);
   };
 
@@ -2805,6 +3000,7 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
       const noteLabel = note?.note || MZDY_NOTE_LABEL;
       const breakdown = [
         gc === "CZK" ? (r.grossKc ? "zarada " + czk(r.grossKc) : "") : (r.gross ? "zarada " + eur(r.gross) : ""),
+        r.extraPay ? "vikend/praznik +" + eur(r.extraPay) : "", r.extraPayKc ? "vikend/praznik +" + czk(r.extraPayKc) : "",
         r.bonuses ? "bonus +" + eur(r.bonuses) : "", r.czk.bonuses ? "bonus +" + czk(r.czk.bonuses) : "",
         r.advances ? "avans −" + eur(r.advances) : "", r.czk.advances ? "avans −" + czk(r.czk.advances) : "",
         r.deductions ? "odbici −" + eur(r.deductions) : "", r.czk.deductions ? "odbici −" + czk(r.czk.deductions) : "",
@@ -2843,7 +3039,8 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
       "Radnik": r.w.name, "Objekt": objName(r.w.objectId) || "", "Sati": r.hours,
       "Satnica": r.rateSet.length === 1 ? r.rateSet[0] : r.rateSet.length === 0 ? rateNow(data, r.w) : "razne",
       "Valuta satnice": wCur(r.w) === "CZK" ? "Kč" : "€",
-      "Zarada (€)": r.gross, "Zarada (Kč)": r.grossKc, "Bonus (€)": r.bonuses, "Avans (€)": r.advances, "Odbici (€)": r.deductions,
+      "Zarada (€)": r.gross, "Zarada (Kč)": r.grossKc, "Vikend/praznik (€)": r.extraPay, "Vikend/praznik (Kč)": r.extraPayKc,
+      "Bonus (€)": r.bonuses, "Avans (€)": r.advances, "Odbici (€)": r.deductions,
       "Na račun (€)": r.bank, "Na račun (Kč)": r.czk.bank,
       "ZA ISPLATU KOVERTOM (€)": r.net, "ZA ISPLATU KOVERTOM (Kč)": r.czk.net, "Trošak firme (€)": r.firmCosts, "Trošak firme (Kč)": r.czk.firmCosts,
       "Isplaćeno": view === "month" && paidFor(data, r.w.id, month) ? "DA" : "",
@@ -2900,6 +3097,58 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
         <div style={{ fontWeight: 800, fontSize: 16.5 }}>{periodLabel}</div>
         <Btn small kind="ghost" onClick={view === "month" ? next : () => setMonth(`${y + 1}-${String(m).padStart(2, "0")}`)}>→</Btn>
       </div>
+
+      {admin && (
+        <Card style={{ marginBottom: 12 }}>
+          <div onClick={() => setShowPayoutCal(!showPayoutCal)} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", cursor: "pointer" }}>
+            <div style={{ fontWeight: 700 }}>📅 Pregled isplata (zadnjih 6 mjeseci)</div>
+            <span style={{ fontWeight: 700, color: S.sub }}>{showPayoutCal ? "▲" : "▼"}</span>
+          </div>
+          {showPayoutCal && (() => {
+            const months = [];
+            for (let i = 5; i >= 0; i--) { const d = new Date(y, m - 1 - i, 1); months.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`); }
+            const relevantIds = new Set(data.logs.filter((l) => months.includes(monthKey(l.date))).map((l) => l.workerId));
+            const ws = sortedWorkers(data.workers.filter((w) => relevantIds.has(w.id)));
+            return ws.length === 0 ? (
+              <div style={{ fontSize: 12.5, color: S.sub, marginTop: 8 }}>Nema radnika sa satima u zadnjih 6 mjeseci.</div>
+            ) : (
+              <div style={{ overflowX: "auto", marginTop: 10 }}>
+                <table className="num" style={{ borderCollapse: "collapse", width: "100%", fontSize: 12 }}>
+                  <thead>
+                    <tr>
+                      <th style={{ textAlign: "left", padding: "3px 6px", position: "sticky", left: 0, background: S.card }}>Radnik</th>
+                      {months.map((mo) => <th key={mo} style={{ padding: "3px 4px", fontWeight: 700 }}>{MONTHS_SHORT[Number(mo.slice(5, 7)) - 1]}</th>)}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {ws.map((w) => (
+                      <tr key={w.id}>
+                        <td onClick={() => onOpenWorker && onOpenWorker(w.id)} style={{
+                          padding: "3px 6px", fontWeight: 600, cursor: onOpenWorker ? "pointer" : "default", color: onOpenWorker ? S.blue : "inherit",
+                          position: "sticky", left: 0, background: S.card, whiteSpace: "nowrap" }}>{w.name}</td>
+                        {months.map((mo) => {
+                          const hadHours = data.logs.some((l) => l.workerId === w.id && monthKey(l.date) === mo);
+                          const paid = paidFor(data, w.id, mo);
+                          const bg = !hadHours ? "transparent" : paid ? S.greenSoft : S.redSoft;
+                          const color = !hadHours ? S.line : paid ? S.green : S.red;
+                          return (
+                            <td key={mo} style={{ textAlign: "center", padding: "3px 2px" }}>
+                              <span style={{ display: "inline-block", width: 20, height: 20, lineHeight: "20px", borderRadius: 5, background: bg, color, fontWeight: 800 }}>
+                                {hadHours ? (paid ? "✓" : "✕") : ""}
+                              </span>
+                            </td>
+                          );
+                        })}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                <div style={{ fontSize: 11.5, color: S.sub, marginTop: 8 }}>✓ zeleno = isplaćeno i zaključano · ✕ crveno = ima sati, još nije isplaćeno · prazno = nema sati taj mjesec</div>
+              </div>
+            );
+          })()}
+        </Card>
+      )}
 
       <div style={{ marginBottom: 12 }}>
         <div style={{ fontSize: 12.5, fontWeight: 600, color: S.sub, marginBottom: 5 }}>{api.t("showFor")}</div>
@@ -3192,12 +3441,14 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
                   <div className="num" style={{ fontSize: 13, color: S.sub, marginTop: 3 }}>
                     {view === "month" && isHoursSuspicious(r.hours) && <span title={`Više od ${MONTH_HOURS_WARN}h u mjesecu — provjeri unos`} style={{ color: S.red }}>⚠️ </span>}
                     {fmtH(r.hours)}{r.rateSet.length === 1 ? <> × {money(r.rateSet[0], wCur(r.w))}</> : r.rateSet.length > 1 ? <> (više satnica)</> : null} = {wCur(r.w) === "CZK" ? czk(r.grossKc) : eur(r.gross)}
+                    {r.extraPay > 0 && <> · vikend/praznik +{eur(r.extraPay)}</>}
                     {r.bonuses > 0 && <> · bonus +{eur(r.bonuses)}</>}
                     {r.advances > 0 && <> · avans −{eur(r.advances)}</>}
                     {r.deductions > 0 && <> · odbici −{eur(r.deductions)}</>}
                     {r.bank > 0 && <> · na račun −{eur(r.bank)}</>}
                     {r.czk.advances > 0 && <> · avans −{czk(r.czk.advances)}</>}
                     {r.czk.bonuses > 0 && <> · bonus +{czk(r.czk.bonuses)}</>}
+                    {r.extraPayKc > 0 && <> · vikend/praznik +{czk(r.extraPayKc)}</>}
                     {r.czk.deductions > 0 && <> · odbici −{czk(r.czk.deductions)}</>}
                     {r.czk.bank > 0 && <> · na račun −{czk(r.czk.bank)}</>}
                   </div>
