@@ -45,6 +45,8 @@ const COUNTRY_NAME = { HR: "Hrvatska", CZ: "Češka" };
 const round2 = (n) => Math.round(n * 100) / 100;
 const MONTH_HOURS_WARN = 320; // iznad ovoga upozoravamo da su sati vjerojatno krivo upisani
 const isHoursSuspicious = (h) => h > MONTH_HOURS_WARN;
+const DAY_HOURS_WARN = 20; // iznad ovoga upozoravamo za jedan dan (jednokratan upis, ne mjesečni zbroj)
+const isDayHoursSuspicious = (h) => h > DAY_HOURS_WARN;
 const MONTHS = ["Siječanj","Veljača","Ožujak","Travanj","Svibanj","Lipanj","Srpanj","Kolovoz","Rujan","Listopad","Studeni","Prosinac"];
 const MONTHS_SHORT = ["sij","vlj","ožu","tra","svi","lip","srp","kol","ruj","lis","stu","pro"];
 
@@ -1842,7 +1844,9 @@ function WorkerDetail({ worker, data, api, onBack }) {
           : logs.map((l) => (
             <div key={l.id} style={{ display: "flex", justifyContent: "space-between", padding: "7px 0", borderBottom: `1px solid ${S.line}`, fontSize: 14 }}>
               <span>{fmtDate(l.date)} · {logSpan(l)}{objName(l.objectId) ? " · " + objName(l.objectId) : ""}</span>
-              <span className="num" style={{ fontWeight: 700 }}>{fmtH(l.hours)}</span>
+              <span className="num" style={{ fontWeight: 700, color: !l.monthly && isDayHoursSuspicious(l.hours) ? S.red : "inherit" }}>
+                {!l.monthly && isDayHoursSuspicious(l.hours) && "⚠️ "}{fmtH(l.hours)}
+              </span>
             </div>
           ))}
       </Card>
@@ -2421,7 +2425,9 @@ function ObjectDetail({ object, data, api, onBack, onOpenWorker }) {
                   <span onClick={() => onOpenWorker && onOpenWorker(l.workerId)} style={{ fontWeight: 600, fontSize: 14, cursor: onOpenWorker ? "pointer" : "default", color: onOpenWorker ? S.blue : "inherit" }}>{wName(l.workerId)}</span>
                   <div className="num" style={{ fontSize: 12.5, color: S.sub }}>{mode === "month" ? fmtDate(l.date) + " · " : ""}{logSpan(l)}</div>
                 </div>
-                <div className="num" style={{ fontWeight: 700 }}>{fmtH(l.hours)}</div>
+                <div className="num" style={{ fontWeight: 700, color: !l.monthly && isDayHoursSuspicious(l.hours) ? S.red : "inherit" }}>
+                  {!l.monthly && isDayHoursSuspicious(l.hours) && "⚠️ "}{fmtH(l.hours)}
+                </div>
                 {(api.admin || l.createdBy === api.uid()) ? (
                   <>
                     <button onClick={() => setEditLog(editLog === l.id ? null : l.id)} style={{ background: "none", border: "none", color: S.blue, fontSize: 15, cursor: "pointer", padding: 4 }}>✎</button>
@@ -2555,10 +2561,15 @@ function HoursTab({ data, api, onOpenWorker }) {
                 <div style={{ flex: 1 }}><Field label={api.t("to")}><input type="time" value={form.to} onChange={(e) => setForm({ ...form, to: e.target.value })} /></Field></div>
               </div>
               <Field label="Napomena (opcionalno)"><input value={form.note} onChange={(e) => setForm({ ...form, note: e.target.value })} /></Field>
-              <div style={{ background: S.greenSoft, borderRadius: 10, padding: "10px 12px", marginBottom: 12, display: "flex", justifyContent: "space-between", fontWeight: 700 }}>
+              <div style={{ background: isDayHoursSuspicious(h) ? S.redSoft : S.greenSoft, borderRadius: 10, padding: "10px 12px", marginBottom: 12, display: "flex", justifyContent: "space-between", fontWeight: 700 }}>
                 <span>{api.t("total")}: <span className="num">{fmtH(h)}</span></span>
                 {w && <span className="num" style={{ color: S.green }}>{money(round2(h * rateFor(data, w, form.date)), wCur(w))}</span>}
               </div>
+              {isDayHoursSuspicious(h) && (
+                <div style={{ fontSize: 12.5, color: S.red, fontWeight: 600, margin: "-6px 0 10px" }}>
+                  ⚠️ Više od {DAY_HOURS_WARN}h za jedan dan — provjeri je li ovo greška u unosu.
+                </div>
+              )}
               <Btn onClick={add} style={{ width: "100%" }}>{api.t("addHours")}</Btn>
             </Card>
           ) : (
@@ -2599,7 +2610,9 @@ function HoursTab({ data, api, onOpenWorker }) {
                     {fmtDate(l.date)} · {logSpan(l)}{objName(l.objectId) ? " · " + objName(l.objectId) : ""}{l.note && !l.monthly ? " · " + l.note : ""}
                   </div>
                 </div>
-                <div className="num" style={{ fontWeight: 700 }}>{fmtH(l.hours)}</div>
+                <div className="num" style={{ fontWeight: 700, color: !l.monthly && isDayHoursSuspicious(l.hours) ? S.red : "inherit" }}>
+                  {!l.monthly && isDayHoursSuspicious(l.hours) && "⚠️ "}{fmtH(l.hours)}
+                </div>
                 {(api.admin || l.createdBy === api.uid()) ? (
                   <>
                     <button onClick={() => setEditLog(editLog === l.id ? null : l.id)} style={{ background: "none", border: "none", color: S.blue, fontSize: 15, cursor: "pointer", padding: 4 }}>✎</button>
