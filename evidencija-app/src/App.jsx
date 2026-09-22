@@ -3245,8 +3245,19 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
   const inYear = (d) => (d || "").slice(0, 4) === String(y);
   const rows = calcRows(data, view === "month" ? inMonth : inYear, objFilters).sort((a, b) => a.w.name.localeCompare(b.w.name, "hr"));
   const unpaidRows = view === "month" ? rows.filter((r) => !paidFor(data, r.w.id, month)) : [];
+  const pendingRows = view === "month" ? rows.filter((r) => { const p = paidFor(data, r.w.id, month); return p && !p.approved; }) : [];
   const allSelected = unpaidRows.length > 0 && unpaidRows.every((r) => selected.has(r.w.id));
-  const toggleSelectAll = () => setSelected(allSelected ? new Set() : new Set(unpaidRows.map((r) => r.w.id)));
+  const toggleSelectAll = () => setSelected((prev) => {
+    const n = new Set(prev);
+    unpaidRows.forEach((r) => (allSelected ? n.delete(r.w.id) : n.add(r.w.id)));
+    return n;
+  });
+  const allPendingSelected = pendingRows.length > 0 && pendingRows.every((r) => selected.has(r.w.id));
+  const toggleSelectAllPending = () => setSelected((prev) => {
+    const n = new Set(prev);
+    pendingRows.forEach((r) => (allPendingSelected ? n.delete(r.w.id) : n.add(r.w.id)));
+    return n;
+  });
   const toggleSelect = (id, e) => {
     e.stopPropagation();
     setSelected((prev) => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
@@ -3261,6 +3272,15 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
     if (!list.length) return;
     printEnvelopes(list);
     await payMany(list);
+  };
+  const approveMany = async (list) => {
+    setBulkBusy(true);
+    for (const r of list) {
+      const p = paidFor(data, r.w.id, month);
+      if (p && !p.approved) await api.approvePayout(p, r.w.name);
+    }
+    setSelected(new Set());
+    setBulkBusy(false);
   };
 
   const czkRate = Number(data.settings.czk_rate) || 25;
@@ -3900,7 +3920,10 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
             </Card>
           )}
 
-          {view === "month" && rows.length > 0 && (
+          {view === "month" && rows.length > 0 && (() => {
+            const selectedUnpaid = unpaidRows.filter((r) => selected.has(r.w.id));
+            const selectedPending = pendingRows.filter((r) => selected.has(r.w.id));
+            return (
             <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 4px", marginBottom: 4, flexWrap: "wrap" }}>
               {unpaidRows.length > 0 && (
                 <label style={{ display: "flex", alignItems: "center", gap: 7, fontSize: 13, cursor: "pointer" }}>
@@ -3908,14 +3931,20 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
                   Odaberi sve neisplaćene ({unpaidRows.length})
                 </label>
               )}
+              {pendingRows.length > 0 && (
+                <label style={{ display: "flex", alignItems: "center", gap: 7, fontSize: 13, cursor: "pointer" }}>
+                  <input type="checkbox" checked={allPendingSelected} onChange={toggleSelectAllPending} style={{ width: 18, height: 18 }} />
+                  Odaberi sve predložene ({pendingRows.length})
+                </label>
+              )}
               <div style={{ display: "flex", gap: 8, marginLeft: "auto", flexWrap: "wrap" }}>
-                {selected.size > 0 && (
+                {selectedUnpaid.length > 0 && (
                   <>
-                    <Btn small kind="ghost" onClick={() => payMany(rows.filter((r) => selected.has(r.w.id)))} disabled={bulkBusy}>
-                      ✓ Predloži odabrane ({selected.size})
+                    <Btn small kind="ghost" onClick={() => payMany(selectedUnpaid)} disabled={bulkBusy}>
+                      ✓ Predloži odabrane ({selectedUnpaid.length})
                     </Btn>
-                    <Btn small onClick={() => payAndPrintMany(rows.filter((r) => selected.has(r.w.id)))} disabled={bulkBusy}>
-                      🖨✓ Predloži i ispiši ({selected.size})
+                    <Btn small onClick={() => payAndPrintMany(selectedUnpaid)} disabled={bulkBusy}>
+                      🖨✓ Predloži i ispiši ({selectedUnpaid.length})
                     </Btn>
                   </>
                 )}
@@ -3924,14 +3953,25 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
                     <Btn small kind="ghost" onClick={() => payMany(unpaidRows)} disabled={bulkBusy}>
                       ✓✓ Predloži sve ({unpaidRows.length})
                     </Btn>
-                    <Btn small kind={selected.size > 0 ? "ghost" : "primary"} onClick={() => payAndPrintMany(unpaidRows)} disabled={bulkBusy}>
+                    <Btn small kind={selectedUnpaid.length > 0 ? "ghost" : "primary"} onClick={() => payAndPrintMany(unpaidRows)} disabled={bulkBusy}>
                       {bulkBusy ? "Spremam…" : `🖨✓✓ Predloži i ispiši sve (${unpaidRows.length})`}
                     </Btn>
                   </>
                 )}
+                {admin && selectedPending.length > 0 && (
+                  <Btn small onClick={() => approveMany(selectedPending)} disabled={bulkBusy}>
+                    ✓ Odobri odabrane ({selectedPending.length})
+                  </Btn>
+                )}
+                {admin && pendingRows.length > 0 && (
+                  <Btn small kind={selectedPending.length > 0 ? "ghost" : "primary"} onClick={() => approveMany(pendingRows)} disabled={bulkBusy}>
+                    {bulkBusy ? "Spremam…" : `✓✓ Odobri sve predložene (${pendingRows.length})`}
+                  </Btn>
+                )}
               </div>
             </div>
-          )}
+            );
+          })()}
 
           {rows.map((r) => {
             const paid = view === "month" ? paidFor(data, r.w.id, month) : null;
@@ -3940,10 +3980,13 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
                 <div onClick={() => setOpen(open === r.w.id ? null : r.w.id)} style={{ cursor: "pointer" }}>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                     <div style={{ fontWeight: 700, fontSize: 15.5, display: "flex", alignItems: "center", gap: 8 }}>
-                      {view === "month" && !paid && (
+                      {view === "month" && (!paid || !paid.approved) && (
                         <input type="checkbox" checked={selected.has(r.w.id)} onChange={(e) => toggleSelect(r.w.id, e)} onClick={(e) => e.stopPropagation()} style={{ width: 18, height: 18 }} />
                       )}
-                      <span onClick={(e) => { if (onOpenWorker) { e.stopPropagation(); onOpenWorker(r.w.id); } }} style={{ color: onOpenWorker ? S.blue : "inherit" }}>{r.w.name}</span> {paid && <Tag color={S.green} bg={S.greenSoft}>✓ Isplaćeno</Tag>}
+                      <span onClick={(e) => { if (onOpenWorker) { e.stopPropagation(); onOpenWorker(r.w.id); } }} style={{ color: onOpenWorker ? S.blue : "inherit" }}>{r.w.name}</span>
+                      {paid && (paid.approved
+                        ? <Tag color={S.green} bg={S.greenSoft}>✓ Isplaćeno</Tag>
+                        : <Tag color={S.amber} bg={S.amberSoft}>⏳ Predloženo</Tag>)}
                     </div>
                     <div className="num" style={{ textAlign: "right" }}>
                       <div style={{ fontWeight: 800, color: r.net >= 0 ? S.green : S.red, fontSize: 16 }}>{eur(r.net)}</div>
