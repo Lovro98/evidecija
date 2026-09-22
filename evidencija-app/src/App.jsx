@@ -839,7 +839,7 @@ export default function App() {
           </div>
         )}
 
-        {admin && !detailOpen && <AdminPanels data={data} api={api} panel={adminPanel} setPanel={setAdminPanel} />}
+        {admin && !detailOpen && <AdminPanels data={data} api={api} panel={adminPanel} setPanel={setAdminPanel} onOpenWorker={setOpenWorker} />}
 
         {worker ? (
           <WorkerDetail worker={worker} data={data} api={api} onBack={() => setOpenWorker(null)} />
@@ -1150,9 +1150,11 @@ function exportAllData(data) {
 /* ================================================================== */
 /*  ADMIN PANELI                                                       */
 /* ================================================================== */
-function AdminPanels({ data, api, panel, setPanel }) {
+function AdminPanels({ data, api, panel, setPanel, onOpenWorker }) {
   const [firm, setFirm] = useState({ company_name: "", address: "", oib: "", iban: "", czk_rate: "25", weekend_pct: "0", holiday_pct: "0", expiry_warn_days: "30" });
   const [auditQ, setAuditQ] = useState("");
+  const [apprSel, setApprSel] = useState(() => new Set());
+  const [apprBusy, setApprBusy] = useState(false);
   const [lastBackup, setLastBackup] = useState(() => { try { return localStorage.getItem("evidencija_last_backup"); } catch { return null; } });
   const daysSinceBackup = lastBackup ? Math.floor((Date.now() - new Date(lastBackup).getTime()) / 86400000) : null;
   const doBackup = () => {
@@ -1160,6 +1162,17 @@ function AdminPanels({ data, api, panel, setPanel }) {
     const now = new Date().toISOString();
     try { localStorage.setItem("evidencija_last_backup", now); } catch {}
     setLastBackup(now);
+  };
+  const wName = (id) => data.workers.find((w) => w.id === id)?.name || "Obrisan radnik";
+  const pendingPayouts = [...(data.payouts || [])].filter((p) => !p.approved).sort((a, b) => a.month.localeCompare(b.month) || wName(a.workerId).localeCompare(wName(b.workerId), "hr"));
+  const allApprSelected = pendingPayouts.length > 0 && pendingPayouts.every((p) => apprSel.has(p.id));
+  const toggleApprSelectAll = () => setApprSel(allApprSelected ? new Set() : new Set(pendingPayouts.map((p) => p.id)));
+  const toggleApprSel = (id) => setApprSel((prev) => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const approveList = async (list) => {
+    setApprBusy(true);
+    for (const p of list) await api.approvePayout(p, wName(p.workerId));
+    setApprSel(new Set());
+    setApprBusy(false);
   };
   useEffect(() => setFirm({
     company_name: data.settings.company_name || "", address: data.settings.address || "",
@@ -1174,7 +1187,7 @@ function AdminPanels({ data, api, panel, setPanel }) {
         background: S.amberSoft, border: `1px solid #EBD9B4`, borderRadius: 12, padding: "9px 12px" }}>
         <span style={{ fontWeight: 700, color: S.amber, fontSize: 13.5 }}>👑 Admin</span>
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-          {[["users","👥"],["audit","📜"],["logins","🔐"],["errors",`🐛${(data.errorLog || []).length ? (data.errorLog || []).length : ""}`],["trash",`🗑${data.trash.length ? data.trash.length : ""}`],["firm","⚙️"]].map(([id, label]) => (
+          {[["approvals",`⏳${(data.payouts || []).filter((p) => !p.approved).length ? (data.payouts || []).filter((p) => !p.approved).length : ""}`],["users","👥"],["audit","📜"],["logins","🔐"],["errors",`🐛${(data.errorLog || []).length ? (data.errorLog || []).length : ""}`],["trash",`🗑${data.trash.length ? data.trash.length : ""}`],["firm","⚙️"]].map(([id, label]) => (
             <button key={id} onClick={() => setPanel(panel === id ? "" : id)} style={{
               background: panel === id ? S.amber : "#fff", color: panel === id ? "#fff" : S.amber,
               border: `1px solid ${S.amber}`, borderRadius: 8, padding: "5px 10px", fontSize: 13, fontWeight: 700, cursor: "pointer" }}>
@@ -1183,6 +1196,48 @@ function AdminPanels({ data, api, panel, setPanel }) {
           ))}
         </div>
       </div>
+
+      {panel === "approvals" && (
+        <Card style={{ marginTop: 8 }}>
+          <div style={{ fontWeight: 700, marginBottom: 8 }}>⏳ Isplate koje čekaju odobrenje — svi mjeseci i radnici na jednom mjestu</div>
+          {pendingPayouts.length === 0 ? (
+            <div style={{ color: S.sub, fontSize: 13.5 }}>Nema ničega na čekanju. 🎉</div>
+          ) : (
+            <>
+              <label style={{ display: "flex", alignItems: "center", gap: 7, fontSize: 13, cursor: "pointer", marginBottom: 8 }}>
+                <input type="checkbox" checked={allApprSelected} onChange={toggleApprSelectAll} style={{ width: 18, height: 18 }} />
+                Odaberi sve ({pendingPayouts.length})
+              </label>
+              {pendingPayouts.map((p) => (
+                <div key={p.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 0", borderBottom: `1px solid ${S.line}`, fontSize: 13.5 }}>
+                  <input type="checkbox" checked={apprSel.has(p.id)} onChange={() => toggleApprSel(p.id)} style={{ width: 17, height: 17 }} />
+                  <div style={{ flex: 1 }}>
+                    <span onClick={() => onOpenWorker && onOpenWorker(p.workerId)} style={{ fontWeight: 700, cursor: onOpenWorker ? "pointer" : "default", color: onOpenWorker ? S.blue : "inherit" }}>
+                      {wName(p.workerId)}
+                    </span>
+                    <span className="num" style={{ color: S.sub }}> · {p.month} · predloženo {fmtDate(p.paidAt)}</span>
+                  </div>
+                  <span className="num" style={{ fontWeight: 700, color: S.amber }}>
+                    {[p.amount ? eur(p.amount) : "", p.amountKc ? czk(p.amountKc) : ""].filter(Boolean).join(" + ") || eur(0)}
+                  </span>
+                  <Btn small onClick={() => approveList([p])} disabled={apprBusy}>✓ Odobri</Btn>
+                  <button onClick={() => api.unmarkPaid(p, wName(p.workerId))} title="Odbaci" style={{ background: "none", border: "none", color: S.red, fontSize: 16, cursor: "pointer", padding: 4 }}>✕</button>
+                </div>
+              ))}
+              <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+                {apprSel.size > 0 && (
+                  <Btn small onClick={() => approveList(pendingPayouts.filter((p) => apprSel.has(p.id)))} disabled={apprBusy}>
+                    {apprBusy ? "Odobravam…" : `✓ Odobri odabrane (${apprSel.size})`}
+                  </Btn>
+                )}
+                <Btn small kind={apprSel.size > 0 ? "ghost" : "primary"} onClick={() => approveList(pendingPayouts)} disabled={apprBusy}>
+                  {apprBusy ? "Odobravam…" : `✓✓ Odobri sve (${pendingPayouts.length})`}
+                </Btn>
+              </div>
+            </>
+          )}
+        </Card>
+      )}
 
       {panel === "users" && (
         <Card style={{ marginTop: 8 }}>
