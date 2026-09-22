@@ -548,3 +548,10 @@ create policy "errlog_insert_self" on error_log for insert to authenticated
 drop policy if exists "errlog_select_admin" on error_log;
 create policy "errlog_select_admin" on error_log for select to authenticated
   using (is_admin());
+
+-- ============================================================
+-- PROVIZIJA ZAPOSLENIKA PO SATU (npr. Ivan dobiva 0.5 €/h za svaki sat koji
+-- su radnici odradili na objektima koji su mu dodijeljeni preko object_members)
+-- ============================================================
+alter table profiles add column if not exists hourly_commission numeric default 0;
+alter table profiles add column if not exists commission_currency text default 'EUR';

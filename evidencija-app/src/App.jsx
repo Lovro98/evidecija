@@ -788,6 +788,8 @@ export default function App() {
     },
     restore: (t) => act(() => upd(t.table, t.row.id, { deleted_at: null }), `Vratio iz koša: ${t.label}`),
     setRole: (p, role) => act(() => upd("profiles", p.id, { role }), `Promijenio ulogu: ${p.name} → ${role === "admin" ? "admin" : "zaposlenik"}`),
+    setCommission: (p, rate, cur) => act(() => upd("profiles", p.id, { hourly_commission: rate, commission_currency: cur || "EUR" }),
+      `Postavio proviziju po satu za ${p.name}: ${money(rate, cur)}/h`),
     toggleMember: (object, p, on) => act(() =>
       (on ? supabase.from("object_members").insert({ object_id: object.id, user_id: p.id })
           : supabase.from("object_members").delete().eq("object_id", object.id).eq("user_id", p.id)
@@ -1153,6 +1155,7 @@ function exportAllData(data) {
 function AdminPanels({ data, api, panel, setPanel, onOpenWorker }) {
   const [firm, setFirm] = useState({ company_name: "", address: "", oib: "", iban: "", czk_rate: "25", weekend_pct: "0", holiday_pct: "0", expiry_warn_days: "30" });
   const [auditQ, setAuditQ] = useState("");
+  const [commEdit, setCommEdit] = useState({});
   const [apprSel, setApprSel] = useState(() => new Set());
   const [apprBusy, setApprBusy] = useState(false);
   const [lastBackup, setLastBackup] = useState(() => { try { return localStorage.getItem("evidencija_last_backup"); } catch { return null; } });
@@ -1242,15 +1245,42 @@ function AdminPanels({ data, api, panel, setPanel, onOpenWorker }) {
       {panel === "users" && (
         <Card style={{ marginTop: 8 }}>
           <div style={{ fontWeight: 700, marginBottom: 8 }}>👥 Zaposlenici s pristupom</div>
-          {[...data.profiles].sort((a, b) => (a.name || "").localeCompare(b.name || "", "hr")).map((p) => (
-            <div key={p.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 0", borderBottom: `1px solid ${S.line}` }}>
-              <span style={{ flex: 1, fontWeight: 600, fontSize: 14 }}>{p.role === "admin" ? "👑 " : ""}{p.name || "(bez imena)"}</span>
-              <select value={p.role} onChange={(e) => api.setRole(p, e.target.value)} style={{ width: "auto", padding: "6px 8px", fontSize: 13 }}>
-                <option value="employee">Zaposlenik</option>
-                <option value="admin">Admin</option>
-              </select>
-            </div>
-          ))}
+          {[...data.profiles].sort((a, b) => (a.name || "").localeCompare(b.name || "", "hr")).map((p) => {
+            const edit = commEdit[p.id];
+            const cVal = edit !== undefined ? edit.rate : String(p.hourly_commission || "");
+            const cCur = edit !== undefined ? edit.cur : (p.commission_currency || "EUR");
+            const myObjIds = new Set((data.objectMembers || []).filter((m) => m.user_id === p.id).map((m) => m.object_id));
+            const mk = curMonth();
+            const hrs = round2(data.logs.filter((l) => myObjIds.has(l.objectId) && monthKey(l.date) === mk).reduce((s, l) => s + l.hours, 0));
+            const amount = round2(hrs * (parseNum(cVal) || 0));
+            return (
+              <div key={p.id} style={{ padding: "9px 0", borderBottom: `1px solid ${S.line}` }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <span style={{ flex: 1, fontWeight: 600, fontSize: 14 }}>{p.role === "admin" ? "👑 " : ""}{p.name || "(bez imena)"}</span>
+                  <select value={p.role} onChange={(e) => api.setRole(p, e.target.value)} style={{ width: "auto", padding: "6px 8px", fontSize: 13 }}>
+                    <option value="employee">Zaposlenik</option>
+                    <option value="admin">Admin</option>
+                  </select>
+                </div>
+                {p.role !== "admin" && (
+                  <div style={{ marginTop: 6 }}>
+                    <div style={{ fontSize: 11.5, color: S.sub, marginBottom: 3 }}>Provizija po satu (na sate radnika na objektima koji su mu dodijeljeni)</div>
+                    <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                      <input inputMode="decimal" value={cVal} onChange={(e) => setCommEdit((p2) => ({ ...p2, [p.id]: { rate: e.target.value, cur: cCur } }))}
+                        placeholder="npr. 0.50" style={{ flex: 1 }} />
+                      <CurChips small value={cCur} onChange={(v) => setCommEdit((p2) => ({ ...p2, [p.id]: { rate: cVal, cur: v } }))} />
+                      <Btn small onClick={() => api.setCommission(p, round2(parseNum(cVal) || 0), cCur)}>Spremi</Btn>
+                    </div>
+                    {(parseNum(cVal) || 0) > 0 && (
+                      <div style={{ fontSize: 12.5, color: S.sub, marginTop: 4 }}>
+                        Ovaj mjesec: <b className="num">{fmtH(hrs)}</b> na dodijeljenim objektima → <b className="num" style={{ color: S.green }}>{money(amount, cCur)}</b> za isplatu
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })}
           <div style={{ fontSize: 12.5, color: S.sub, marginTop: 10 }}>
             Novog zaposlenika dodaješ u Supabaseu: Authentication → Users → Add user.
           </div>
