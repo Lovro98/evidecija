@@ -362,9 +362,9 @@ async function fetchAll(isAdmin) {
   const err = [workers, objects, logs, payments, assignments, rateChanges, profiles, payouts].find((r) => r.error);
   if (err) throw err.error;
 
-  let billing = [], audit = [], trash = [], members = [], invoicePayments = [], settings = {}, objectInvoices = [], payrollNotes = [], positionBilling = [], reminders = [];
+  let billing = [], audit = [], trash = [], members = [], invoicePayments = [], settings = {}, objectInvoices = [], payrollNotes = [], positionBilling = [], reminders = [], loginLog = [], errorLog = [];
   if (isAdmin) {
-    const [b, a, tw, tl, tp, om, ip, st, oi, pn, pb, rm] = await Promise.all([
+    const [b, a, tw, tl, tp, om, ip, st, oi, pn, pb, rm, ll, el] = await Promise.all([
       supabase.from("object_billing").select("*"),
       supabase.from("audit_log").select("*").order("at", { ascending: false }).limit(80),
       supabase.from("workers").select("*").not("deleted_at", "is", null),
@@ -377,17 +377,19 @@ async function fetchAll(isAdmin) {
       live(supabase.from("payroll_notes").select("*")),
       supabase.from("position_billing").select("*"),
       live(supabase.from("reminders").select("*")),
+      supabase.from("login_log").select("*").order("at", { ascending: false }).limit(80),
+      supabase.from("error_log").select("*").order("at", { ascending: false }).limit(50),
     ]);
     billing = b.data || []; audit = a.data || []; members = om.data || [];
     invoicePayments = ip.data || []; settings = st.data || {}; objectInvoices = oi.data || []; payrollNotes = pn.data || [];
-    positionBilling = pb.data || []; reminders = rm.data || [];
+    positionBilling = pb.data || []; reminders = rm.data || []; loginLog = ll.data || []; errorLog = el.data || [];
     trash = [
       ...(tw.data || []).map((r) => ({ table: "workers", row: r, label: `Radnik: ${r.name}` })),
       ...(tl.data || []).map((r) => ({ table: "work_logs", row: r, label: `Sati: ${fmtH(r.hours)} (${fmtDate(r.work_date)})` })),
       ...(tp.data || []).map((r) => ({ table: "payments", row: r, label: `${TYPE_LABEL[r.type] || r.type}: ${eur(r.amount)} (${fmtDate(r.pay_date)})` })),
     ].sort((a, b) => (b.row.deleted_at || "").localeCompare(a.row.deleted_at || ""));
   }
-  const billMap = Object.fromEntries(billing.map((b) => [b.object_id, { rate: Number(b.bill_rate) || 0, cur: b.bill_currency === "CZK" ? "CZK" : "EUR" }]));
+  const billMap = Object.fromEntries(billing.map((b) => [b.object_id, { rate: Number(b.bill_rate) || 0, cur: b.bill_currency === "CZK" ? "CZK" : "EUR", budget: Number(b.monthly_budget) || 0 }]));
 
   return {
     workers: (workers.data || []).map((w) => ({
@@ -398,7 +400,7 @@ async function fetchAll(isAdmin) {
     })),
     objects: (objects.data || []).map((o) => ({
       id: o.id, name: o.name, billRate: billMap[o.id]?.rate || 0, billCur: billMap[o.id]?.cur || countryCur(o.country || "HR"), country: o.country || "HR",
-      archived: !!o.archived, archivedDate: o.archived_date || "",
+      archived: !!o.archived, archivedDate: o.archived_date || "", monthlyBudget: billMap[o.id]?.budget || 0,
     })),
     logs: (logs.data || []).map((l) => ({
       id: l.id, workerId: l.worker_id, objectId: l.object_id || "", date: l.work_date,
@@ -412,7 +414,10 @@ async function fetchAll(isAdmin) {
     })),
     assignments: (assignments.data || []).map((a) => ({ id: a.id, workerId: a.worker_id, objectId: a.object_id || "", from: a.from_date })),
     rateChanges: (rateChanges.data || []).map((r) => ({ id: r.id, workerId: r.worker_id, rate: Number(r.rate), from: r.from_date })),
-    payouts: (payouts.data || []).map((p) => ({ id: p.id, workerId: p.worker_id, month: p.month, amount: Number(p.amount), amountKc: Number(p.amount_czk) || 0, paidAt: p.paid_at })),
+    payouts: (payouts.data || []).map((p) => ({
+      id: p.id, workerId: p.worker_id, month: p.month, amount: Number(p.amount), amountKc: Number(p.amount_czk) || 0, paidAt: p.paid_at,
+      approved: !!p.approved, approvedBy: p.approved_by || "", approvedAt: p.approved_at || "",
+    })),
     invoicePayments: invoicePayments.map((p) => ({ id: p.id, objectId: p.object_id, month: p.month, amount: Number(p.amount), date: p.pay_date, note: p.note || "" })),
     objectInvoices: objectInvoices.map((i) => ({
       id: i.id, objectId: i.object_id, number: i.number, period: i.period, issueDate: i.issue_date,
@@ -428,6 +433,8 @@ async function fetchAll(isAdmin) {
       rate: Number(pb.rate) || 0, markup: Number(pb.markup) || 0, currency: pb.currency === "CZK" ? "CZK" : "EUR",
     })),
     reminders: reminders.map((r) => ({ id: r.id, text: r.text, dueDate: r.due_date || "", done: !!r.done })),
+    loginLog: loginLog.map((l) => ({ id: l.id, userName: l.user_name || "", at: l.at, userAgent: l.user_agent || "" })),
+    errorLog: errorLog.map((e) => ({ id: e.id, userName: e.user_name || "", message: e.message, url: e.url || "", at: e.at })),
     settings: settings || {},
     profiles: profiles.data || [],
     objectMembers: members,
@@ -450,6 +457,7 @@ export default function App() {
   const [adminPanel, setAdminPanel] = useState("");
 
   const admin = profile?.role === "admin";
+  const loginLogged = useRef(false);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => setSession(session));
@@ -493,6 +501,22 @@ export default function App() {
     return () => window.removeEventListener("online", flushOfflineQueue);
   }, [flushOfflineQueue]);
 
+  // osnovno bilježenje grešaka aplikacije (bez vanjskog servisa) — vidljivo adminu u 🐛 Greške
+  useEffect(() => {
+    const report = (message, stack) => {
+      if (!session) return;
+      supabase.from("error_log").insert({
+        user_id: session.user.id, user_name: profile?.name || "", message: String(message || "").slice(0, 500),
+        stack: String(stack || "").slice(0, 2000), url: window.location.href,
+      }).then(() => {}).catch(() => {});
+    };
+    const onError = (e) => report(e.message, e.error?.stack);
+    const onRejection = (e) => report("Unhandled promise rejection: " + (e.reason?.message || e.reason), e.reason?.stack);
+    window.addEventListener("error", onError);
+    window.addEventListener("unhandledrejection", onRejection);
+    return () => { window.removeEventListener("error", onError); window.removeEventListener("unhandledrejection", onRejection); };
+  }, [session, profile]);
+
   useEffect(() => {
     if (!session) { setProfile(null); setData(null); return; }
     (async () => {
@@ -500,6 +524,10 @@ export default function App() {
       if (error) { setErr("Ne mogu učitati profil: " + error.message); return; }
       setProfile(p);
       await reload(p);
+      if (!loginLogged.current) {
+        loginLogged.current = true;
+        supabase.from("login_log").insert({ user_id: session.user.id, user_name: p.name || "", user_agent: navigator.userAgent }).then(() => {});
+      }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session]);
@@ -526,8 +554,8 @@ export default function App() {
       const d = new Date(); d.setDate(1); d.setMonth(d.getMonth() - 1);
       const prevMo = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
       const withHours = new Set(data.logs.filter((l) => monthKey(l.date) === prevMo).map((l) => l.workerId));
-      const unpaid = [...withHours].filter((wid) => !paidFor(data, wid, prevMo)).length;
-      if (unpaid > 0) parts.push(`${unpaid} radnika još nije isplaćeno za ${MONTHS[Number(prevMo.slice(5, 7)) - 1]}`);
+      const unpaid = [...withHours].filter((wid) => !paidFor(data, wid, prevMo)?.approved).length;
+      if (unpaid > 0) parts.push(`${unpaid} radnika još nije odobreno za isplatu za ${MONTHS[Number(prevMo.slice(5, 7)) - 1]}`);
       const dueReminders = (data.reminders || []).filter((r) => !r.done && r.dueDate && r.dueDate <= todayISO());
       if (dueReminders.length) parts.push(`${dueReminders.length} podsjetnik(a) dospjelo`);
     }
@@ -554,7 +582,8 @@ export default function App() {
   const softDel = (table, id) => upd(table, id, { deleted_at: new Date().toISOString() });
   const guardPaid = (workerId, dateOrMonth) => {
     const mo = dateOrMonth.length === 7 ? dateOrMonth : monthKey(dateOrMonth);
-    if (paidFor(data, workerId, mo)) throw new Error(`Mjesec ${mo} je označen kao ISPLAĆEN i zaključan za tog radnika. Admin ga može otključati u Obračunu.`);
+    const p = paidFor(data, workerId, mo);
+    if (p && p.approved) throw new Error(`Mjesec ${mo} je ODOBREN i zaključan za tog radnika. Admin ga može otključati u Obračunu.`);
   };
 
   const api = {
@@ -576,10 +605,24 @@ export default function App() {
       const { error } = await supabase.from("workers").insert(payload);
       if (error) throw error;
     }, `Uvezao ${rows.length} radnika iz Excela`),
-    updWorker: (id, f, name) => act(() => upd("workers", id, {
-      name: f.name, phone: f.phone, base_rate: parseNum(f.rate) || 0, rate_currency: f.rateCur || "EUR", object_id: f.objectId || null, note: f.note,
-      permit_expiry: f.permitExpiry || null, contract_expiry: f.contractExpiry || null, position: f.position || "",
-    }), `Uredio podatke radnika: ${name}`),
+    updWorker: (id, f, name) => {
+      const old = data.workers.find((w) => w.id === id);
+      const objName = (oid) => data.objects.find((o) => o.id === oid)?.name || "—";
+      const diffs = [];
+      if (old) {
+        if (old.name !== f.name) diffs.push(`ime "${old.name}"→"${f.name}"`);
+        if ((old.phone || "") !== (f.phone || "")) diffs.push(`telefon "${old.phone || "—"}"→"${f.phone || "—"}"`);
+        if (round2(old.rate || 0) !== round2(parseNum(f.rate) || 0)) diffs.push(`satnica ${old.rate || 0}→${parseNum(f.rate) || 0}`);
+        if ((old.objectId || "") !== (f.objectId || "")) diffs.push(`objekt ${objName(old.objectId)}→${objName(f.objectId)}`);
+        if ((old.position || "") !== (f.position || "")) diffs.push(`pozicija "${old.position || "—"}"→"${f.position || "—"}"`);
+        if ((old.permitExpiry || "") !== (f.permitExpiry || "")) diffs.push(`istek dozvole ${old.permitExpiry || "—"}→${f.permitExpiry || "—"}`);
+        if ((old.contractExpiry || "") !== (f.contractExpiry || "")) diffs.push(`istek ugovora ${old.contractExpiry || "—"}→${f.contractExpiry || "—"}`);
+      }
+      return act(() => upd("workers", id, {
+        name: f.name, phone: f.phone, base_rate: parseNum(f.rate) || 0, rate_currency: f.rateCur || "EUR", object_id: f.objectId || null, note: f.note,
+        permit_expiry: f.permitExpiry || null, contract_expiry: f.contractExpiry || null, position: f.position || "",
+      }), `Uredio podatke radnika: ${name}${diffs.length ? " (" + diffs.join(", ") + ")" : ""}`);
+    },
     setPosition: (w, position) => act(() => upd("workers", w.id, { position }),
       `Postavio poziciju radniku ${w.name}: ${position || "—"}`),
     delWorker: (w) => act(() => softDel("workers", w.id), `Obrisao radnika: ${w.name}`),
@@ -617,6 +660,8 @@ export default function App() {
       on ? `Zatvorio objekt: ${o.name}` : `Ponovno otvorio objekt: ${o.name}`),
     setBillRate: (o, rate, cur) => act(() => supabase.from("object_billing").upsert({ object_id: o.id, bill_rate: rate, bill_currency: cur || "EUR" })
       .then(({ error }) => { if (error) throw error; }), `Promijenio naplatu objekta ${o.name} na ${money(rate, cur)}/h`),
+    setBudget: (o, budget, cur) => act(() => supabase.from("object_billing").upsert({ object_id: o.id, monthly_budget: budget })
+      .then(({ error }) => { if (error) throw error; }), `Postavio mjesečni proračun objekta ${o.name} na ${money(budget, cur)}`),
     setPositionRate: (o, position, patch) => act(() => supabase.from("position_billing")
       .upsert({ object_id: o.id, position, mode: patch.mode === "markup" ? "markup" : "fixed",
         rate: patch.mode === "markup" ? 0 : (patch.value || 0), markup: patch.mode === "markup" ? (patch.value || 0) : 0,
@@ -715,9 +760,11 @@ export default function App() {
       })));
       if (error) throw error;
     }, `Upisao ${TYPE_LABEL[meta.type]?.toLowerCase() || meta.type} za ${entries.length} radnika (${money(round2(entries.reduce((s, e) => s + e.amount, 0)), meta.currency)})`),
-    markPaid: (w, mo, amount, amountKc) => act(() => ins("payouts", { worker_id: w.id, month: mo, amount, amount_czk: amountKc || 0, created_by: session.user.id }),
-      `Označio ISPLAĆENO: ${w.name} za ${mo} (${[amount ? eur(amount) : "", amountKc ? czk(amountKc) : ""].filter(Boolean).join(" + ") || eur(0)})`),
-    unmarkPaid: (payout, wName) => act(() => softDel("payouts", payout.id), `Otključao isplatu: ${wName} za ${payout.month}`),
+    markPaid: (w, mo, amount, amountKc) => act(() => ins("payouts", { worker_id: w.id, month: mo, amount, amount_czk: amountKc || 0, approved: false, created_by: session.user.id }),
+      `Predložio isplatu: ${w.name} za ${mo} (${[amount ? eur(amount) : "", amountKc ? czk(amountKc) : ""].filter(Boolean).join(" + ") || eur(0)}) — čeka odobrenje`),
+    approvePayout: (payout, wName) => act(() => upd("payouts", payout.id, { approved: true, approved_by: session.user.id, approved_at: new Date().toISOString() }),
+      `Odobrio isplatu: ${wName} za ${payout.month}`),
+    unmarkPaid: (payout, wName) => act(() => softDel("payouts", payout.id), `Otključao/odbacio isplatu: ${wName} za ${payout.month}`),
     addInvoicePayment: (o, mo, amount) => act(() => ins("invoice_payments", { object_id: o.id, month: mo, amount }),
       `Upisao uplatu od ${o.name}: ${eur(amount)} (${mo})`),
     delInvoicePayment: (p, oName) => act(() => softDel("invoice_payments", p.id), `Obrisao uplatu od ${oName}: ${eur(p.amount)}`),
@@ -732,8 +779,13 @@ export default function App() {
       source_czk: note.sourceCzk, note: note.note || "", created_by: session.user.id,
     }), `Dodao mzdy napomenu: ${wName} ${money(note.amount, note.currency)} (${note.month})`),
     delPayrollNote: (note, wName) => act(() => softDel("payroll_notes", note.id), `Obrisao mzdy napomenu: ${wName} (${note.month})`),
-    saveSettings: (s) => act(() => supabase.from("settings").upsert({ id: 1, ...s }).then(({ error }) => { if (error) throw error; }),
-      "Uredio podatke firme"),
+    saveSettings: (s) => {
+      const old = data.settings || {};
+      const labels = { company_name: "naziv", address: "adresa", oib: "OIB", iban: "IBAN", czk_rate: "tečaj", weekend_pct: "dodatak vikend", holiday_pct: "dodatak praznik", expiry_warn_days: "dani upozorenja" };
+      const diffs = Object.keys(labels).filter((k) => String(old[k] ?? "") !== String(s[k] ?? "")).map((k) => `${labels[k]} "${old[k] ?? "—"}"→"${s[k] ?? "—"}"`);
+      return act(() => supabase.from("settings").upsert({ id: 1, ...s }).then(({ error }) => { if (error) throw error; }),
+        `Uredio podatke firme${diffs.length ? " (" + diffs.join(", ") + ")" : ""}`);
+    },
     restore: (t) => act(() => upd(t.table, t.row.id, { deleted_at: null }), `Vratio iz koša: ${t.label}`),
     setRole: (p, role) => act(() => upd("profiles", p.id, { role }), `Promijenio ulogu: ${p.name} → ${role === "admin" ? "admin" : "zaposlenik"}`),
     toggleMember: (object, p, on) => act(() =>
@@ -826,6 +878,11 @@ function Login({ lang, setLang, t }) {
     setBusy(false);
     if (error) setErr(t("loginErr"));
   };
+  const loginGoogle = async () => {
+    setErr("");
+    const { error } = await supabase.auth.signInWithOAuth({ provider: "google", options: { redirectTo: window.location.origin } });
+    if (error) setErr("Google prijava nije uključena — treba se postaviti u Supabase Dashboardu (Authentication → Providers → Google).");
+  };
   return (
     <div style={{ minHeight: "100vh", background: S.bg, fontFamily: "'Segoe UI', system-ui, sans-serif", color: S.ink }}>
       <style>{`* { box-sizing: border-box; } input { width: 100%; padding: 12px; border: 1px solid ${S.line}; border-radius: 10px; outline: none; font-size: 15px; } input:focus { border-color: ${S.green}; }`}</style>
@@ -847,6 +904,14 @@ function Login({ lang, setLang, t }) {
           {err && <div style={{ color: S.red, fontSize: 13, marginTop: 10 }}>{err}</div>}
           <button onClick={login} disabled={busy} style={{ width: "100%", background: S.green, color: "#fff", border: "none", borderRadius: 10, padding: 13, fontWeight: 700, cursor: "pointer", marginTop: 14, fontSize: 15, opacity: busy ? 0.7 : 1 }}>
             {busy ? t("loginBusy") : t("loginBtn")}
+          </button>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, margin: "14px 0" }}>
+            <div style={{ flex: 1, height: 1, background: S.line }} />
+            <span style={{ fontSize: 12, color: S.sub }}>ili</span>
+            <div style={{ flex: 1, height: 1, background: S.line }} />
+          </div>
+          <button onClick={loginGoogle} style={{ width: "100%", background: "#fff", color: S.ink, border: `1px solid ${S.line}`, borderRadius: 10, padding: 12, fontWeight: 700, cursor: "pointer", fontSize: 14.5 }}>
+            🔵 Prijavi se Google računom
           </button>
           <div style={{ fontSize: 12.5, color: S.sub, marginTop: 14, lineHeight: 1.5 }}>
             {t("noAccount")}
@@ -1088,6 +1153,14 @@ function exportAllData(data) {
 function AdminPanels({ data, api, panel, setPanel }) {
   const [firm, setFirm] = useState({ company_name: "", address: "", oib: "", iban: "", czk_rate: "25", weekend_pct: "0", holiday_pct: "0", expiry_warn_days: "30" });
   const [auditQ, setAuditQ] = useState("");
+  const [lastBackup, setLastBackup] = useState(() => { try { return localStorage.getItem("evidencija_last_backup"); } catch { return null; } });
+  const daysSinceBackup = lastBackup ? Math.floor((Date.now() - new Date(lastBackup).getTime()) / 86400000) : null;
+  const doBackup = () => {
+    exportAllData(data);
+    const now = new Date().toISOString();
+    try { localStorage.setItem("evidencija_last_backup", now); } catch {}
+    setLastBackup(now);
+  };
   useEffect(() => setFirm({
     company_name: data.settings.company_name || "", address: data.settings.address || "",
     oib: data.settings.oib || "", iban: data.settings.iban || "", czk_rate: String(data.settings.czk_rate || 25),
@@ -1101,7 +1174,7 @@ function AdminPanels({ data, api, panel, setPanel }) {
         background: S.amberSoft, border: `1px solid #EBD9B4`, borderRadius: 12, padding: "9px 12px" }}>
         <span style={{ fontWeight: 700, color: S.amber, fontSize: 13.5 }}>👑 Admin</span>
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-          {[["users","👥"],["audit","📜"],["trash",`🗑${data.trash.length ? data.trash.length : ""}`],["firm","⚙️"]].map(([id, label]) => (
+          {[["users","👥"],["audit","📜"],["logins","🔐"],["errors",`🐛${(data.errorLog || []).length ? (data.errorLog || []).length : ""}`],["trash",`🗑${data.trash.length ? data.trash.length : ""}`],["firm","⚙️"]].map(([id, label]) => (
             <button key={id} onClick={() => setPanel(panel === id ? "" : id)} style={{
               background: panel === id ? S.amber : "#fff", color: panel === id ? "#fff" : S.amber,
               border: `1px solid ${S.amber}`, borderRadius: 8, padding: "5px 10px", fontSize: 13, fontWeight: 700, cursor: "pointer" }}>
@@ -1147,6 +1220,33 @@ function AdminPanels({ data, api, panel, setPanel }) {
               })()}
             </>
           )}
+        </Card>
+      )}
+
+      {panel === "logins" && (
+        <Card style={{ marginTop: 8 }}>
+          <div style={{ fontWeight: 700, marginBottom: 8 }}>🔐 Povijest prijava</div>
+          {(data.loginLog || []).length === 0 ? <div style={{ color: S.sub, fontSize: 13.5 }}>Još nema zabilježenih prijava.</div>
+            : (data.loginLog || []).map((l) => (
+              <div key={l.id} style={{ padding: "6px 0", borderBottom: `1px solid ${S.line}`, fontSize: 13 }}>
+                <span className="num" style={{ color: S.sub }}>{fmtDT(l.at)}</span>{" · "}<b>{l.userName || "(bez imena)"}</b>
+                <div style={{ fontSize: 11, color: S.sub }}>{l.userAgent}</div>
+              </div>
+            ))}
+        </Card>
+      )}
+
+      {panel === "errors" && (
+        <Card style={{ marginTop: 8 }}>
+          <div style={{ fontWeight: 700, marginBottom: 8 }}>🐛 Greške aplikacije</div>
+          {(data.errorLog || []).length === 0 ? <div style={{ color: S.sub, fontSize: 13.5 }}>Nema zabilježenih grešaka. 🎉</div>
+            : (data.errorLog || []).map((e) => (
+              <div key={e.id} style={{ padding: "6px 0", borderBottom: `1px solid ${S.line}`, fontSize: 13 }}>
+                <span className="num" style={{ color: S.sub }}>{fmtDT(e.at)}</span>{" · "}<b>{e.userName || "(bez imena)"}</b>
+                <div style={{ color: S.red, fontWeight: 600 }}>{e.message}</div>
+                {e.url && <div style={{ fontSize: 11, color: S.sub }}>{e.url}</div>}
+              </div>
+            ))}
         </Card>
       )}
 
@@ -1200,7 +1300,15 @@ function AdminPanels({ data, api, panel, setPanel }) {
           <div style={{ borderTop: `1px dashed ${S.line}`, marginTop: 14, paddingTop: 12 }}>
             <div style={{ fontWeight: 700, marginBottom: 6 }}>⬇ Backup</div>
             <div style={{ fontSize: 12.5, color: S.sub, marginBottom: 8 }}>Sve podatke (radnici, objekti, svi upisani sati, sve isplate, isplaćeni mjeseci) u jednu Excel datoteku, neovisno o odabranom mjesecu.</div>
-            <Btn small kind="excel" onClick={() => exportAllData(data)}>📊 Izvezi sve podatke (Excel)</Btn>
+            {(daysSinceBackup === null || daysSinceBackup >= 30) ? (
+              <div style={{ fontSize: 12.5, color: S.amber, fontWeight: 600, marginBottom: 8 }}>
+                ⚠️ {daysSinceBackup === null ? "Još nikad nisi izvezla backup na ovom uređaju." : `Zadnji backup prije ${daysSinceBackup} dana.`} Preporuka: barem jednom mjesečno.
+              </div>
+            ) : (
+              <div style={{ fontSize: 12, color: S.sub, marginBottom: 8 }}>Zadnji backup: {daysSinceBackup === 0 ? "danas" : `prije ${daysSinceBackup} dana`}.</div>
+            )}
+            <Btn small kind="excel" onClick={doBackup}>📊 Izvezi sve podatke (Excel)</Btn>
+            <div style={{ fontSize: 11, color: S.sub, marginTop: 6 }}>Ovo je podsjetnik na ovom uređaju/pregledniku — pravi automatski backup na Google Drive/e-mail treba dodatnu poslužiteljsku postavku (mogu pripremiti kod, ali postavljanje ide preko tvog Supabase/Google naloga).</div>
           </div>
         </Card>
       )}
@@ -2012,11 +2120,14 @@ function WorkerDetail({ worker, data, api, onBack }) {
         <div style={{ fontWeight: 700, marginBottom: 8 }}>Zadnji upisi sati</div>
         {logs.length === 0 ? <div style={{ color: S.sub, fontSize: 13.5 }}>Još nema upisanih sati.</div>
           : logs.map((l) => (
-            <div key={l.id} style={{ display: "flex", justifyContent: "space-between", padding: "7px 0", borderBottom: `1px solid ${S.line}`, fontSize: 14 }}>
-              <span>{fmtDate(l.date)} · {logSpan(l)}{objName(l.objectId) ? " · " + objName(l.objectId) : ""}</span>
+            <div key={l.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 0", borderBottom: `1px solid ${S.line}`, fontSize: 14 }}>
+              <span style={{ flex: 1 }}>{fmtDate(l.date)} · {logSpan(l)}{objName(l.objectId) ? " · " + objName(l.objectId) : ""}</span>
               <span className="num" style={{ fontWeight: 700, color: !l.monthly && isDayHoursSuspicious(l.hours) ? S.red : "inherit" }}>
                 {!l.monthly && isDayHoursSuspicious(l.hours) && "⚠️ "}{fmtH(l.hours)}
               </span>
+              {(api.admin || l.createdBy === api.uid()) && (
+                <button onClick={() => api.delLog(l, worker.name)} title="Obriši" style={{ background: "none", border: "none", color: S.red, fontSize: 16, cursor: "pointer", padding: 4 }}>✕</button>
+              )}
             </div>
           ))}
       </Card>
@@ -2066,6 +2177,7 @@ function ObjectDetail({ object, data, api, onBack, onOpenWorker }) {
   const [editLog, setEditLog] = useState(null);
   const [rateEdit, setRateEdit] = useState(String(object.billRate || ""));
   const [billCur, setBillCur] = useState(object.billCur || "EUR");
+  const [budgetEdit, setBudgetEdit] = useState(String(object.monthlyBudget || ""));
   const [posRateForm, setPosRateForm] = useState({ position: "", mode: "fixed", value: "", currency: object.billCur || "EUR" });
   const [posRateEditing, setPosRateEditing] = useState(null); // pozicija koja se trenutno uređuje, ili null za novu
   const [invoices, setInvoices] = useState(null);
@@ -2082,7 +2194,7 @@ function ObjectDetail({ object, data, api, onBack, onOpenWorker }) {
   const [genAmountManual, setGenAmountManual] = useState("");
   const [genNote, setGenNote] = useState("");
 
-  useEffect(() => { setRateEdit(String(object.billRate || "")); setBillCur(object.billCur || "EUR"); }, [object.id, object.billRate, object.billCur]);
+  useEffect(() => { setRateEdit(String(object.billRate || "")); setBillCur(object.billCur || "EUR"); setBudgetEdit(String(object.monthlyBudget || "")); }, [object.id, object.billRate, object.billCur, object.monthlyBudget]);
 
   const loadInvoices = useCallback(async () => {
     if (!api.admin) return;
@@ -2275,6 +2387,23 @@ function ObjectDetail({ object, data, api, onBack, onOpenWorker }) {
                 <Btn small onClick={() => api.setBillRate(object, parseNum(rateEdit) || 0, billCur)}>Spremi</Btn>
               </div>
               <div style={{ fontSize: 11.5, color: S.sub, marginTop: 4 }}>Ovo je zadana (default) cijena za sve pozicije koje nemaju svoju cijenu ispod.</div>
+            </Field>
+
+            <Field label={`Mjesečni proračun troška (${bc === "CZK" ? "Kč" : "€"}) — nije obavezno`}>
+              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                <input inputMode="decimal" value={budgetEdit} onChange={(e) => setBudgetEdit(e.target.value)} placeholder="npr. 5000" />
+                <Btn small onClick={() => api.setBudget(object, parseNum(budgetEdit) || 0, bc)}>Spremi</Btn>
+              </div>
+              {object.monthlyBudget > 0 && (() => {
+                const spent = bc === "CZK" ? costK + extraCostKc : costE + extraCost;
+                const pct = round2((spent / object.monthlyBudget) * 100);
+                const over = spent > object.monthlyBudget;
+                return (
+                  <div style={{ fontSize: 12.5, marginTop: 4, fontWeight: 600, color: over ? S.red : pct >= 80 ? S.amber : S.sub }}>
+                    {over ? "⚠️ " : pct >= 80 ? "⚠️ " : ""}Potrošeno {money(round2(spent), bc)} od {money(object.monthlyBudget, bc)} ({pct}%){over ? " — PREKORAČENO" : ""}
+                  </div>
+                );
+              })()}
             </Field>
 
             <div style={{ borderTop: `1px dashed #EBD9B4`, marginTop: 4, paddingTop: 10 }}>
@@ -2859,6 +2988,7 @@ function PaymentsTab({ data, api, onOpenWorker }) {
   const [bulkMode, setBulkMode] = useState(false);
   const [bulkAmounts, setBulkAmounts] = useState({}); // workerId -> string
   const [bulkBusy, setBulkBusy] = useState(false);
+  const [pq, setPq] = useState("");
   const wName = (id) => data.workers.find((x) => x.id === id)?.name || "Obrisan radnik";
   const oName = (id) => data.objects.find((o) => o.id === id)?.name || "Obrisan objekt";
   const bulkWorkers = workersAtObject(data, filterObj);
@@ -2888,7 +3018,11 @@ function PaymentsTab({ data, api, onOpenWorker }) {
     }
     setForm({ ...form, amount: "", note: "" });
   };
-  const recent = [...data.payments].sort((a, b) => b.date.localeCompare(a.date)).slice(0, 15);
+  const recentAll = [...data.payments].sort((a, b) => b.date.localeCompare(a.date));
+  const pqTrim = pq.trim().toLowerCase();
+  const recent = pqTrim
+    ? recentAll.filter((p) => (p.note || "").toLowerCase().includes(pqTrim) || (p.workerId ? wName(p.workerId) : oName(p.objectId)).toLowerCase().includes(pqTrim)).slice(0, 60)
+    : recentAll.slice(0, 15);
   const tagStyle = (p) => p.type === "avans" ? { color: S.amber, bg: S.amberSoft }
     : p.type === "bonus" ? { color: S.green, bg: S.greenSoft }
     : p.type === "racun" ? { color: S.blue, bg: S.blueSoft }
@@ -3015,9 +3149,12 @@ function PaymentsTab({ data, api, onOpenWorker }) {
           )}
         </Card>
       )}
+      {recentAll.length > 15 && (
+        <input value={pq} onChange={(e) => setPq(e.target.value)} placeholder="🔍 Traži stariji upis po imenu ili napomeni (za brisanje)…" style={{ marginBottom: 10 }} />
+      )}
       {recent.length > 0 && (
         <Card>
-          <div style={{ fontWeight: 700, marginBottom: 8 }}>{api.t("recent")}</div>
+          <div style={{ fontWeight: 700, marginBottom: 8 }}>{pqTrim ? `Rezultati (${recent.length})` : api.t("recent")}</div>
           {recent.map((p) => {
             const t = tagStyle(p);
             return (
@@ -3455,12 +3592,12 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
                         {months.map((mo) => {
                           const hadHours = data.logs.some((l) => l.workerId === w.id && monthKey(l.date) === mo);
                           const paid = paidFor(data, w.id, mo);
-                          const bg = !hadHours ? "transparent" : paid ? S.greenSoft : S.redSoft;
-                          const color = !hadHours ? S.line : paid ? S.green : S.red;
+                          const bg = !hadHours ? "transparent" : paid?.approved ? S.greenSoft : paid ? S.amberSoft : S.redSoft;
+                          const color = !hadHours ? S.line : paid?.approved ? S.green : paid ? S.amber : S.red;
                           return (
                             <td key={mo} style={{ textAlign: "center", padding: "3px 2px" }}>
                               <span style={{ display: "inline-block", width: 20, height: 20, lineHeight: "20px", borderRadius: 5, background: bg, color, fontWeight: 800 }}>
-                                {hadHours ? (paid ? "✓" : "✕") : ""}
+                                {hadHours ? (paid?.approved ? "✓" : paid ? "⏳" : "✕") : ""}
                               </span>
                             </td>
                           );
@@ -3469,7 +3606,7 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
                     ))}
                   </tbody>
                 </table>
-                <div style={{ fontSize: 11.5, color: S.sub, marginTop: 8 }}>✓ zeleno = isplaćeno i zaključano · ✕ crveno = ima sati, još nije isplaćeno · prazno = nema sati taj mjesec</div>
+                <div style={{ fontSize: 11.5, color: S.sub, marginTop: 8 }}>✓ zeleno = odobreno i zaključano · ⏳ žuto = predloženo, čeka odobrenje · ✕ crveno = ima sati, ništa predloženo · prazno = nema sati taj mjesec</div>
               </div>
             );
           })()}
@@ -3775,20 +3912,20 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
                 {selected.size > 0 && (
                   <>
                     <Btn small kind="ghost" onClick={() => payMany(rows.filter((r) => selected.has(r.w.id)))} disabled={bulkBusy}>
-                      ✓ Isplati odabrane ({selected.size})
+                      ✓ Predloži odabrane ({selected.size})
                     </Btn>
                     <Btn small onClick={() => payAndPrintMany(rows.filter((r) => selected.has(r.w.id)))} disabled={bulkBusy}>
-                      🖨✓ Isplati i ispiši ({selected.size})
+                      🖨✓ Predloži i ispiši ({selected.size})
                     </Btn>
                   </>
                 )}
                 {unpaidRows.length > 0 && (
                   <>
                     <Btn small kind="ghost" onClick={() => payMany(unpaidRows)} disabled={bulkBusy}>
-                      ✓✓ Isplati sve ({unpaidRows.length})
+                      ✓✓ Predloži sve ({unpaidRows.length})
                     </Btn>
                     <Btn small kind={selected.size > 0 ? "ghost" : "primary"} onClick={() => payAndPrintMany(unpaidRows)} disabled={bulkBusy}>
-                      {bulkBusy ? "Isplaćujem…" : `🖨✓✓ Isplati i ispiši sve (${unpaidRows.length})`}
+                      {bulkBusy ? "Spremam…" : `🖨✓✓ Predloži i ispiši sve (${unpaidRows.length})`}
                     </Btn>
                   </>
                 )}
@@ -3831,16 +3968,22 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
                 {open === r.w.id && (
                   <div style={{ marginTop: 12, borderTop: `1px dashed ${S.line}`, paddingTop: 10 }}>
                     {r.logs.sort((a, b) => a.date.localeCompare(b.date)).map((l) => (
-                      <div key={l.id} className="num" style={{ display: "flex", justifyContent: "space-between", fontSize: 13.5, padding: "4px 0" }}>
-                        <span>{fmtDate(l.date)} · {logSpan(l)}{objName(l.objectId) ? " · " + objName(l.objectId) : ""}</span>
+                      <div key={l.id} className="num" style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13.5, padding: "4px 0" }}>
+                        <span style={{ flex: 1 }}>{fmtDate(l.date)} · {logSpan(l)}{objName(l.objectId) ? " · " + objName(l.objectId) : ""}</span>
                         <span style={{ fontWeight: 600 }}>{fmtH(l.hours)}</span>
+                        {(admin || l.createdBy === api.uid()) && (
+                          <button onClick={(e) => { e.stopPropagation(); api.delLog(l, r.w.name); }} title="Obriši"
+                            style={{ background: "none", border: "none", color: S.red, fontSize: 15, cursor: "pointer", padding: "0 2px" }}>✕</button>
+                        )}
                       </div>
                     ))}
                     {r.pays.map((p) => (
-                      <div key={p.id} className="num" style={{ display: "flex", justifyContent: "space-between", fontSize: 13.5, padding: "4px 0",
+                      <div key={p.id} className="num" style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13.5, padding: "4px 0",
                         color: p.type === "bonus" ? S.green : p.type === "racun" ? S.blue : p.deduct ? S.amber : S.sub }}>
-                        <span>{fmtDate(p.date)} · {TYPE_LABEL[p.type] || p.type}{p.note ? " · " + p.note : ""}</span>
+                        <span style={{ flex: 1 }}>{fmtDate(p.date)} · {TYPE_LABEL[p.type] || p.type}{p.note ? " · " + p.note : ""}</span>
                         <span style={{ fontWeight: 600 }}>{p.type === "bonus" ? "+" : p.deduct ? "−" : ""}{money(p.amount, p.currency)}</span>
+                        <button onClick={(e) => { e.stopPropagation(); api.delPayment(p, r.w.name); }} title="Obriši"
+                          style={{ background: "none", border: "none", color: S.red, fontSize: 15, cursor: "pointer", padding: "0 2px" }}>✕</button>
                       </div>
                     ))}
                     {(() => {
@@ -3877,19 +4020,31 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
                         {signatures[r.w.id] ? "✓ Potpisano (promijeni)" : "✍️ Potpis"}
                       </Btn>
                       {view === "month" && !paid && (
-                        <Btn small onClick={() => api.markPaid(r.w, month, r.net, r.czk.net)}>✓ Označi isplaćeno</Btn>
+                        <Btn small onClick={() => api.markPaid(r.w, month, r.net, r.czk.net)}>✓ Predloži isplatu</Btn>
                       )}
-                      {view === "month" && paid && (
+                      {view === "month" && paid && !paid.approved && (
+                        <>
+                          <span className="num" style={{ fontSize: 12.5, color: S.amber, alignSelf: "center", fontWeight: 700 }}>
+                            ⏳ Predloženo {fmtDate(paid.paidAt)} · {[paid.amount ? eur(paid.amount) : "", paid.amountKc ? czk(paid.amountKc) : ""].filter(Boolean).join(" + ") || eur(0)}
+                          </span>
+                          {admin && <Btn small onClick={() => api.approvePayout(paid, r.w.name)}>✓ Odobri</Btn>}
+                          <Btn small kind="danger" onClick={() => api.unmarkPaid(paid, r.w.name)}>Odbaci</Btn>
+                        </>
+                      )}
+                      {view === "month" && paid && paid.approved && (
                         <>
                           <span className="num" style={{ fontSize: 12.5, color: S.green, alignSelf: "center", fontWeight: 700 }}>
-                            Isplaćeno {fmtDate(paid.paidAt)} · {[paid.amount ? eur(paid.amount) : "", paid.amountKc ? czk(paid.amountKc) : ""].filter(Boolean).join(" + ") || eur(0)}
+                            ✓ Odobreno {fmtDate(paid.approvedAt || paid.paidAt)} · {[paid.amount ? eur(paid.amount) : "", paid.amountKc ? czk(paid.amountKc) : ""].filter(Boolean).join(" + ") || eur(0)}
                           </span>
                           {admin && <Btn small kind="danger" onClick={() => api.unmarkPaid(paid, r.w.name)}>Otključaj</Btn>}
                         </>
                       )}
                     </div>
-                    {view === "month" && paid && (
-                      <div style={{ fontSize: 11.5, color: S.sub, marginTop: 6 }}>Mjesec je zaključan — sati i isplate se više ne mogu mijenjati{admin ? "" : " (otključava admin)"}.</div>
+                    {view === "month" && paid && !paid.approved && (
+                      <div style={{ fontSize: 11.5, color: S.sub, marginTop: 6 }}>Isplata je predložena, ali još nije odobrena — sati se mogu ispraviti do odobrenja.</div>
+                    )}
+                    {view === "month" && paid && paid.approved && (
+                      <div style={{ fontSize: 11.5, color: S.sub, marginTop: 6 }}>Mjesec je odobren i zaključan — sati i isplate se više ne mogu mijenjati{admin ? "" : " (otključava admin)"}.</div>
                     )}
                   </div>
                 )}

@@ -468,3 +468,83 @@ alter table reminders enable row level security;
 drop policy if exists "rem_admin_all" on reminders;
 create policy "rem_admin_all" on reminders for all to authenticated
   using (is_admin()) with check (is_admin());
+
+-- ============================================================
+-- MJESEČNI PRORAČUN PO OBJEKTU (upozorenje kad se troškovi približe/premaše)
+-- ============================================================
+alter table object_billing add column if not exists monthly_budget numeric default 0;
+
+-- ============================================================
+-- ULOGA "manager" — voditelj objekta (dodatno uz admin/employee)
+-- vidi svoje dodijeljene objekte kao i employee (postojeća pravila), ali smije
+-- i uređivati naplatu (object_billing, position_billing) SAMO za te objekte.
+-- ============================================================
+alter table profiles drop constraint if exists profiles_role_check;
+alter table profiles add constraint profiles_role_check check (role in ('admin','employee','manager'));
+
+drop policy if exists "billing_manager" on object_billing;
+create policy "billing_manager" on object_billing for all to authenticated
+  using (exists (
+    select 1 from object_members m join profiles p on p.id = auth.uid()
+    where m.object_id = object_billing.object_id and m.user_id = auth.uid() and p.role = 'manager'
+  ))
+  with check (exists (
+    select 1 from object_members m join profiles p on p.id = auth.uid()
+    where m.object_id = object_billing.object_id and m.user_id = auth.uid() and p.role = 'manager'
+  ));
+
+drop policy if exists "posb_manager" on position_billing;
+create policy "posb_manager" on position_billing for all to authenticated
+  using (exists (
+    select 1 from object_members m join profiles p on p.id = auth.uid()
+    where m.object_id = position_billing.object_id and m.user_id = auth.uid() and p.role = 'manager'
+  ))
+  with check (exists (
+    select 1 from object_members m join profiles p on p.id = auth.uid()
+    where m.object_id = position_billing.object_id and m.user_id = auth.uid() and p.role = 'manager'
+  ));
+
+-- ============================================================
+-- ODOBRAVANJE ISPLATA U DVA KORAKA: "predloženo" pa tek onda "odobreno"
+-- ============================================================
+alter table payouts add column if not exists approved boolean default false;
+alter table payouts add column if not exists approved_by uuid references profiles;
+alter table payouts add column if not exists approved_at timestamptz;
+
+-- ============================================================
+-- POVIJEST PRIJAVA — jednostavan sigurnosni log (tko/kad se prijavio)
+-- ============================================================
+create table if not exists login_log (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid references profiles,
+  user_name text default '',
+  at timestamptz default now(),
+  user_agent text default ''
+);
+alter table login_log enable row level security;
+drop policy if exists "login_insert_self" on login_log;
+create policy "login_insert_self" on login_log for insert to authenticated
+  with check (user_id = auth.uid());
+drop policy if exists "login_select_admin" on login_log;
+create policy "login_select_admin" on login_log for select to authenticated
+  using (is_admin());
+
+-- ============================================================
+-- GREŠKE APLIKACIJE — osnovno bilježenje (bez vanjskog servisa)
+-- ============================================================
+create table if not exists error_log (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid references profiles,
+  user_name text default '',
+  message text not null,
+  stack text default '',
+  url text default '',
+  at timestamptz default now()
+);
+alter table error_log enable row level security;
+drop policy if exists "errlog_insert_self" on error_log;
+create policy "errlog_insert_self" on error_log for insert to authenticated
+  with check (user_id = auth.uid());
+drop policy if exists "errlog_select_admin" on error_log;
+create policy "errlog_select_admin" on error_log for select to authenticated
+  using (is_admin());
