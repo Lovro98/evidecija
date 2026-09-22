@@ -570,3 +570,20 @@ alter table commission_rates enable row level security;
 drop policy if exists "commrate_admin_all" on commission_rates;
 create policy "commrate_admin_all" on commission_rates for all to authenticated
   using (is_admin()) with check (is_admin());
+
+-- Isplate provizije zaposleniku (koliko mu je stvarno dano) — oduzima se od zarađene provizije
+create table if not exists commission_payouts (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references profiles on delete cascade,
+  pay_date date not null default current_date,
+  amount numeric not null default 0,
+  currency text not null default 'EUR',
+  note text default '',
+  created_by uuid references profiles,
+  created_at timestamptz default now(),
+  deleted_at timestamptz
+);
+alter table commission_payouts enable row level security;
+drop policy if exists "commpay_admin_all" on commission_payouts;
+create policy "commpay_admin_all" on commission_payouts for all to authenticated
+  using (is_admin()) with check (is_admin());

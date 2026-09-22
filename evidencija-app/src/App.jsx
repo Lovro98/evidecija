@@ -362,9 +362,9 @@ async function fetchAll(isAdmin) {
   const err = [workers, objects, logs, payments, assignments, rateChanges, profiles, payouts].find((r) => r.error);
   if (err) throw err.error;
 
-  let billing = [], audit = [], trash = [], members = [], invoicePayments = [], settings = {}, objectInvoices = [], payrollNotes = [], positionBilling = [], reminders = [], loginLog = [], errorLog = [], commissionRates = [];
+  let billing = [], audit = [], trash = [], members = [], invoicePayments = [], settings = {}, objectInvoices = [], payrollNotes = [], positionBilling = [], reminders = [], loginLog = [], errorLog = [], commissionRates = [], commissionPayouts = [];
   if (isAdmin) {
-    const [b, a, tw, tl, tp, om, ip, st, oi, pn, pb, rm, ll, el, cr] = await Promise.all([
+    const [b, a, tw, tl, tp, om, ip, st, oi, pn, pb, rm, ll, el, cr, cp] = await Promise.all([
       supabase.from("object_billing").select("*"),
       supabase.from("audit_log").select("*").order("at", { ascending: false }).limit(80),
       supabase.from("workers").select("*").not("deleted_at", "is", null),
@@ -380,10 +380,11 @@ async function fetchAll(isAdmin) {
       supabase.from("login_log").select("*").order("at", { ascending: false }).limit(80),
       supabase.from("error_log").select("*").order("at", { ascending: false }).limit(50),
       supabase.from("commission_rates").select("*"),
+      live(supabase.from("commission_payouts").select("*")),
     ]);
     billing = b.data || []; audit = a.data || []; members = om.data || [];
     invoicePayments = ip.data || []; settings = st.data || {}; objectInvoices = oi.data || []; payrollNotes = pn.data || [];
-    positionBilling = pb.data || []; reminders = rm.data || []; loginLog = ll.data || []; errorLog = el.data || []; commissionRates = cr.data || [];
+    positionBilling = pb.data || []; reminders = rm.data || []; loginLog = ll.data || []; errorLog = el.data || []; commissionRates = cr.data || []; commissionPayouts = cp.data || [];
     trash = [
       ...(tw.data || []).map((r) => ({ table: "workers", row: r, label: `Radnik: ${r.name}` })),
       ...(tl.data || []).map((r) => ({ table: "work_logs", row: r, label: `Sati: ${fmtH(r.hours)} (${fmtDate(r.work_date)})` })),
@@ -435,6 +436,10 @@ async function fetchAll(isAdmin) {
     })),
     reminders: reminders.map((r) => ({ id: r.id, text: r.text, dueDate: r.due_date || "", done: !!r.done })),
     commissionRates: commissionRates.map((c) => ({ objectId: c.object_id, userId: c.user_id, rate: Number(c.rate) || 0, currency: c.currency === "CZK" ? "CZK" : "EUR" })),
+    commissionPayouts: commissionPayouts.map((c) => ({
+      id: c.id, userId: c.user_id, payDate: c.pay_date, amount: Number(c.amount) || 0,
+      currency: c.currency === "CZK" ? "CZK" : "EUR", note: c.note || "",
+    })),
     loginLog: loginLog.map((l) => ({ id: l.id, userName: l.user_name || "", at: l.at, userAgent: l.user_agent || "" })),
     errorLog: errorLog.map((e) => ({ id: e.id, userName: e.user_name || "", message: e.message, url: e.url || "", at: e.at })),
     settings: settings || {},
@@ -800,6 +805,11 @@ export default function App() {
     delCommissionRate: (o, p) => act(() => supabase.from("commission_rates").delete().eq("object_id", o.id).eq("user_id", p.id)
       .then(({ error }) => { if (error) throw error; }),
       `Obrisao posebnu proviziju za ${p.name} na objektu ${o.name} (vraća se na zadanu)`),
+    addCommissionPayout: (p, amount, cur, date, note) => act(() => ins("commission_payouts",
+      { user_id: p.id, amount, currency: cur || "EUR", pay_date: date || todayISO(), note: note || "", created_by: session.user.id }),
+      `Isplatio proviziju ${p.name}: ${money(amount, cur)}${note ? " (" + note + ")" : ""}`),
+    delCommissionPayout: (cp, pName) => act(() => softDel("commission_payouts", cp.id),
+      `Obrisao isplatu provizije za ${pName}: ${money(cp.amount, cp.currency)}`),
     toggleMember: (object, p, on) => act(() =>
       (on ? supabase.from("object_members").insert({ object_id: object.id, user_id: p.id })
           : supabase.from("object_members").delete().eq("object_id", object.id).eq("user_id", p.id)
@@ -2033,6 +2043,7 @@ function DirectoryTab({ data, api, onOpen }) {
 /*  DETALJ ZAPOSLENIKA (provizija po mjesecima, detaljno po objektu)   */
 /* ================================================================== */
 function ProfileDetail({ profile, data, api, onBack }) {
+  const [payForm, setPayForm] = useState({ amount: "", cur: "EUR", date: todayISO(), note: "" });
   const monthLabel = (mk) => `${MONTHS[Number(mk.slice(5, 7)) - 1]} ${mk.slice(0, 4)}.`;
   const myObjIds = [...new Set((data.objectMembers || []).filter((m) => m.user_id === profile.id).map((m) => m.object_id))];
   const myObjects = myObjIds.map((oid) => data.objects.find((o) => o.id === oid)).filter(Boolean).sort((a, b) => a.name.localeCompare(b.name, "hr"));
@@ -2057,6 +2068,22 @@ function ProfileDetail({ profile, data, api, onBack }) {
   const grandTotals = {};
   monthRows.forEach((m) => Object.entries(m.totalsByCur).forEach(([c, v]) => { grandTotals[c] = round2((grandTotals[c] || 0) + v); }));
 
+  const myPayouts = (data.commissionPayouts || []).filter((c) => c.userId === profile.id).sort((a, b) => b.payDate.localeCompare(a.payDate));
+  const paidTotals = {};
+  myPayouts.forEach((c) => { paidTotals[c.currency] = round2((paidTotals[c.currency] || 0) + c.amount); });
+
+  const owedTotals = {};
+  new Set([...Object.keys(grandTotals), ...Object.keys(paidTotals)]).forEach((c) => {
+    owedTotals[c] = round2((grandTotals[c] || 0) - (paidTotals[c] || 0));
+  });
+
+  const savePayout = () => {
+    const amt = round2(parseNum(payForm.amount) || 0);
+    if (amt <= 0) return;
+    api.addCommissionPayout(profile, amt, payForm.cur, payForm.date, payForm.note);
+    setPayForm({ amount: "", cur: payForm.cur, date: payForm.date, note: "" });
+  };
+
   return (
     <>
       <button onClick={onBack} style={{ background: "none", border: "none", color: S.green, fontWeight: 700, fontSize: 14.5, padding: "2px 0 12px", cursor: "pointer" }}>← Natrag</button>
@@ -2071,7 +2098,49 @@ function ProfileDetail({ profile, data, api, onBack }) {
             Ukupno zarađeno (sva vidljiva povijest): {Object.entries(grandTotals).map(([c, v]) => money(v, c)).join(" + ")}
           </div>
         )}
+        {Object.keys(paidTotals).length > 0 && (
+          <div style={{ marginTop: 4, fontSize: 13, color: S.sub }}>
+            Ukupno mu isplaćeno: {Object.entries(paidTotals).map(([c, v]) => money(v, c)).join(" + ")}
+          </div>
+        )}
+        {Object.values(owedTotals).some((v) => Math.abs(v) > 0.004) && (
+          <div style={{ marginTop: 8, padding: "8px 10px", borderRadius: 10, background: Object.values(owedTotals).some((v) => v > 0) ? S.redSoft : S.greenSoft }}>
+            {Object.entries(owedTotals).filter(([, v]) => Math.abs(v) > 0.004).map(([c, v]) => (
+              <div key={c} style={{ fontWeight: 800, fontSize: 14, color: v > 0 ? S.red : S.green }}>
+                {v > 0 ? `Dugujem mu: ${money(v, c)}` : `Preplaćeno: ${money(-v, c)}`}
+              </div>
+            ))}
+          </div>
+        )}
       </Card>
+
+      {profile.role !== "admin" && (
+        <Card style={{ marginTop: 10 }}>
+          <div style={{ fontWeight: 700, marginBottom: 8 }}>💸 Upiši isplatu (koliko sam mu dao)</div>
+          <div style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 6 }}>
+            <input inputMode="decimal" value={payForm.amount} onChange={(e) => setPayForm((f) => ({ ...f, amount: e.target.value }))}
+              placeholder="Iznos" style={{ flex: 1 }} />
+            <CurChips small value={payForm.cur} onChange={(v) => setPayForm((f) => ({ ...f, cur: v }))} />
+          </div>
+          <input type="date" value={payForm.date} onChange={(e) => setPayForm((f) => ({ ...f, date: e.target.value }))} style={{ marginBottom: 6 }} />
+          <input value={payForm.note} onChange={(e) => setPayForm((f) => ({ ...f, note: e.target.value }))} placeholder="Napomena (opcionalno)" style={{ marginBottom: 8 }} />
+          <Btn small onClick={savePayout} style={{ width: "100%" }}>Spremi isplatu</Btn>
+
+          {myPayouts.length > 0 && (
+            <div style={{ marginTop: 10, borderTop: `1px solid ${S.line}`, paddingTop: 6 }}>
+              {myPayouts.map((c) => (
+                <div key={c.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 0", fontSize: 13 }}>
+                  <span style={{ flex: 1 }}>
+                    {fmtDate(c.payDate)}{c.note ? " · " + c.note : ""}
+                  </span>
+                  <span className="num" style={{ fontWeight: 700 }}>{money(c.amount, c.currency)}</span>
+                  <button onClick={() => api.delCommissionPayout(c, profile.name)} title="Obriši" style={{ background: "none", border: "none", color: S.red, fontSize: 15, cursor: "pointer", padding: 2 }}>✕</button>
+                </div>
+              ))}
+            </div>
+          )}
+        </Card>
+      )}
 
       {profile.role === "admin" ? (
         <Card style={{ marginTop: 10 }}>
