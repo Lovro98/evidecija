@@ -456,6 +456,7 @@ export default function App() {
   const [tab, setTab] = useState("radnici");
   const [openWorker, setOpenWorker] = useState(null);
   const [openObject, setOpenObject] = useState(null);
+  const [openProfile, setOpenProfile] = useState(null);
   const [adminPanel, setAdminPanel] = useState("");
 
   const admin = profile?.role === "admin";
@@ -818,7 +819,8 @@ export default function App() {
 
   const worker = data.workers.find((w) => w.id === openWorker);
   const object = data.objects.find((o) => o.id === openObject);
-  const detailOpen = worker || object;
+  const openedProfile = data.profiles.find((p) => p.id === openProfile);
+  const detailOpen = worker || object || openedProfile;
 
   return (
     <div style={{ minHeight: "100vh", background: S.bg, color: S.ink, fontFamily: "'Segoe UI', system-ui, sans-serif", paddingBottom: 84 }}>
@@ -850,12 +852,14 @@ export default function App() {
           </div>
         )}
 
-        {admin && !detailOpen && <AdminPanels data={data} api={api} panel={adminPanel} setPanel={setAdminPanel} onOpenWorker={setOpenWorker} />}
+        {admin && !detailOpen && <AdminPanels data={data} api={api} panel={adminPanel} setPanel={setAdminPanel} onOpenWorker={setOpenWorker} onOpenProfile={setOpenProfile} />}
 
         {worker ? (
           <WorkerDetail worker={worker} data={data} api={api} onBack={() => setOpenWorker(null)} />
         ) : object ? (
           <ObjectDetail object={object} data={data} api={api} onBack={() => setOpenObject(null)} onOpenWorker={setOpenWorker} />
+        ) : openedProfile ? (
+          <ProfileDetail profile={openedProfile} data={data} api={api} onBack={() => setOpenProfile(null)} />
         ) : (
           <>
             {tab === "radnici" && <WorkersTab data={data} api={api} onOpen={setOpenWorker} onOpenObject={setOpenObject} />}
@@ -1161,7 +1165,7 @@ function exportAllData(data) {
 /* ================================================================== */
 /*  ADMIN PANELI                                                       */
 /* ================================================================== */
-function AdminPanels({ data, api, panel, setPanel, onOpenWorker }) {
+function AdminPanels({ data, api, panel, setPanel, onOpenWorker, onOpenProfile }) {
   const [firm, setFirm] = useState({ company_name: "", address: "", oib: "", iban: "", czk_rate: "25", weekend_pct: "0", holiday_pct: "0", expiry_warn_days: "30" });
   const [auditQ, setAuditQ] = useState("");
   const [commEdit, setCommEdit] = useState({});
@@ -1275,7 +1279,9 @@ function AdminPanels({ data, api, panel, setPanel, onOpenWorker }) {
             return (
               <div key={p.id} style={{ padding: "9px 0", borderBottom: `1px solid ${S.line}` }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                  <span style={{ flex: 1, fontWeight: 600, fontSize: 14 }}>{p.role === "admin" ? "👑 " : ""}{p.name || "(bez imena)"}</span>
+                  <span onClick={() => onOpenProfile && onOpenProfile(p.id)} style={{ flex: 1, fontWeight: 600, fontSize: 14, cursor: onOpenProfile ? "pointer" : "default", color: onOpenProfile ? S.blue : "inherit" }}>
+                    {p.role === "admin" ? "👑 " : ""}{p.name || "(bez imena)"} {onOpenProfile && <span style={{ fontWeight: 700 }}>›</span>}
+                  </span>
                   <select value={p.role} onChange={(e) => api.setRole(p, e.target.value)} style={{ width: "auto", padding: "6px 8px", fontSize: 13 }}>
                     <option value="employee">Zaposlenik</option>
                     <option value="admin">Admin</option>
@@ -2019,6 +2025,81 @@ function DirectoryTab({ data, api, onOpen }) {
           </Card>
         </div>
       ))}
+    </>
+  );
+}
+
+/* ================================================================== */
+/*  DETALJ ZAPOSLENIKA (provizija po mjesecima, detaljno po objektu)   */
+/* ================================================================== */
+function ProfileDetail({ profile, data, api, onBack }) {
+  const monthLabel = (mk) => `${MONTHS[Number(mk.slice(5, 7)) - 1]} ${mk.slice(0, 4)}.`;
+  const myObjIds = [...new Set((data.objectMembers || []).filter((m) => m.user_id === profile.id).map((m) => m.object_id))];
+  const myObjects = myObjIds.map((oid) => data.objects.find((o) => o.id === oid)).filter(Boolean).sort((a, b) => a.name.localeCompare(b.name, "hr"));
+  const rateFor = (objId) => {
+    const ov = (data.commissionRates || []).find((c) => c.userId === profile.id && c.objectId === objId);
+    return ov ? { rate: ov.rate, cur: ov.currency } : { rate: Number(profile.hourly_commission) || 0, cur: profile.commission_currency || "EUR" };
+  };
+  const logsForMe = data.logs.filter((l) => myObjIds.includes(l.objectId));
+  const months = [...new Set(logsForMe.map((l) => monthKey(l.date)))].sort().reverse();
+
+  const monthRows = months.map((mk) => {
+    const perObj = myObjects.map((o) => {
+      const hrs = round2(logsForMe.filter((l) => l.objectId === o.id && monthKey(l.date) === mk).reduce((s, l) => s + l.hours, 0));
+      const { rate, cur } = rateFor(o.id);
+      return { obj: o, hrs, rate, cur, amount: round2(hrs * rate) };
+    }).filter((r) => r.hrs > 0);
+    const totalsByCur = {};
+    perObj.forEach((r) => { totalsByCur[r.cur] = round2((totalsByCur[r.cur] || 0) + r.amount); });
+    return { mk, perObj, totalsByCur };
+  }).filter((m) => m.perObj.length > 0);
+
+  const grandTotals = {};
+  monthRows.forEach((m) => Object.entries(m.totalsByCur).forEach(([c, v]) => { grandTotals[c] = round2((grandTotals[c] || 0) + v); }));
+
+  return (
+    <>
+      <button onClick={onBack} style={{ background: "none", border: "none", color: S.green, fontWeight: 700, fontSize: 14.5, padding: "2px 0 12px", cursor: "pointer" }}>← Natrag</button>
+
+      <Card>
+        <div style={{ fontSize: 19, fontWeight: 800 }}>{profile.role === "admin" ? "👑 " : ""}{profile.name || "(bez imena)"}</div>
+        <div style={{ color: S.sub, fontSize: 13.5, marginTop: 3 }}>
+          {profile.role === "admin" ? "Admin" : "Zaposlenik"}{myObjects.length > 0 ? " · " + myObjects.map((o) => o.name).join(", ") : " · nema dodijeljenih objekata"}
+        </div>
+        {Object.keys(grandTotals).length > 0 && (
+          <div style={{ marginTop: 10, fontSize: 14, fontWeight: 700, color: S.green }}>
+            Ukupno zarađeno (sva vidljiva povijest): {Object.entries(grandTotals).map(([c, v]) => money(v, c)).join(" + ")}
+          </div>
+        )}
+      </Card>
+
+      {profile.role === "admin" ? (
+        <Card style={{ marginTop: 10 }}>
+          <div style={{ color: S.sub, fontSize: 13.5 }}>Admin nema proviziju po satu.</div>
+        </Card>
+      ) : monthRows.length === 0 ? (
+        <Card style={{ marginTop: 10 }}>
+          <Empty text="Još nema odrađenih sati na dodijeljenim objektima." />
+        </Card>
+      ) : (
+        monthRows.map((m) => (
+          <Card key={m.mk} style={{ marginTop: 10 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+              <div style={{ fontWeight: 800 }}>{monthLabel(m.mk)}</div>
+              <div className="num" style={{ fontWeight: 700, color: S.green }}>
+                {Object.entries(m.totalsByCur).map(([c, v]) => money(v, c)).join(" + ")}
+              </div>
+            </div>
+            {m.perObj.map((r) => (
+              <div key={r.obj.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "4px 0", fontSize: 13, borderTop: `1px solid ${S.line}` }}>
+                <span style={{ flex: 1 }}>{r.obj.name}</span>
+                <span className="num" style={{ color: S.sub, marginRight: 8 }}>{fmtH(r.hrs)} × {money(r.rate, r.cur)}</span>
+                <span className="num" style={{ fontWeight: 700 }}>{money(r.amount, r.cur)}</span>
+              </div>
+            ))}
+          </Card>
+        ))
+      )}
     </>
   );
 }
