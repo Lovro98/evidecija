@@ -362,9 +362,9 @@ async function fetchAll(isAdmin) {
   const err = [workers, objects, logs, payments, assignments, rateChanges, profiles, payouts].find((r) => r.error);
   if (err) throw err.error;
 
-  let billing = [], audit = [], trash = [], members = [], invoicePayments = [], settings = {}, objectInvoices = [], payrollNotes = [], positionBilling = [], reminders = [], loginLog = [], errorLog = [];
+  let billing = [], audit = [], trash = [], members = [], invoicePayments = [], settings = {}, objectInvoices = [], payrollNotes = [], positionBilling = [], reminders = [], loginLog = [], errorLog = [], commissionRates = [];
   if (isAdmin) {
-    const [b, a, tw, tl, tp, om, ip, st, oi, pn, pb, rm, ll, el] = await Promise.all([
+    const [b, a, tw, tl, tp, om, ip, st, oi, pn, pb, rm, ll, el, cr] = await Promise.all([
       supabase.from("object_billing").select("*"),
       supabase.from("audit_log").select("*").order("at", { ascending: false }).limit(80),
       supabase.from("workers").select("*").not("deleted_at", "is", null),
@@ -379,10 +379,11 @@ async function fetchAll(isAdmin) {
       live(supabase.from("reminders").select("*")),
       supabase.from("login_log").select("*").order("at", { ascending: false }).limit(80),
       supabase.from("error_log").select("*").order("at", { ascending: false }).limit(50),
+      supabase.from("commission_rates").select("*"),
     ]);
     billing = b.data || []; audit = a.data || []; members = om.data || [];
     invoicePayments = ip.data || []; settings = st.data || {}; objectInvoices = oi.data || []; payrollNotes = pn.data || [];
-    positionBilling = pb.data || []; reminders = rm.data || []; loginLog = ll.data || []; errorLog = el.data || [];
+    positionBilling = pb.data || []; reminders = rm.data || []; loginLog = ll.data || []; errorLog = el.data || []; commissionRates = cr.data || [];
     trash = [
       ...(tw.data || []).map((r) => ({ table: "workers", row: r, label: `Radnik: ${r.name}` })),
       ...(tl.data || []).map((r) => ({ table: "work_logs", row: r, label: `Sati: ${fmtH(r.hours)} (${fmtDate(r.work_date)})` })),
@@ -433,6 +434,7 @@ async function fetchAll(isAdmin) {
       rate: Number(pb.rate) || 0, markup: Number(pb.markup) || 0, currency: pb.currency === "CZK" ? "CZK" : "EUR",
     })),
     reminders: reminders.map((r) => ({ id: r.id, text: r.text, dueDate: r.due_date || "", done: !!r.done })),
+    commissionRates: commissionRates.map((c) => ({ objectId: c.object_id, userId: c.user_id, rate: Number(c.rate) || 0, currency: c.currency === "CZK" ? "CZK" : "EUR" })),
     loginLog: loginLog.map((l) => ({ id: l.id, userName: l.user_name || "", at: l.at, userAgent: l.user_agent || "" })),
     errorLog: errorLog.map((e) => ({ id: e.id, userName: e.user_name || "", message: e.message, url: e.url || "", at: e.at })),
     settings: settings || {},
@@ -789,7 +791,14 @@ export default function App() {
     restore: (t) => act(() => upd(t.table, t.row.id, { deleted_at: null }), `Vratio iz koša: ${t.label}`),
     setRole: (p, role) => act(() => upd("profiles", p.id, { role }), `Promijenio ulogu: ${p.name} → ${role === "admin" ? "admin" : "zaposlenik"}`),
     setCommission: (p, rate, cur) => act(() => upd("profiles", p.id, { hourly_commission: rate, commission_currency: cur || "EUR" }),
-      `Postavio proviziju po satu za ${p.name}: ${money(rate, cur)}/h`),
+      `Postavio zadanu proviziju po satu za ${p.name}: ${money(rate, cur)}/h`),
+    setCommissionRate: (o, p, rate, cur) => act(() => supabase.from("commission_rates")
+      .upsert({ object_id: o.id, user_id: p.id, rate, currency: cur || "EUR", created_by: session.user.id }, { onConflict: "object_id,user_id" })
+      .then(({ error }) => { if (error) throw error; }),
+      `Postavio proviziju za ${p.name} na objektu ${o.name}: ${money(rate, cur)}/h`),
+    delCommissionRate: (o, p) => act(() => supabase.from("commission_rates").delete().eq("object_id", o.id).eq("user_id", p.id)
+      .then(({ error }) => { if (error) throw error; }),
+      `Obrisao posebnu proviziju za ${p.name} na objektu ${o.name} (vraća se na zadanu)`),
     toggleMember: (object, p, on) => act(() =>
       (on ? supabase.from("object_members").insert({ object_id: object.id, user_id: p.id })
           : supabase.from("object_members").delete().eq("object_id", object.id).eq("user_id", p.id)
@@ -1156,6 +1165,7 @@ function AdminPanels({ data, api, panel, setPanel, onOpenWorker }) {
   const [firm, setFirm] = useState({ company_name: "", address: "", oib: "", iban: "", czk_rate: "25", weekend_pct: "0", holiday_pct: "0", expiry_warn_days: "30" });
   const [auditQ, setAuditQ] = useState("");
   const [commEdit, setCommEdit] = useState({});
+  const [objCommEdit, setObjCommEdit] = useState({}); // "profileId:objectId" -> { rate, cur }
   const [apprSel, setApprSel] = useState(() => new Set());
   const [apprBusy, setApprBusy] = useState(false);
   const [lastBackup, setLastBackup] = useState(() => { try { return localStorage.getItem("evidencija_last_backup"); } catch { return null; } });
@@ -1249,10 +1259,19 @@ function AdminPanels({ data, api, panel, setPanel, onOpenWorker }) {
             const edit = commEdit[p.id];
             const cVal = edit !== undefined ? edit.rate : String(p.hourly_commission || "");
             const cCur = edit !== undefined ? edit.cur : (p.commission_currency || "EUR");
-            const myObjIds = new Set((data.objectMembers || []).filter((m) => m.user_id === p.id).map((m) => m.object_id));
+            const myObjIds = [...new Set((data.objectMembers || []).filter((m) => m.user_id === p.id).map((m) => m.object_id))];
+            const myObjects = myObjIds.map((oid) => data.objects.find((o) => o.id === oid)).filter(Boolean).sort((a, b) => a.name.localeCompare(b.name, "hr"));
             const mk = curMonth();
-            const hrs = round2(data.logs.filter((l) => myObjIds.has(l.objectId) && monthKey(l.date) === mk).reduce((s, l) => s + l.hours, 0));
-            const amount = round2(hrs * (parseNum(cVal) || 0));
+            const hoursForObj = (oid) => round2(data.logs.filter((l) => l.objectId === oid && monthKey(l.date) === mk).reduce((s, l) => s + l.hours, 0));
+            const rateForObj = (oid) => {
+              const ov = (data.commissionRates || []).find((c) => c.userId === p.id && c.objectId === oid);
+              return ov ? { rate: ov.rate, cur: ov.currency } : { rate: parseNum(cVal) || 0, cur: cCur };
+            };
+            const totalsByCur = {};
+            myObjects.forEach((o) => {
+              const { rate, cur } = rateForObj(o.id);
+              totalsByCur[cur] = round2((totalsByCur[cur] || 0) + hoursForObj(o.id) * rate);
+            });
             return (
               <div key={p.id} style={{ padding: "9px 0", borderBottom: `1px solid ${S.line}` }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -1264,16 +1283,43 @@ function AdminPanels({ data, api, panel, setPanel, onOpenWorker }) {
                 </div>
                 {p.role !== "admin" && (
                   <div style={{ marginTop: 6 }}>
-                    <div style={{ fontSize: 11.5, color: S.sub, marginBottom: 3 }}>Provizija po satu (na sate radnika na objektima koji su mu dodijeljeni)</div>
+                    <div style={{ fontSize: 11.5, color: S.sub, marginBottom: 3 }}>Zadana provizija po satu (za objekte bez posebne cijene ispod)</div>
                     <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
                       <input inputMode="decimal" value={cVal} onChange={(e) => setCommEdit((p2) => ({ ...p2, [p.id]: { rate: e.target.value, cur: cCur } }))}
                         placeholder="npr. 0.50" style={{ flex: 1 }} />
                       <CurChips small value={cCur} onChange={(v) => setCommEdit((p2) => ({ ...p2, [p.id]: { rate: cVal, cur: v } }))} />
                       <Btn small onClick={() => api.setCommission(p, round2(parseNum(cVal) || 0), cCur)}>Spremi</Btn>
                     </div>
-                    {(parseNum(cVal) || 0) > 0 && (
-                      <div style={{ fontSize: 12.5, color: S.sub, marginTop: 4 }}>
-                        Ovaj mjesec: <b className="num">{fmtH(hrs)}</b> na dodijeljenim objektima → <b className="num" style={{ color: S.green }}>{money(amount, cCur)}</b> za isplatu
+
+                    {myObjects.length > 0 && (
+                      <div style={{ marginTop: 8, borderTop: `1px dashed ${S.line}`, paddingTop: 6 }}>
+                        <div style={{ fontSize: 11.5, color: S.sub, marginBottom: 4 }}>Posebna cijena po objektu (opcionalno — nadjačava zadanu gore)</div>
+                        {myObjects.map((o) => {
+                          const ov = (data.commissionRates || []).find((c) => c.userId === p.id && c.objectId === o.id);
+                          const key = `${p.id}:${o.id}`;
+                          const oedit = objCommEdit[key];
+                          const oVal = oedit !== undefined ? oedit.rate : (ov ? String(ov.rate) : "");
+                          const oCur = oedit !== undefined ? oedit.cur : (ov ? ov.currency : cCur);
+                          const h = hoursForObj(o.id);
+                          const { rate: effRate, cur: effCur } = rateForObj(o.id);
+                          return (
+                            <div key={o.id} style={{ display: "flex", alignItems: "center", gap: 6, padding: "4px 0", fontSize: 12.5, flexWrap: "wrap" }}>
+                              <span style={{ flex: "1 1 100px" }}>{o.name} <span className="num" style={{ color: S.sub }}>({fmtH(h)})</span></span>
+                              <input inputMode="decimal" value={oVal} onChange={(e) => setObjCommEdit((p2) => ({ ...p2, [key]: { rate: e.target.value, cur: oCur } }))}
+                                placeholder={cVal || "0"} style={{ width: 64, padding: "5px 6px" }} />
+                              <CurChips small value={oCur} onChange={(v) => setObjCommEdit((p2) => ({ ...p2, [key]: { rate: oVal, cur: v } }))} />
+                              <Btn small kind="ghost" onClick={() => api.setCommissionRate(o, p, round2(parseNum(oVal) || 0), oCur)}>✓</Btn>
+                              {ov && <button onClick={() => api.delCommissionRate(o, p)} title="Obriši (vrati na zadanu)" style={{ background: "none", border: "none", color: S.red, fontSize: 15, cursor: "pointer", padding: 2 }}>✕</button>}
+                              <span className="num" style={{ fontWeight: 700, color: S.green, minWidth: 62, textAlign: "right" }}>{money(round2(h * effRate), effCur)}</span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+
+                    {Object.values(totalsByCur).some((v) => v !== 0) && (
+                      <div style={{ fontSize: 12.5, color: S.sub, marginTop: 6, fontWeight: 700 }}>
+                        Ovaj mjesec ukupno za isplatu: {Object.entries(totalsByCur).filter(([, v]) => v !== 0).map(([c, v]) => money(v, c)).join(" + ")}
                       </div>
                     )}
                   </div>

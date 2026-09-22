@@ -555,3 +555,18 @@ create policy "errlog_select_admin" on error_log for select to authenticated
 -- ============================================================
 alter table profiles add column if not exists hourly_commission numeric default 0;
 alter table profiles add column if not exists commission_currency text default 'EUR';
+
+-- Posebna provizija po satu za pojedini objekt (nadjačava zadanu gore, samo za taj objekt)
+create table if not exists commission_rates (
+  object_id uuid not null references objects on delete cascade,
+  user_id uuid not null references profiles on delete cascade,
+  rate numeric not null default 0,
+  currency text not null default 'EUR',
+  created_by uuid references profiles,
+  created_at timestamptz default now(),
+  primary key (object_id, user_id)
+);
+alter table commission_rates enable row level security;
+drop policy if exists "commrate_admin_all" on commission_rates;
+create policy "commrate_admin_all" on commission_rates for all to authenticated
+  using (is_admin()) with check (is_admin());
