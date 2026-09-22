@@ -1762,6 +1762,9 @@ function WorkersTab({ data, api, onOpen, onOpenObject }) {
                   ? <div className="num" style={{ fontWeight: 700, color: S.green }}>{money(rateNow(data, w), wCur(w))}/h</div>
                   : <div style={{ fontWeight: 700, color: S.amber, fontSize: 12.5 }}>{api.t("withoutRate")}</div>}
                 <div className="num" style={{ fontSize: 12.5, color: S.sub }}>{fmtH(round2(h))} {api.t("thisMonth")}</div>
+                {rateNow(data, w) > 0 && h > 0 && (
+                  <div className="num" style={{ fontSize: 12.5, fontWeight: 700, color: S.ink, marginTop: 1 }}>{money(round2(h * rateNow(data, w)), wCur(w))} za isplatu</div>
+                )}
               </div>
             </div>
           </Card>
@@ -3277,6 +3280,7 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
   const [objPickerOpen, setObjPickerOpen] = useState(false);
   const [showPayoutCal, setShowPayoutCal] = useState(false);
   const [showCombinedEur, setShowCombinedEur] = useState(false);
+  const [payStatusFilter, setPayStatusFilter] = useState("all"); // all | paid | pending | unpaid
   const [signatures, setSignatures] = useState({}); // workerId -> dataURL, samo za trenutnu sesiju (ne sprema se u bazu)
   const [sigTarget, setSigTarget] = useState(null); // { id, name } radnika koji trenutno potpisuje
   const [selected, setSelected] = useState(() => new Set());
@@ -3299,8 +3303,14 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
   useEffect(() => { setSelected(new Set()); }, [month, view, objFilters]);
   const inYear = (d) => (d || "").slice(0, 4) === String(y);
   const rows = calcRows(data, view === "month" ? inMonth : inYear, objFilters).sort((a, b) => a.w.name.localeCompare(b.w.name, "hr"));
-  const unpaidRows = view === "month" ? rows.filter((r) => !paidFor(data, r.w.id, month)) : [];
-  const pendingRows = view === "month" ? rows.filter((r) => { const p = paidFor(data, r.w.id, month); return p && !p.approved; }) : [];
+  const payStatusOf = (r) => {
+    const p = view === "month" ? paidFor(data, r.w.id, month) : null;
+    return p ? (p.approved ? "paid" : "pending") : "unpaid";
+  };
+  const displayRows = view === "month" && payStatusFilter !== "all" ? rows.filter((r) => payStatusOf(r) === payStatusFilter) : rows;
+  const exportTargetRows = selected.size > 0 ? displayRows.filter((r) => selected.has(r.w.id)) : displayRows;
+  const unpaidRows = view === "month" ? displayRows.filter((r) => !paidFor(data, r.w.id, month)) : [];
+  const pendingRows = view === "month" ? displayRows.filter((r) => { const p = paidFor(data, r.w.id, month); return p && !p.approved; }) : [];
   const allSelected = unpaidRows.length > 0 && unpaidRows.every((r) => selected.has(r.w.id));
   const toggleSelectAll = () => setSelected((prev) => {
     const n = new Set(prev);
@@ -3490,7 +3500,7 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
   };
   const printAllPayslips = () => {
     const st = api.settings;
-    const body = rows.map((r) => `<div style="page-break-after:always">${payslipBody(r, st)}</div>`).join("");
+    const body = exportTargetRows.map((r) => `<div style="page-break-after:always">${payslipBody(r, st)}</div>`).join("");
     printDoc(`Svi obračuni ${periodLabel}`, body);
   };
 
@@ -3573,7 +3583,9 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
 
   const exportExcel = () => {
     const wb = XLSX.utils.book_new();
-    const obrRows = rows.map((r) => ({
+    const targetIds = new Set(exportTargetRows.map((r) => r.w.id));
+    const scoped = selected.size > 0;
+    const obrRows = exportTargetRows.map((r) => ({
       "Radnik": r.w.name, "Objekt": objName(r.w.objectId) || "", "Sati": r.hours,
       "Satnica": r.rateSet.length === 1 ? r.rateSet[0] : r.rateSet.length === 0 ? rateNow(data, r.w) : "razne",
       "Valuta satnice": wCur(r.w) === "CZK" ? "Kč" : "€",
@@ -3583,13 +3595,17 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
       "ZA ISPLATU KOVERTOM (€)": r.net, "ZA ISPLATU KOVERTOM (Kč)": r.czk.net, "Trošak firme (€)": r.firmCosts, "Trošak firme (Kč)": r.czk.firmCosts,
       "Isplaćeno": view === "month" && paidFor(data, r.w.id, month) ? "DA" : "",
     }));
-    obrRows.push({ "Radnik": "UKUPNO", "Sati": totals.hours, "Zarada (€)": totals.gross, "Bonus (€)": totals.bonus,
-      "ZA ISPLATU KOVERTOM (€)": totals.net, "ZA ISPLATU KOVERTOM (Kč)": totals.netKc, "Trošak firme (€)": totals.firm, "Trošak firme (Kč)": totals.firmKc });
+    const totalsScoped = exportTargetRows.reduce((t, r) => ({
+      hours: round2(t.hours + r.hours), gross: round2(t.gross + r.gross), bonus: round2(t.bonus + r.bonuses),
+      net: round2(t.net + r.net), netKc: round2(t.netKc + r.czk.net), firm: round2(t.firm + r.firmCosts), firmKc: round2(t.firmKc + r.czk.firmCosts),
+    }), { hours: 0, gross: 0, bonus: 0, net: 0, netKc: 0, firm: 0, firmKc: 0 });
+    obrRows.push({ "Radnik": "UKUPNO", "Sati": totalsScoped.hours, "Zarada (€)": totalsScoped.gross, "Bonus (€)": totalsScoped.bonus,
+      "ZA ISPLATU KOVERTOM (€)": totalsScoped.net, "ZA ISPLATU KOVERTOM (Kč)": totalsScoped.netKc, "Trošak firme (€)": totalsScoped.firm, "Trošak firme (Kč)": totalsScoped.firmKc });
     const ws1 = XLSX.utils.json_to_sheet(obrRows);
     ws1["!cols"] = [{wch:22},{wch:18},{wch:8},{wch:11},{wch:12},{wch:10},{wch:11},{wch:11},{wch:11},{wch:11},{wch:17},{wch:17},{wch:15},{wch:15},{wch:10}];
     XLSX.utils.book_append_sheet(wb, ws1, "Obračun");
 
-    const satiRows = periodLogs.sort((a, b) => a.date.localeCompare(b.date)).map((l) => {
+    const satiRows = periodLogs.filter((l) => !scoped || targetIds.has(l.workerId)).sort((a, b) => a.date.localeCompare(b.date)).map((l) => {
       const wk = data.workers.find((x) => x.id === l.workerId);
       return { "Datum": fmtDate(l.date), "Radnik": wk?.name || "", "Objekt": objName(l.objectId) || "",
         "Od": l.from || "", "Do": l.to || "", "Sati": l.hours,
@@ -3598,7 +3614,7 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
     });
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(satiRows.length ? satiRows : [{ "Datum": "" }]), "Sati");
 
-    const payRows = data.payments.filter((pp) => (view === "month" ? inMonth : inYear)(pp.date)).sort((a, b) => a.date.localeCompare(b.date)).map((pp) => ({
+    const payRows = data.payments.filter((pp) => (view === "month" ? inMonth : inYear)(pp.date) && (!scoped || !pp.workerId || targetIds.has(pp.workerId))).sort((a, b) => a.date.localeCompare(b.date)).map((pp) => ({
       "Datum": fmtDate(pp.date),
       "Za": pp.workerId ? (data.workers.find((x) => x.id === pp.workerId)?.name || "") : "Objekt: " + (objName(pp.objectId) || ""),
       "Vrsta": TYPE_LABEL[pp.type] || pp.type,
@@ -3795,10 +3811,21 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
 
       {rows.length === 0 ? <Empty text={objFilters.size > 0 ? `Za ${objFilterName} u ovom razdoblju nema upisanih sati.` : "Za ovo razdoblje nema upisanih sati ni isplata."} /> : (
         <>
-          <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
+          {view === "month" && (
+            <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
+              {[["all", "Svi"], ["paid", "✓ Isplaćeno"], ["pending", "⏳ Predloženo"], ["unpaid", "Bez isplate"]].map(([id, label]) => (
+                <button key={id} onClick={() => setPayStatusFilter(id)} style={{ padding: "6px 12px", borderRadius: 999, fontWeight: 700, fontSize: 12.5, cursor: "pointer",
+                  background: payStatusFilter === id ? S.blue : "#fff", color: payStatusFilter === id ? "#fff" : S.sub, border: `1px solid ${payStatusFilter === id ? S.blue : S.line}` }}>{label}</button>
+              ))}
+            </div>
+          )}
+          <div style={{ display: "flex", gap: 8, marginBottom: 4, flexWrap: "wrap" }}>
             <Btn kind="excel" onClick={exportExcel} style={{ flex: 1 }}>📊 {api.t("excelBtn")}{objFilterName ? " — " + objFilterName : ""}</Btn>
-            <Btn kind="ghost" onClick={printEnvelopes} style={{ flex: 1, fontWeight: 700 }}>🖨 {api.t("envelopesBtn")}{objFilterName ? " — " + objFilterName : ""}</Btn>
+            <Btn kind="ghost" onClick={() => printEnvelopes(exportTargetRows)} style={{ flex: 1, fontWeight: 700 }}>🖨 {api.t("envelopesBtn")}{objFilterName ? " — " + objFilterName : ""}</Btn>
             <Btn kind="ghost" onClick={printAllPayslips} style={{ flex: 1, fontWeight: 700 }}>🖨 Svi PDF obračuni{objFilterName ? " — " + objFilterName : ""}</Btn>
+          </div>
+          <div style={{ fontSize: 11.5, color: S.sub, marginBottom: 12 }}>
+            {selected.size > 0 ? `Excel/koverte/PDF iznad odnose se samo na ${selected.size} označenih radnika ispod.` : "Označi radnike kvačicom ispod da Excel/koverte/PDF budu samo za njih — inače idu za sve prikazane."}
           </div>
 
           {(totals.grossKc !== 0 || totals.netKc !== 0 || totals.firmKc !== 0) && (
@@ -4028,16 +4055,15 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
             );
           })()}
 
-          {rows.map((r) => {
+          {displayRows.length === 0 && <Empty text="Nitko ne odgovara ovom filteru." />}
+          {displayRows.map((r) => {
             const paid = view === "month" ? paidFor(data, r.w.id, month) : null;
             return (
               <Card key={r.w.id} style={paid ? { borderColor: "#C5DED2", background: "#FBFDF9" } : undefined}>
                 <div onClick={() => setOpen(open === r.w.id ? null : r.w.id)} style={{ cursor: "pointer" }}>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                     <div style={{ fontWeight: 700, fontSize: 15.5, display: "flex", alignItems: "center", gap: 8 }}>
-                      {view === "month" && (!paid || !paid.approved) && (
-                        <input type="checkbox" checked={selected.has(r.w.id)} onChange={(e) => toggleSelect(r.w.id, e)} onClick={(e) => e.stopPropagation()} style={{ width: 18, height: 18 }} />
-                      )}
+                      <input type="checkbox" checked={selected.has(r.w.id)} onChange={(e) => toggleSelect(r.w.id, e)} onClick={(e) => e.stopPropagation()} style={{ width: 18, height: 18 }} title="Označi za Excel/koverte/PDF ili grupnu radnju" />
                       <span onClick={(e) => { if (onOpenWorker) { e.stopPropagation(); onOpenWorker(r.w.id); } }} style={{ color: onOpenWorker ? S.blue : "inherit" }}>{r.w.name}</span>
                       {paid && (paid.approved
                         ? <Tag color={S.green} bg={S.greenSoft}>✓ Isplaćeno</Tag>
