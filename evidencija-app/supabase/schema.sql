@@ -587,3 +587,15 @@ alter table commission_payouts enable row level security;
 drop policy if exists "commpay_admin_all" on commission_payouts;
 create policy "commpay_admin_all" on commission_payouts for all to authenticated
   using (is_admin()) with check (is_admin());
+
+-- ============================================================
+-- ČIŠĆENJE PODATAKA: blokiraj prazno ime radnika ubuduće
+-- (NOT VALID = ne provjerava postojeće retke, samo nove upise/izmjene —
+-- sigurno i ako već postoji stari radnik s praznim imenom)
+-- ============================================================
+alter table workers drop constraint if exists workers_name_not_blank;
+alter table workers add constraint workers_name_not_blank check (btrim(name) <> '') not valid;
+
+-- Dan u mjesecu kad se isplaćuje plaća + koliko dana prije podsjetiti
+alter table settings add column if not exists payday_day numeric default 5;
+alter table settings add column if not exists payday_reminder_days numeric default 3;

@@ -63,10 +63,18 @@ function hoursBetween(from, to) {
 const fmtH = (h) => { const w = Math.floor(h); const m = Math.round((h - w) * 60); return m ? `${w} h ${m} min` : `${w} h`; };
 const fmtDate = (iso) => { if (!iso) return ""; const [y, m, d] = iso.split("-"); return `${Number(d)}.${Number(m)}.${y}.`; };
 const fmtDT = (iso) => { const d = new Date(iso); return `${d.getDate()}.${d.getMonth() + 1}. ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`; };
+// "ivan  horvat" / "IVAN HORVAT" → "Ivan Horvat" — dosljedan format imena (prvo slovo svake riječi veliko)
+const normalizeName = (s) => (s || "").trim().replace(/\s+/g, " ")
+  .split(" ").map((w) => w ? w.charAt(0).toLocaleUpperCase("hr") + w.slice(1).toLocaleLowerCase("hr") : w).join(" ");
+const looksLikeFullName = (s) => normalizeName(s).trim().split(" ").filter(Boolean).length >= 2;
 const monthKey = (iso) => (iso || "").slice(0, 7);
 const todayISO = () => new Date().toISOString().slice(0, 10);
 const curMonth = () => { const n = new Date(); return `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, "0")}`; };
 const logSpan = (l) => (l.from && l.to ? `${l.from}–${l.to}` : l.monthly ? "mjesečni zbroj" : "upis sati");
+// vizualno istakni zbirne mjesečne upise — to NISU pojedinačne smjene pa se ne mogu provjeriti po danu
+const LogSpanLabel = ({ l }) => l.monthly
+  ? <b style={{ color: S.amber }} title="Zbirni upis za cijeli mjesec — nema pojedinačnih smjena za provjeru">Σ mjesečni zbroj</b>
+  : <>{logSpan(l)}</>;
 const parseNum = (v) => parseFloat(String(v || "").replace(",", "."));
 const TYPE_LABEL = { avans: "Avans", bonus: "Bonus", gorivo: "Gorivo", ostalo: "Ostali trošak", racun: "Na račun (banka)" };
 const MZDY_NOTE_LABEL = "soc. + zdr.";
@@ -564,6 +572,13 @@ export default function App() {
       const withHours = new Set(data.logs.filter((l) => monthKey(l.date) === prevMo).map((l) => l.workerId));
       const unpaid = [...withHours].filter((wid) => !paidFor(data, wid, prevMo)?.approved).length;
       if (unpaid > 0) parts.push(`${unpaid} radnika još nije odobreno za isplatu za ${MONTHS[Number(prevMo.slice(5, 7)) - 1]}`);
+      const paydayDay = Number(data.settings.payday_day) || 5;
+      const reminderDays = Number(data.settings.payday_reminder_days) || 3;
+      const todayDay = new Date().getDate();
+      const daysLeft = paydayDay - todayDay;
+      if (unpaid > 0 && daysLeft >= 0 && daysLeft <= reminderDays) {
+        parts.push(daysLeft === 0 ? `💰 Danas je isplata, a još ima ${unpaid} neodobrenih` : `💰 Isplata za ${daysLeft} ${daysLeft === 1 ? "dan" : "dana"} — još ima ${unpaid} neodobrenih`);
+      }
       const dueReminders = (data.reminders || []).filter((r) => !r.done && r.dueDate && r.dueDate <= todayISO());
       if (dueReminders.length) parts.push(`${dueReminders.length} podsjetnik(a) dospjelo`);
     }
@@ -597,15 +612,19 @@ export default function App() {
   const api = {
     admin, uid: () => session?.user?.id, settings: data?.settings || {}, t, lang, setLang,
     addWorker: (f) => act(async () => {
+      const name = normalizeName(f.name);
+      if (!name) throw new Error("Ime radnika ne smije biti prazno.");
       const { data: w, error } = await supabase.from("workers")
-        .insert({ name: f.name, phone: f.phone, base_rate: parseNum(f.rate) || 0, rate_currency: f.rateCur || "EUR", object_id: f.objectId || null, note: f.note,
+        .insert({ name, phone: f.phone, base_rate: parseNum(f.rate) || 0, rate_currency: f.rateCur || "EUR", object_id: f.objectId || null, note: f.note,
           permit_expiry: f.permitExpiry || null, contract_expiry: f.contractExpiry || null, position: f.position || "", created_by: session.user.id })
         .select().single();
       if (error) throw error;
       if (f.objectId) await ins("assignments", { worker_id: w.id, object_id: f.objectId, from_date: todayISO(), created_by: session.user.id });
-    }, `Dodao radnika: ${f.name}`),
+    }, `Dodao radnika: ${normalizeName(f.name)}`),
     addWorkersBulk: (rows) => act(async () => {
-      const payload = rows.map((r) => ({
+      const clean = rows.map((r) => ({ ...r, name: normalizeName(r.name) })).filter((r) => r.name);
+      if (!clean.length) throw new Error("Nema redaka s imenom za uvoz.");
+      const payload = clean.map((r) => ({
         name: r.name, phone: r.phone || "", base_rate: parseNum(r.rate) || 0, rate_currency: r.rateCur || "EUR",
         object_id: r.objectId || null, position: r.position || "", note: r.note || "",
         permit_expiry: r.permitExpiry || null, contract_expiry: r.contractExpiry || null, created_by: session.user.id,
@@ -614,11 +633,13 @@ export default function App() {
       if (error) throw error;
     }, `Uvezao ${rows.length} radnika iz Excela`),
     updWorker: (id, f, name) => {
+      const newName = normalizeName(f.name);
+      if (!newName) { setErr("Greška: Ime radnika ne smije biti prazno."); return Promise.resolve(false); }
       const old = data.workers.find((w) => w.id === id);
       const objName = (oid) => data.objects.find((o) => o.id === oid)?.name || "—";
       const diffs = [];
       if (old) {
-        if (old.name !== f.name) diffs.push(`ime "${old.name}"→"${f.name}"`);
+        if (old.name !== newName) diffs.push(`ime "${old.name}"→"${newName}"`);
         if ((old.phone || "") !== (f.phone || "")) diffs.push(`telefon "${old.phone || "—"}"→"${f.phone || "—"}"`);
         if (round2(old.rate || 0) !== round2(parseNum(f.rate) || 0)) diffs.push(`satnica ${old.rate || 0}→${parseNum(f.rate) || 0}`);
         if ((old.objectId || "") !== (f.objectId || "")) diffs.push(`objekt ${objName(old.objectId)}→${objName(f.objectId)}`);
@@ -627,7 +648,7 @@ export default function App() {
         if ((old.contractExpiry || "") !== (f.contractExpiry || "")) diffs.push(`istek ugovora ${old.contractExpiry || "—"}→${f.contractExpiry || "—"}`);
       }
       return act(() => upd("workers", id, {
-        name: f.name, phone: f.phone, base_rate: parseNum(f.rate) || 0, rate_currency: f.rateCur || "EUR", object_id: f.objectId || null, note: f.note,
+        name: newName, phone: f.phone, base_rate: parseNum(f.rate) || 0, rate_currency: f.rateCur || "EUR", object_id: f.objectId || null, note: f.note,
         permit_expiry: f.permitExpiry || null, contract_expiry: f.contractExpiry || null, position: f.position || "",
       }), `Uredio podatke radnika: ${name}${diffs.length ? " (" + diffs.join(", ") + ")" : ""}`);
     },
@@ -773,6 +794,8 @@ export default function App() {
     approvePayout: (payout, wName) => act(() => upd("payouts", payout.id, { approved: true, approved_by: session.user.id, approved_at: new Date().toISOString() }),
       `Odobrio isplatu: ${wName} za ${payout.month}`),
     unmarkPaid: (payout, wName) => act(() => softDel("payouts", payout.id), `Otključao/odbacio isplatu: ${wName} za ${payout.month}`),
+    refreshPayout: (payout, amount, amountKc, wName) => act(() => upd("payouts", payout.id, { amount, amount_czk: amountKc || 0 }),
+      `Osvježio predloženi iznos isplate: ${wName} za ${payout.month} (sati/isplate su se promijenili nakon prijedloga)`),
     addInvoicePayment: (o, mo, amount) => act(() => ins("invoice_payments", { object_id: o.id, month: mo, amount }),
       `Upisao uplatu od ${o.name}: ${eur(amount)} (${mo})`),
     delInvoicePayment: (p, oName) => act(() => softDel("invoice_payments", p.id), `Obrisao uplatu od ${oName}: ${eur(p.amount)}`),
@@ -789,7 +812,7 @@ export default function App() {
     delPayrollNote: (note, wName) => act(() => softDel("payroll_notes", note.id), `Obrisao mzdy napomenu: ${wName} (${note.month})`),
     saveSettings: (s) => {
       const old = data.settings || {};
-      const labels = { company_name: "naziv", address: "adresa", oib: "OIB", iban: "IBAN", czk_rate: "tečaj", weekend_pct: "dodatak vikend", holiday_pct: "dodatak praznik", expiry_warn_days: "dani upozorenja" };
+      const labels = { company_name: "naziv", address: "adresa", oib: "OIB", iban: "IBAN", czk_rate: "tečaj", weekend_pct: "dodatak vikend", holiday_pct: "dodatak praznik", expiry_warn_days: "dani upozorenja", payday_day: "dan isplate", payday_reminder_days: "dani podsjetnika" };
       const diffs = Object.keys(labels).filter((k) => String(old[k] ?? "") !== String(s[k] ?? "")).map((k) => `${labels[k]} "${old[k] ?? "—"}"→"${s[k] ?? "—"}"`);
       return act(() => supabase.from("settings").upsert({ id: 1, ...s }).then(({ error }) => { if (error) throw error; }),
         `Uredio podatke firme${diffs.length ? " (" + diffs.join(", ") + ")" : ""}`);
@@ -1176,7 +1199,7 @@ function exportAllData(data) {
 /*  ADMIN PANELI                                                       */
 /* ================================================================== */
 function AdminPanels({ data, api, panel, setPanel, onOpenWorker, onOpenProfile }) {
-  const [firm, setFirm] = useState({ company_name: "", address: "", oib: "", iban: "", czk_rate: "25", weekend_pct: "0", holiday_pct: "0", expiry_warn_days: "30" });
+  const [firm, setFirm] = useState({ company_name: "", address: "", oib: "", iban: "", czk_rate: "25", weekend_pct: "0", holiday_pct: "0", expiry_warn_days: "30", payday_day: "5", payday_reminder_days: "3" });
   const [auditQ, setAuditQ] = useState("");
   const [commEdit, setCommEdit] = useState({});
   const [objCommEdit, setObjCommEdit] = useState({}); // "profileId:objectId" -> { rate, cur }
@@ -1192,6 +1215,10 @@ function AdminPanels({ data, api, panel, setPanel, onOpenWorker, onOpenProfile }
   };
   const wName = (id) => data.workers.find((w) => w.id === id)?.name || "Obrisan radnik";
   const pendingPayouts = [...(data.payouts || [])].filter((p) => !p.approved).sort((a, b) => a.month.localeCompare(b.month) || wName(a.workerId).localeCompare(wName(b.workerId), "hr"));
+  const liveNetFor = (workerId, mo) => {
+    const row = calcRows(data, (d) => monthKey(d) === mo, new Set()).find((r) => r.w.id === workerId);
+    return row ? { net: row.net, netKc: row.czk.net } : { net: 0, netKc: 0 };
+  };
   const allApprSelected = pendingPayouts.length > 0 && pendingPayouts.every((p) => apprSel.has(p.id));
   const toggleApprSelectAll = () => setApprSel(allApprSelected ? new Set() : new Set(pendingPayouts.map((p) => p.id)));
   const toggleApprSel = (id) => setApprSel((prev) => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
@@ -1206,6 +1233,7 @@ function AdminPanels({ data, api, panel, setPanel, onOpenWorker, onOpenProfile }
     oib: data.settings.oib || "", iban: data.settings.iban || "", czk_rate: String(data.settings.czk_rate || 25),
     weekend_pct: String(data.settings.weekend_pct || 0), holiday_pct: String(data.settings.holiday_pct || 0),
     expiry_warn_days: String(data.settings.expiry_warn_days || 30),
+    payday_day: String(data.settings.payday_day || 5), payday_reminder_days: String(data.settings.payday_reminder_days || 3),
   }), [data.settings]);
 
   return (
@@ -1235,8 +1263,11 @@ function AdminPanels({ data, api, panel, setPanel, onOpenWorker, onOpenProfile }
                 <input type="checkbox" checked={allApprSelected} onChange={toggleApprSelectAll} style={{ width: 18, height: 18 }} />
                 Odaberi sve ({pendingPayouts.length})
               </label>
-              {pendingPayouts.map((p) => (
-                <div key={p.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 0", borderBottom: `1px solid ${S.line}`, fontSize: 13.5 }}>
+              {pendingPayouts.map((p) => {
+                const live = liveNetFor(p.workerId, p.month);
+                const mismatch = round2(p.amount || 0) !== round2(live.net || 0) || round2(p.amountKc || 0) !== round2(live.netKc || 0);
+                return (
+                <div key={p.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 0", borderBottom: `1px solid ${S.line}`, fontSize: 13.5, flexWrap: "wrap" }}>
                   <input type="checkbox" checked={apprSel.has(p.id)} onChange={() => toggleApprSel(p.id)} style={{ width: 17, height: 17 }} />
                   <div style={{ flex: 1 }}>
                     <span onClick={() => onOpenWorker && onOpenWorker(p.workerId)} style={{ fontWeight: 700, cursor: onOpenWorker ? "pointer" : "default", color: onOpenWorker ? S.blue : "inherit" }}>
@@ -1249,8 +1280,17 @@ function AdminPanels({ data, api, panel, setPanel, onOpenWorker, onOpenProfile }
                   </span>
                   <Btn small onClick={() => approveList([p])} disabled={apprBusy}>✓ Odobri</Btn>
                   <button onClick={() => api.unmarkPaid(p, wName(p.workerId))} title="Odbaci" style={{ background: "none", border: "none", color: S.red, fontSize: 16, cursor: "pointer", padding: 4 }}>✕</button>
+                  {mismatch && (
+                    <div style={{ width: "100%", display: "flex", alignItems: "center", gap: 8, background: S.redSoft, borderRadius: 8, padding: "5px 9px" }}>
+                      <span style={{ fontSize: 11.5, color: S.red, fontWeight: 700, flex: 1 }}>
+                        ⚠️ Promijenjeno nakon prijedloga — sad bi bilo {[live.net ? eur(live.net) : "", live.netKc ? czk(live.netKc) : ""].filter(Boolean).join(" + ") || eur(0)}
+                      </span>
+                      <Btn small onClick={() => api.refreshPayout(p, live.net, live.netKc, wName(p.workerId))}>🔄 Osvježi</Btn>
+                    </div>
+                  )}
                 </div>
-              ))}
+                );
+              })}
               <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
                 {apprSel.size > 0 && (
                   <Btn small onClick={() => approveList(pendingPayouts.filter((p) => apprSel.has(p.id)))} disabled={apprBusy}>
@@ -1443,7 +1483,22 @@ function AdminPanels({ data, api, panel, setPanel, onOpenWorker, onOpenProfile }
           <Field label="Upozori na istek dokumenata koliko dana unaprijed">
             <input inputMode="decimal" value={firm.expiry_warn_days} onChange={(e) => setFirm({ ...firm, expiry_warn_days: e.target.value })} placeholder="npr. 30" />
           </Field>
-          <Btn small onClick={() => api.saveSettings({ ...firm, czk_rate: parseNum(firm.czk_rate) || 25, weekend_pct: parseNum(firm.weekend_pct) || 0, holiday_pct: parseNum(firm.holiday_pct) || 0, expiry_warn_days: parseNum(firm.expiry_warn_days) || 30 })}>Spremi</Btn>
+          <div style={{ display: "flex", gap: 10 }}>
+            <div style={{ flex: 1 }}>
+              <Field label="Dan isplate u mjesecu">
+                <input inputMode="decimal" value={firm.payday_day} onChange={(e) => setFirm({ ...firm, payday_day: e.target.value })} placeholder="npr. 5" />
+              </Field>
+            </div>
+            <div style={{ flex: 1 }}>
+              <Field label="Podsjeti koliko dana prije">
+                <input inputMode="decimal" value={firm.payday_reminder_days} onChange={(e) => setFirm({ ...firm, payday_reminder_days: e.target.value })} placeholder="npr. 3" />
+              </Field>
+            </div>
+          </div>
+          <div style={{ fontSize: 12, color: S.sub, margin: "-6px 0 10px" }}>
+            Ako nekome ostane neodobrena isplata, dobit ćeš obavijest nekoliko dana prije dana isplate.
+          </div>
+          <Btn small onClick={() => api.saveSettings({ ...firm, czk_rate: parseNum(firm.czk_rate) || 25, weekend_pct: parseNum(firm.weekend_pct) || 0, holiday_pct: parseNum(firm.holiday_pct) || 0, expiry_warn_days: parseNum(firm.expiry_warn_days) || 30, payday_day: parseNum(firm.payday_day) || 5, payday_reminder_days: parseNum(firm.payday_reminder_days) || 3 })}>Spremi</Btn>
           <div style={{ borderTop: `1px dashed ${S.line}`, marginTop: 14, paddingTop: 12 }}>
             <div style={{ fontWeight: 700, marginBottom: 6 }}>⬇ Backup</div>
             <div style={{ fontSize: 12.5, color: S.sub, marginBottom: 8 }}>Sve podatke (radnici, objekti, svi upisani sati, sve isplate, isplaćeni mjeseci) u jednu Excel datoteku, neovisno o odabranom mjesecu.</div>
@@ -1506,6 +1561,8 @@ function WorkersTab({ data, api, onOpen, onOpenObject }) {
   const [reminderDate, setReminderDate] = useState("");
   const [archiveSel, setArchiveSel] = useState(() => new Set());
   const [archiveBusy, setArchiveBusy] = useState(false);
+  const [payMonth, setPayMonth] = useState(() => { const d = new Date(); d.setDate(1); d.setMonth(d.getMonth() - 1); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`; });
+  const [showNameFix, setShowNameFix] = useState(false);
 
   const objName = (id) => data.objects.find((o) => o.id === id)?.name || "";
   const mk = curMonth();
@@ -1585,6 +1642,16 @@ function WorkersTab({ data, api, onOpen, onOpenObject }) {
   const actives = sortedWorkers(data.workers.filter((w) => !w.archived));
   const formerWorkers = sortedWorkers(data.workers.filter((w) => w.archived));
   const objectsSorted = sortedObjects(data.objects.filter((o) => !o.archived));
+
+  // čišćenje podataka: bez imena, ili ime čiji format/velika-mala slova nisu dosljedni
+  const nameIssues = data.workers.map((w) => {
+    const blank = !w.name || !w.name.trim();
+    const normalized = normalizeName(w.name);
+    const badCase = !blank && w.name !== normalized;
+    const oneWord = !blank && !looksLikeFullName(w.name);
+    return (blank || badCase || oneWord) ? { w, blank, badCase, oneWord, normalized } : null;
+  }).filter(Boolean);
+  const fixName = (w, normalized) => api.updWorker(w.id, { ...w, rate: String(w.rate || ""), rateCur: wCur(w), name: normalized }, normalized);
 
   return (
     <>
@@ -1667,6 +1734,45 @@ function WorkersTab({ data, api, onOpen, onOpenObject }) {
         );
       })()}
 
+      {api.admin && (() => {
+        const [py, pm] = payMonth.split("-").map(Number);
+        const prevPM = () => setPayMonth(pm === 1 ? `${py - 1}-12` : `${py}-${String(pm - 1).padStart(2, "0")}`);
+        const nextPM = () => setPayMonth(pm === 12 ? `${py + 1}-01` : `${py}-${String(pm + 1).padStart(2, "0")}`);
+        const payRows = calcRows(data, (d) => monthKey(d) === payMonth, new Set())
+          .filter((r) => { const p = paidFor(data, r.w.id, payMonth); return !p || !p.approved; })
+          .sort((a, b) => a.w.name.localeCompare(b.w.name, "hr"));
+        return (
+          <Card style={{ background: payRows.length ? S.redSoft : S.greenSoft, borderColor: payRows.length ? "#EED0C8" : "#C5DED2" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+              <div style={{ fontWeight: 700, color: payRows.length ? S.red : S.green }}>💰 Neisplaćeno — {MONTHS[pm - 1]} {py}.</div>
+              <div style={{ display: "flex", gap: 4 }}>
+                <button onClick={prevPM} style={{ background: "#fff", border: `1px solid ${S.line}`, borderRadius: 8, width: 26, height: 26, cursor: "pointer", fontWeight: 700 }}>‹</button>
+                <button onClick={nextPM} style={{ background: "#fff", border: `1px solid ${S.line}`, borderRadius: 8, width: 26, height: 26, cursor: "pointer", fontWeight: 700 }}>›</button>
+              </div>
+            </div>
+            {payRows.length === 0 ? (
+              <div style={{ fontSize: 13, color: S.sub }}>Svi su odobreni za isplatu. 🎉</div>
+            ) : (
+              <>
+                {payRows.map((r) => {
+                  const p = paidFor(data, r.w.id, payMonth);
+                  return (
+                    <div key={r.w.id} onClick={() => onOpen(r.w.id)} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, padding: "5px 0", borderBottom: "1px solid #EED0C8", cursor: "pointer", fontSize: 13.5 }}>
+                      <span style={{ flex: 1, fontWeight: 600 }}>{r.w.name}{p ? " · ⏳ predloženo" : ""}</span>
+                      <span className="num" style={{ fontWeight: 700, textAlign: "right" }}>
+                        {money(wCur(r.w) === "CZK" ? r.czk.net : r.net, wCur(r.w))}
+                        <div style={{ fontSize: 11, fontWeight: 600, color: S.sub }}>{paymentMethodLabel(r)}</div>
+                      </span>
+                    </div>
+                  );
+                })}
+                <div style={{ fontSize: 12, color: S.sub, marginTop: 8 }}>Prijedlog/odobrenje isplate radi se u kartici "Obračun".</div>
+              </>
+            )}
+          </Card>
+        );
+      })()}
+
       {warns.length > 0 && (
         <Card style={{ background: S.redSoft, borderColor: "#EED0C8" }}>
           <div style={{ fontWeight: 700, color: S.red, marginBottom: 6 }}>⚠️ Istek dokumenata</div>
@@ -1686,6 +1792,36 @@ function WorkersTab({ data, api, onOpen, onOpenObject }) {
               <b>{x.w.name}</b> — ista satnica od <span className="num">{fmtDate(x.since)}</span>
             </div>
           ))}
+        </Card>
+      )}
+
+      {api.admin && nameIssues.length > 0 && (
+        <Card style={{ background: S.amberSoft, borderColor: "#EBD9B4" }}>
+          <div onClick={() => setShowNameFix(!showNameFix)} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", cursor: "pointer" }}>
+            <div style={{ fontWeight: 700, color: S.amber }}>🧹 Provjeri imena ({nameIssues.length})</div>
+            <span style={{ color: S.amber, fontWeight: 700 }}>{showNameFix ? "▲" : "▼"}</span>
+          </div>
+          {showNameFix && (
+            <div style={{ marginTop: 8, borderTop: "1px dashed #EBD9B4", paddingTop: 8 }}>
+              {nameIssues.map(({ w, blank, badCase, normalized }) => (
+                <div key={w.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 0", borderBottom: "1px dashed #EBD9B4" }}>
+                  <div style={{ flex: 1, fontSize: 13.5 }}>
+                    {blank ? (
+                      <span onClick={() => onOpen(w.id)} style={{ color: S.red, fontWeight: 700, cursor: "pointer" }}>🚫 (bez imena) — {objName(w.objectId) || "bez objekta"}</span>
+                    ) : badCase ? (
+                      <span onClick={() => onOpen(w.id)} style={{ cursor: "pointer" }}>"{w.name}" → <b>"{normalized}"</b></span>
+                    ) : (
+                      <span onClick={() => onOpen(w.id)} style={{ cursor: "pointer" }}>"{w.name}" — samo jedno ime, nedostaje prezime</span>
+                    )}
+                  </div>
+                  {badCase && <Btn small onClick={() => fixName(w, normalized)}>Ispravi</Btn>}
+                </div>
+              ))}
+              <div style={{ fontSize: 12, color: S.sub, marginTop: 8 }}>
+                Za upis bez imena klikni na njega da otvoriš radnika, upiši ispravno ime i spremi (ili ga obriši ako je greškom nastao).
+              </div>
+            </div>
+          )}
         </Card>
       )}
 
@@ -2405,7 +2541,7 @@ function WorkerDetail({ worker, data, api, onBack }) {
         {logs.length === 0 ? <div style={{ color: S.sub, fontSize: 13.5 }}>Još nema upisanih sati.</div>
           : logs.map((l) => (
             <div key={l.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 0", borderBottom: `1px solid ${S.line}`, fontSize: 14 }}>
-              <span style={{ flex: 1 }}>{fmtDate(l.date)} · {logSpan(l)}{objName(l.objectId) ? " · " + objName(l.objectId) : ""}</span>
+              <span style={{ flex: 1 }}>{fmtDate(l.date)} · <LogSpanLabel l={l} />{objName(l.objectId) ? " · " + objName(l.objectId) : ""}</span>
               <span className="num" style={{ fontWeight: 700, color: !l.monthly && isDayHoursSuspicious(l.hours) ? S.red : "inherit" }}>
                 {!l.monthly && isDayHoursSuspicious(l.hours) && "⚠️ "}{fmtH(l.hours)}
               </span>
@@ -3052,7 +3188,7 @@ function ObjectDetail({ object, data, api, onBack, onOpenWorker }) {
               <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 0" }}>
                 <div style={{ flex: 1 }}>
                   <span onClick={() => onOpenWorker && onOpenWorker(l.workerId)} style={{ fontWeight: 600, fontSize: 14, cursor: onOpenWorker ? "pointer" : "default", color: onOpenWorker ? S.blue : "inherit" }}>{wName(l.workerId)}</span>
-                  <div className="num" style={{ fontSize: 12.5, color: S.sub }}>{mode === "month" ? fmtDate(l.date) + " · " : ""}{logSpan(l)}</div>
+                  <div className="num" style={{ fontSize: 12.5, color: S.sub }}>{mode === "month" ? fmtDate(l.date) + " · " : ""}<LogSpanLabel l={l} /></div>
                 </div>
                 <div className="num" style={{ fontWeight: 700, color: !l.monthly && isDayHoursSuspicious(l.hours) ? S.red : "inherit" }}>
                   {!l.monthly && isDayHoursSuspicious(l.hours) && "⚠️ "}{fmtH(l.hours)}
@@ -3236,7 +3372,7 @@ function HoursTab({ data, api, onOpenWorker }) {
                 <div style={{ flex: 1 }}>
                   <div onClick={() => onOpenWorker && onOpenWorker(l.workerId)} style={{ fontWeight: 600, fontSize: 14, cursor: onOpenWorker ? "pointer" : "default", color: onOpenWorker ? S.blue : "inherit" }}>{wName(l.workerId)}</div>
                   <div style={{ fontSize: 12.5, color: S.sub }}>
-                    {fmtDate(l.date)} · {logSpan(l)}{objName(l.objectId) ? " · " + objName(l.objectId) : ""}{l.note && !l.monthly ? " · " + l.note : ""}
+                    {fmtDate(l.date)} · <LogSpanLabel l={l} />{objName(l.objectId) ? " · " + objName(l.objectId) : ""}{l.note && !l.monthly ? " · " + l.note : ""}
                   </div>
                 </div>
                 <div className="num" style={{ fontWeight: 700, color: !l.monthly && isDayHoursSuspicious(l.hours) ? S.red : "inherit" }}>
@@ -3461,6 +3597,16 @@ function PaymentsTab({ data, api, onOpenWorker }) {
     </>
   );
 }
+
+// način isplate izveden iz već upisanih isplata na račun (bez posebnog polja) — koristi se samo za prikaz
+const paymentMethodLabel = (r) => {
+  const isCzk = wCur(r.w) === "CZK";
+  const bank = isCzk ? r.czk.bank : r.bank;
+  const net = isCzk ? r.czk.net : r.net;
+  if (!bank) return "💶 Gotovina";
+  if (net <= 0.01) return "🏦 Na račun";
+  return "🏦+💶 Dio na račun";
+};
 
 /* ================================================================== */
 /*  OBRAČUN: mjesec/godina, isplaćeno, PDF, naplata, grafovi           */
@@ -3819,7 +3965,8 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
       "Bonus (€)": r.bonuses, "Avans (€)": r.advances, "Odbici (€)": r.deductions,
       "Na račun (€)": r.bank, "Na račun (Kč)": r.czk.bank,
       "ZA ISPLATU KOVERTOM (€)": r.net, "ZA ISPLATU KOVERTOM (Kč)": r.czk.net, "Trošak firme (€)": r.firmCosts, "Trošak firme (Kč)": r.czk.firmCosts,
-      "Isplaćeno": view === "month" && paidFor(data, r.w.id, month) ? "DA" : "",
+      "Način isplate": paymentMethodLabel(r).replace(/[💶🏦+]/g, "").trim(),
+      "Isplaćeno": view === "month" ? (() => { const p = paidFor(data, r.w.id, month); return p ? (p.approved ? "ODOBRENO" : "PREDLOŽENO") : "NE"; })() : "",
     }));
     const totalsScoped = exportTargetRows.reduce((t, r) => ({
       hours: round2(t.hours + r.hours), gross: round2(t.gross + r.gross), bonus: round2(t.bonus + r.bonuses),
@@ -4319,7 +4466,7 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
                   <div style={{ marginTop: 12, borderTop: `1px dashed ${S.line}`, paddingTop: 10 }}>
                     {r.logs.sort((a, b) => a.date.localeCompare(b.date)).map((l) => (
                       <div key={l.id} className="num" style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13.5, padding: "4px 0" }}>
-                        <span style={{ flex: 1 }}>{fmtDate(l.date)} · {logSpan(l)}{objName(l.objectId) ? " · " + objName(l.objectId) : ""}</span>
+                        <span style={{ flex: 1 }}>{fmtDate(l.date)} · <LogSpanLabel l={l} />{objName(l.objectId) ? " · " + objName(l.objectId) : ""}</span>
                         <span style={{ fontWeight: 600 }}>{fmtH(l.hours)}</span>
                         {(admin || l.createdBy === api.uid()) && (
                           <button onClick={(e) => { e.stopPropagation(); api.delLog(l, r.w.name); }} title="Obriši"
@@ -4380,6 +4527,14 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
                           {admin && <Btn small onClick={() => api.approvePayout(paid, r.w.name)}>✓ Odobri</Btn>}
                           <Btn small kind="danger" onClick={() => api.unmarkPaid(paid, r.w.name)}>Odbaci</Btn>
                         </>
+                      )}
+                      {view === "month" && paid && !paid.approved && (round2(paid.amount || 0) !== round2(r.net || 0) || round2(paid.amountKc || 0) !== round2(r.czk.net || 0)) && (
+                        <div style={{ width: "100%", display: "flex", alignItems: "center", gap: 8, background: S.redSoft, borderRadius: 8, padding: "6px 10px" }}>
+                          <span style={{ fontSize: 12, color: S.red, fontWeight: 700, flex: 1 }}>
+                            ⚠️ Sati/isplate su se promijenili nakon prijedloga — sad bi iznos bio {[r.net ? eur(r.net) : "", r.czk.net ? czk(r.czk.net) : ""].filter(Boolean).join(" + ") || eur(0)}
+                          </span>
+                          <Btn small onClick={() => api.refreshPayout(paid, r.net, r.czk.net, r.w.name)}>🔄 Osvježi</Btn>
+                        </div>
                       )}
                       {view === "month" && paid && paid.approved && (
                         <>
