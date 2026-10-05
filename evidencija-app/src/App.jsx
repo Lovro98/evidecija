@@ -80,9 +80,9 @@ const TYPE_LABEL = { avans: "Avans", bonus: "Bonus", gorivo: "Gorivo", ostalo: "
 const MZDY_NOTE_LABEL = "soc. + zdr.";
 
 /* ---------- jezici (HR / CZ / UK) ---------- */
-const LANGS = ["HR", "CZ", "UK"];
-const LANG_FLAG = { HR: "🇭🇷", CZ: "🇨🇿", UK: "🇺🇦" };
-const LANG_NAME = { HR: "Hrvatski", CZ: "Čeština", UK: "Українська" };
+const LANGS = ["HR", "CZ", "UK", "RU"];
+const LANG_FLAG = { HR: "🇭🇷", CZ: "🇨🇿", UK: "🇺🇦", RU: "🇷🇺" };
+const LANG_NAME = { HR: "Hrvatski", CZ: "Čeština", UK: "Українська", RU: "Русский" };
 const DICT = {
   HR: {
     appTitle: "Evidencija rada - Firma", appSubtitle: "Radnici · Sati · Obračun", logout: "Odjava",
@@ -143,6 +143,26 @@ const DICT = {
     monthBtn: "Місяць", yearBtn: "Рік", showFor: "Показати для", allObjects: "🏨 Всі об'єкти",
     totalHours: "Всього годин", earningsBonus: "Заробіток + бонуси", toPay: "До виплати", firmCosts: "Витрати фірми",
     excelBtn: "Excel", envelopesBtn: "Конверти", cancel: "Скасувати", edit: "Редагувати", delete: "Видалити", back: "Назад",
+  },
+  RU: {
+    appTitle: "Учёт работы", appSubtitle: "Работники · Часы · Расчёт", logout: "Выйти",
+    tabRadnici: "Работники", tabObjekti: "Объекты", tabImenik: "Справочник", tabSati: "Часы", tabIsplate: "Выплаты", tabObracun: "Расчёт",
+    loginTitle: "Вход", email: "Эл. почта", password: "Пароль", loginBtn: "Войти", loginBusy: "Вхожу…",
+    loginErr: "Неверная эл. почта или пароль.",
+    noAccount: "Нет аккаунта? Аккаунты создаёт только работодатель — обратитесь к нему, и вы получите эл. почту и пароль.",
+    workersTitle: "Работники", addWorker: "+ Новый работник", close: "Закрыть",
+    fullName: "Имя и фамилия *", phone: "Номер телефона", rate: "Ставка", mainObject: "Основной объект", note: "Примечание",
+    saveWorker: "Сохранить работника", noWorkersYet: "Пока нет работников. Добавьте первого кнопкой + Новый работник.",
+    formerWorkers: "Бывшие работники", active: "Активен", withoutRate: "без ставки", thisMonth: "этот мес.",
+    objectsTitle: "Объекты", newObjectPh: "Название нового объекта в:", addBtn: "Добавить",
+    directoryTitle: "Справочник работников", searchPh: "🔍 Поиск по имени или номеру…",
+    hoursTitle: "Учёт отработанных часов", object: "Объект", worker: "Работник", date: "Дата", from: "С", to: "До",
+    total: "Всего", addHours: "Записать часы", recent: "Последние записи", choose: "— выбрать —",
+    paymentsTitle: "Авансы, бонусы и расходы", forWorker: "👷 Для работника", forObject: "🏨 Для объекта",
+    type: "Тип", amount: "Сумма (€)", save: "Сохранить",
+    monthBtn: "Месяц", yearBtn: "Год", showFor: "Показать за", allObjects: "🏨 Все объекты",
+    totalHours: "Всего часов", earningsBonus: "Заработок + бонусы", toPay: "К выплате", firmCosts: "Расходы фирмы",
+    excelBtn: "Excel", envelopesBtn: "Конверты", cancel: "Отмена", edit: "Изменить", delete: "Удалить", back: "Назад",
   },
 };
 function useLang() {
