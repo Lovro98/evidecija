@@ -599,3 +599,11 @@ alter table workers add constraint workers_name_not_blank check (btrim(name) <> 
 -- Dan u mjesecu kad se isplaćuje plaća + koliko dana prije podsjetiti
 alter table settings add column if not exists payday_day numeric default 5;
 alter table settings add column if not exists payday_reminder_days numeric default 3;
+
+-- ============================================================
+-- IME/PREZIME: novi redoslijed je "Prezime Ime" (umjesto "Ime Prezime").
+-- Ovaj flag pamti je li već napravljena jednokratna zamjena redoslijeda
+-- postojećih radnika (gumb "Zamijeni svima" u Radnici tabu) — nakon toga
+-- se ta ponuda više ne prikazuje (da se netko slučajno ne zamijeni dvaput).
+-- ============================================================
+alter table settings add column if not exists name_order_migrated boolean default false;

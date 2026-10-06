@@ -67,6 +67,20 @@ const fmtDT = (iso) => { const d = new Date(iso); return `${d.getDate()}.${d.get
 const normalizeName = (s) => (s || "").trim().replace(/\s+/g, " ")
   .split(" ").map((w) => w ? w.charAt(0).toLocaleUpperCase("hr") + w.slice(1).toLocaleLowerCase("hr") : w).join(" ");
 const looksLikeFullName = (s) => normalizeName(s).trim().split(" ").filter(Boolean).length >= 2;
+// rastavi spremljeno "Prezime Ime" (ili staro "Ime Prezime") na dva polja za uređivanje —
+// uzima zadnju riječ kao jedno polje, ostatak kao drugo (nagađanje za imena s više riječi)
+const splitNameForEdit = (name) => {
+  const words = normalizeName(name).trim().split(" ").filter(Boolean);
+  if (words.length <= 1) return { lastName: words[0] || "", firstName: "" };
+  return { lastName: words.slice(0, -1).join(" "), firstName: words[words.length - 1] };
+};
+// jednokratna migracija: pomakni zadnju riječ ("Ivan Horvat" → "Horvat Ivan") — za prebacivanje
+// postojećih imena iz starog redoslijeda (ime prezime) u novi (prezime ime)
+const swapNameOrder = (name) => {
+  const words = normalizeName(name).trim().split(" ").filter(Boolean);
+  if (words.length < 2) return normalizeName(name);
+  return [words[words.length - 1], ...words.slice(0, -1)].join(" ");
+};
 const monthKey = (iso) => (iso || "").slice(0, 7);
 const todayISO = () => new Date().toISOString().slice(0, 10);
 const curMonth = () => { const n = new Date(); return `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, "0")}`; };
@@ -91,7 +105,7 @@ const DICT = {
     loginErr: "Neispravan e-mail ili lozinka.",
     noAccount: "Nemaš račun? Račune otvara isključivo poslodavac — javi mu se i dobit ćeš e-mail i lozinku.",
     workersTitle: "Radnici", addWorker: "+ Novi radnik", close: "Zatvori",
-    fullName: "Ime i prezime *", phone: "Broj telefona", rate: "Satnica", mainObject: "Glavni objekt", note: "Napomena",
+    fullName: "Ime i prezime *", lastName: "Prezime *", firstName: "Ime *", phone: "Broj telefona", rate: "Satnica", mainObject: "Glavni objekt", note: "Napomena",
     saveWorker: "Spremi radnika", noWorkersYet: "Još nema radnika. Dodaj prvog gumbom + Novi radnik.",
     formerWorkers: "Bivši radnici", active: "Aktivan", withoutRate: "bez satnice", thisMonth: "ovaj mj.",
     objectsTitle: "Objekti", newObjectPh: "Naziv novog objekta u:", addBtn: "Dodaj",
@@ -111,7 +125,7 @@ const DICT = {
     loginErr: "Nesprávný e-mail nebo heslo.",
     noAccount: "Nemáte účet? Účty zakládá pouze zaměstnavatel — ozvěte se mu a dostanete e-mail a heslo.",
     workersTitle: "Pracovníci", addWorker: "+ Nový pracovník", close: "Zavřít",
-    fullName: "Jméno a příjmení *", phone: "Telefonní číslo", rate: "Sazba", mainObject: "Hlavní objekt", note: "Poznámka",
+    fullName: "Jméno a příjmení *", lastName: "Příjmení *", firstName: "Jméno *", phone: "Telefonní číslo", rate: "Sazba", mainObject: "Hlavní objekt", note: "Poznámka",
     saveWorker: "Uložit pracovníka", noWorkersYet: "Zatím žádní pracovníci. Přidejte prvního tlačítkem + Nový pracovník.",
     formerWorkers: "Bývalí pracovníci", active: "Aktivní", withoutRate: "bez sazby", thisMonth: "tento měs.",
     objectsTitle: "Objekty", newObjectPh: "Název nového objektu v:", addBtn: "Přidat",
@@ -131,7 +145,7 @@ const DICT = {
     loginErr: "Невірна електронна пошта або пароль.",
     noAccount: "Немає акаунту? Акаунти створює лише роботодавець — зверніться до нього і отримаєте е-пошту та пароль.",
     workersTitle: "Працівники", addWorker: "+ Новий працівник", close: "Закрити",
-    fullName: "Ім'я та прізвище *", phone: "Номер телефону", rate: "Ставка", mainObject: "Основний об'єкт", note: "Примітка",
+    fullName: "Ім'я та прізвище *", lastName: "Прізвище *", firstName: "Ім'я *", phone: "Номер телефону", rate: "Ставка", mainObject: "Основний об'єкт", note: "Примітка",
     saveWorker: "Зберегти працівника", noWorkersYet: "Ще немає працівників. Додайте першого кнопкою + Новий працівник.",
     formerWorkers: "Колишні працівники", active: "Активний", withoutRate: "без ставки", thisMonth: "цього міс.",
     objectsTitle: "Об'єкти", newObjectPh: "Назва нового об'єкта в:", addBtn: "Додати",
@@ -151,7 +165,7 @@ const DICT = {
     loginErr: "Неверная эл. почта или пароль.",
     noAccount: "Нет аккаунта? Аккаунты создаёт только работодатель — обратитесь к нему, и вы получите эл. почту и пароль.",
     workersTitle: "Работники", addWorker: "+ Новый работник", close: "Закрыть",
-    fullName: "Имя и фамилия *", phone: "Номер телефона", rate: "Ставка", mainObject: "Основной объект", note: "Примечание",
+    fullName: "Имя и фамилия *", lastName: "Фамилия *", firstName: "Имя *", phone: "Номер телефона", rate: "Ставка", mainObject: "Основной объект", note: "Примечание",
     saveWorker: "Сохранить работника", noWorkersYet: "Пока нет работников. Добавьте первого кнопкой + Новый работник.",
     formerWorkers: "Бывшие работники", active: "Активен", withoutRate: "без ставки", thisMonth: "этот мес.",
     objectsTitle: "Объекты", newObjectPh: "Название нового объекта в:", addBtn: "Добавить",
@@ -681,6 +695,11 @@ export default function App() {
     archiveWorkersBulk: (workerIds) => act(async () => {
       for (const wid of workerIds) await upd("workers", wid, { archived: true, archived_date: todayISO(), object_id: null });
     }, `Grupno označio ${workerIds.length} radnika kao završene`),
+    swapAllNameOrders: (workers) => act(async () => {
+      for (const w of workers) await upd("workers", w.id, { name: swapNameOrder(w.name) });
+      const { error } = await supabase.from("settings").upsert({ id: 1, ...data.settings, name_order_migrated: true });
+      if (error) throw error;
+    }, `Jednokratno zamijenio redoslijed ime/prezime → prezime/ime za ${workers.length} radnika`),
     transfer: (w, objectId, from, targetName) => act(async () => {
       await upd("workers", w.id, { object_id: objectId || null });
       await ins("assignments", { worker_id: w.id, object_id: objectId || null, from_date: from, created_by: session.user.id });
@@ -1570,7 +1589,7 @@ function WorkersTab({ data, api, onOpen, onOpenObject }) {
   const [adding, setAdding] = useState(false);
   const [showObjects, setShowObjects] = useState(true);
   const [showToday, setShowToday] = useState(false);
-  const [form, setForm] = useState({ name: "", phone: "", rate: "", rateCur: "EUR", objectId: "", position: "", note: "", permitExpiry: "", contractExpiry: "" });
+  const [form, setForm] = useState({ lastName: "", firstName: "", phone: "", rate: "", rateCur: "EUR", objectId: "", position: "", note: "", permitExpiry: "", contractExpiry: "" });
   const [newObj, setNewObj] = useState("");
   const [confirmObj, setConfirmObj] = useState(null);
   const [importReview, setImportReview] = useState(null);
@@ -1583,27 +1602,30 @@ function WorkersTab({ data, api, onOpen, onOpenObject }) {
   const [archiveBusy, setArchiveBusy] = useState(false);
   const [payMonth, setPayMonth] = useState(() => { const d = new Date(); d.setDate(1); d.setMonth(d.getMonth() - 1); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`; });
   const [showNameFix, setShowNameFix] = useState(false);
+  const [confirmSwap, setConfirmSwap] = useState(false);
+  const [swapBusy, setSwapBusy] = useState(false);
 
   const objName = (id) => data.objects.find((o) => o.id === id)?.name || "";
   const mk = curMonth();
   const warns = expiryWarnings(data.workers, data.settings?.expiry_warn_days);
   const staleRates = rateStaleWarnings(data.workers, data.rateChanges);
   const [q, setQ] = useState("");
-  const nameDupe = form.name.trim() && data.workers.find((w) => w.name.trim().toLowerCase() === form.name.trim().toLowerCase());
+  const newFullName = `${form.lastName.trim()} ${form.firstName.trim()}`.trim();
+  const nameDupe = newFullName && data.workers.find((w) => w.name.trim().toLowerCase() === newFullName.toLowerCase());
 
   const addWorker = async () => {
-    if (!form.name.trim()) return;
-    if (await api.addWorker(form)) { setForm({ name: "", phone: "", rate: "", rateCur: "EUR", objectId: "", position: "", note: "", permitExpiry: "", contractExpiry: "" }); setAdding(false); }
+    if (!newFullName) return;
+    if (await api.addWorker({ ...form, name: newFullName })) { setForm({ lastName: "", firstName: "", phone: "", rate: "", rateCur: "EUR", objectId: "", position: "", note: "", permitExpiry: "", contractExpiry: "" }); setAdding(false); }
   };
 
   const downloadWorkerTemplate = () => {
     const wb = XLSX.utils.book_new();
     const sample = [{
-      "Ime i prezime": "Ivan Horvat", "Telefon": "091 234 5678", "Satnica": 7.5, "Valuta satnice": "EUR",
+      "Prezime": "Horvat", "Ime": "Ivan", "Telefon": "091 234 5678", "Satnica": 7.5, "Valuta satnice": "EUR",
       "Glavni objekt": data.objects[0]?.name || "", "Pozicija": "HSK", "Istek radne dozvole": "", "Istek ugovora": "", "Napomena": "",
     }];
     const ws = XLSX.utils.json_to_sheet(sample);
-    ws["!cols"] = [{ wch: 22 }, { wch: 15 }, { wch: 9 }, { wch: 13 }, { wch: 18 }, { wch: 14 }, { wch: 17 }, { wch: 14 }, { wch: 22 }];
+    ws["!cols"] = [{ wch: 16 }, { wch: 16 }, { wch: 15 }, { wch: 9 }, { wch: 13 }, { wch: 18 }, { wch: 14 }, { wch: 17 }, { wch: 14 }, { wch: 22 }];
     XLSX.utils.book_append_sheet(wb, ws, "Radnici");
     XLSX.writeFile(wb, "Predlozak_radnici.xlsx");
   };
@@ -1616,7 +1638,10 @@ function WorkersTab({ data, api, onOpen, onOpenObject }) {
     const sheet = wbk.Sheets[wbk.SheetNames[0]];
     const json = XLSX.utils.sheet_to_json(sheet, { raw: false, dateNF: "yyyy-mm-dd", defval: "" });
     const rows = json.map((row) => {
-      const name = String(row["Ime i prezime"] || row["Ime"] || "").trim();
+      const lastName = String(row["Prezime"] || "").trim();
+      const firstName = String(row["Ime"] || "").trim();
+      // podrška i za stari predložak s jednim stupcem "Ime i prezime" (ako ga je netko već imao spremljenog)
+      const name = (lastName || firstName) ? `${lastName} ${firstName}`.trim() : String(row["Ime i prezime"] || "").trim();
       const objectName = String(row["Glavni objekt"] || "").trim();
       const ob = objectName ? data.objects.find((o) => o.name.toLowerCase() === objectName.toLowerCase()) : null;
       const curRaw = String(row["Valuta satnice"] || "EUR").toUpperCase();
@@ -1672,6 +1697,13 @@ function WorkersTab({ data, api, onOpen, onOpenObject }) {
     return (blank || badCase || oneWord) ? { w, blank, badCase, oneWord, normalized } : null;
   }).filter(Boolean);
   const fixName = (w, normalized) => api.updWorker(w.id, { ...w, rate: String(w.rate || ""), rateCur: wCur(w), name: normalized }, normalized);
+  // jednokratna zamjena redoslijeda za sve koji još imaju staro "Ime Prezime" umjesto "Prezime Ime"
+  const swappable = data.workers.filter((w) => looksLikeFullName(w.name));
+  const doSwapAll = async () => {
+    setSwapBusy(true);
+    if (await api.swapAllNameOrders(swappable)) setConfirmSwap(false);
+    setSwapBusy(false);
+  };
 
   return (
     <>
@@ -1815,6 +1847,23 @@ function WorkersTab({ data, api, onOpen, onOpenObject }) {
         </Card>
       )}
 
+      {api.admin && !data.settings.name_order_migrated && swappable.length > 0 && (
+        <Card style={{ background: S.blueSoft, borderColor: "#CBDCEA" }}>
+          <div style={{ fontWeight: 700, color: S.blue, marginBottom: 6 }}>🔁 Prebaci redoslijed: Ime Prezime → Prezime Ime</div>
+          <div style={{ fontSize: 12.5, color: S.sub, marginBottom: 8 }}>
+            Svi radnici su upisani kao "Ime Prezime". Ovo jednom zamijeni redoslijed svima u "Prezime Ime" — nakon toga su popisi posloženi po abecedi prezimena. Primjer: {swappable[0] && <>"{swappable[0].name}" → "<b>{swapNameOrder(swappable[0].name)}</b>"</>}.
+          </div>
+          {!confirmSwap ? (
+            <Btn small onClick={() => setConfirmSwap(true)}>Zamijeni svima ({swappable.length})</Btn>
+          ) : (
+            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <Btn small onClick={doSwapAll} disabled={swapBusy}>{swapBusy ? "Zamjenjujem…" : `Potvrdi zamjenu (${swappable.length})`}</Btn>
+              <Btn small kind="ghost" onClick={() => setConfirmSwap(false)} disabled={swapBusy}>Odustani</Btn>
+            </div>
+          )}
+        </Card>
+      )}
+
       {api.admin && nameIssues.length > 0 && (
         <Card style={{ background: S.amberSoft, borderColor: "#EBD9B4" }}>
           <div onClick={() => setShowNameFix(!showNameFix)} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", cursor: "pointer" }}>
@@ -1953,7 +2002,14 @@ function WorkersTab({ data, api, onOpen, onOpenObject }) {
 
       {adding && (
         <Card>
-          <Field label={api.t("fullName")}><input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="npr. Ivan Horvat" /></Field>
+          <div style={{ display: "flex", gap: 10 }}>
+            <div style={{ flex: 1 }}>
+              <Field label={api.t("lastName")}><input value={form.lastName} onChange={(e) => setForm({ ...form, lastName: e.target.value })} placeholder="npr. Horvat" /></Field>
+            </div>
+            <div style={{ flex: 1 }}>
+              <Field label={api.t("firstName")}><input value={form.firstName} onChange={(e) => setForm({ ...form, firstName: e.target.value })} placeholder="npr. Ivan" /></Field>
+            </div>
+          </div>
           {nameDupe && (
             <div style={{ fontSize: 12.5, color: S.amber, fontWeight: 600, margin: "-6px 0 10px" }}>
               ⚠️ Radnik s ovim imenom već postoji{nameDupe.archived ? " (u arhivi)" : ""} — provjeri da ne dupliraš.
@@ -2142,7 +2198,7 @@ function DirectoryTab({ data, api, onOpen }) {
   const exportDirectory = () => {
     const wb = XLSX.utils.book_new();
     const rows = [...data.workers].sort((a, b) => a.name.localeCompare(b.name, "hr")).map((w) => ({
-      "Ime i prezime": w.name, "Telefon": w.phone || "", "Objekt": objName(w.objectId), "Pozicija": w.position || "",
+      "Prezime i ime": w.name, "Telefon": w.phone || "", "Objekt": objName(w.objectId), "Pozicija": w.position || "",
       "Satnica": rateNow(data, w) || "", "Valuta satnice": wCur(w) === "CZK" ? "Kč" : "€",
       "Istek radne dozvole": w.permitExpiry ? fmtDate(w.permitExpiry) : "", "Istek ugovora": w.contractExpiry ? fmtDate(w.contractExpiry) : "",
       "Status": w.archived ? "Bivši" + (w.archivedDate ? " (" + fmtDate(w.archivedDate) + ")" : "") : "Aktivan",
@@ -2334,7 +2390,7 @@ function ProfileDetail({ profile, data, api, onBack }) {
 /* ================================================================== */
 function WorkerDetail({ worker, data, api, onBack }) {
   const [edit, setEdit] = useState(false);
-  const [form, setForm] = useState({ ...worker, rate: String(worker.rate || ""), rateCur: wCur(worker) });
+  const [form, setForm] = useState({ ...worker, rate: String(worker.rate || ""), rateCur: wCur(worker), ...splitNameForEdit(worker.name) });
   const [confirmRemove, setConfirmRemove] = useState(false);
   const [moveObj, setMoveObj] = useState(worker.objectId || "");
   const [moveDate, setMoveDate] = useState(todayISO());
@@ -2378,7 +2434,10 @@ function WorkerDetail({ worker, data, api, onBack }) {
     await loadDocs();
   };
 
-  const save = async () => { if (await api.updWorker(worker.id, form, form.name)) setEdit(false); };
+  const save = async () => {
+    const fullName = `${form.lastName.trim()} ${form.firstName.trim()}`.trim();
+    if (await api.updWorker(worker.id, { ...form, name: fullName }, fullName)) setEdit(false);
+  };
   const remove = async () => {
     if (!confirmRemove) { setConfirmRemove(true); return; }
     if (await api.delWorker(worker)) onBack();
@@ -2440,7 +2499,14 @@ function WorkerDetail({ worker, data, api, onBack }) {
           </>
         ) : (
           <>
-            <Field label="Ime i prezime"><input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /></Field>
+            <div style={{ display: "flex", gap: 10 }}>
+              <div style={{ flex: 1 }}>
+                <Field label="Prezime"><input value={form.lastName} onChange={(e) => setForm({ ...form, lastName: e.target.value })} /></Field>
+              </div>
+              <div style={{ flex: 1 }}>
+                <Field label="Ime"><input value={form.firstName} onChange={(e) => setForm({ ...form, firstName: e.target.value })} /></Field>
+              </div>
+            </div>
             <Field label="Broj telefona"><input value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} /></Field>
             <Field label={`Satnica (${form.rateCur === "CZK" ? "Kč" : "€"} / sat)`}>
               <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
