@@ -3701,6 +3701,9 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
   };
   const displayRows = view === "month" && payStatusFilter !== "all" ? rows.filter((r) => payStatusOf(r) === payStatusFilter) : rows;
   const exportTargetRows = selected.size > 0 ? displayRows.filter((r) => selected.has(r.w.id)) : displayRows;
+  const PAY_STATUS_LABEL = { all: "", paid: "✓ Isplaćeno", pending: "⏳ Predloženo", unpaid: "Bez isplate" };
+  const exportScopeLabel = selected.size > 0 ? `${selected.size} odabrano`
+    : (view === "month" ? PAY_STATUS_LABEL[payStatusFilter] : "");
   const unpaidRows = view === "month" ? displayRows.filter((r) => !paidFor(data, r.w.id, month)) : [];
   const pendingRows = view === "month" ? displayRows.filter((r) => { const p = paidFor(data, r.w.id, month); return p && !p.approved; }) : [];
   const allSelected = unpaidRows.length > 0 && unpaidRows.every((r) => selected.has(r.w.id));
@@ -4213,12 +4216,16 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
             </div>
           )}
           <div style={{ display: "flex", gap: 8, marginBottom: 4, flexWrap: "wrap" }}>
-            <Btn kind="excel" onClick={exportExcel} style={{ flex: 1 }}>📊 {api.t("excelBtn")}{objFilterName ? " — " + objFilterName : ""}</Btn>
-            <Btn kind="ghost" onClick={() => printEnvelopes(exportTargetRows)} style={{ flex: 1, fontWeight: 700 }}>🖨 {api.t("envelopesBtn")}{objFilterName ? " — " + objFilterName : ""}</Btn>
-            <Btn kind="ghost" onClick={printAllPayslips} style={{ flex: 1, fontWeight: 700 }}>🖨 Svi PDF obračuni{objFilterName ? " — " + objFilterName : ""}</Btn>
+            <Btn kind="excel" onClick={exportExcel} style={{ flex: 1 }}>📊 {api.t("excelBtn")}{objFilterName ? " — " + objFilterName : ""}{exportScopeLabel ? " — " + exportScopeLabel : ""}</Btn>
+            <Btn kind="ghost" onClick={() => printEnvelopes(exportTargetRows)} style={{ flex: 1, fontWeight: 700 }}>🖨 {api.t("envelopesBtn")}{objFilterName ? " — " + objFilterName : ""}{exportScopeLabel ? " — " + exportScopeLabel : ""}</Btn>
+            <Btn kind="ghost" onClick={printAllPayslips} style={{ flex: 1, fontWeight: 700 }}>🖨 Svi PDF obračuni{objFilterName ? " — " + objFilterName : ""}{exportScopeLabel ? " — " + exportScopeLabel : ""}</Btn>
           </div>
           <div style={{ fontSize: 11.5, color: S.sub, marginBottom: 12 }}>
-            {selected.size > 0 ? `Excel/koverte/PDF iznad odnose se samo na ${selected.size} označenih radnika ispod.` : "Označi radnike kvačicom ispod da Excel/koverte/PDF budu samo za njih — inače idu za sve prikazane."}
+            {selected.size > 0
+              ? `Excel/koverte/PDF iznad odnose se samo na ${selected.size} označenih radnika ispod.`
+              : payStatusFilter !== "all"
+                ? `Excel/koverte/PDF iznad odnose se samo na filter "${PAY_STATUS_LABEL[payStatusFilter]}" — promijeni filter iznad (Svi/Isplaćeno/Predloženo/Bez isplate) ili označi radnike kvačicom ispod za drugačiji odabir.`
+                : "Označi radnike kvačicom ispod da Excel/koverte/PDF budu samo za njih — inače idu za sve prikazane."}
           </div>
 
           {(totals.grossKc !== 0 || totals.netKc !== 0 || totals.firmKc !== 0) && (
