@@ -291,17 +291,18 @@ function objRevenue(data, object, logs, brigade) {
     row.amount = round2(row.amount + amt);
     byPos.set(key, row);
   });
-  const brigadeHours = round2((brigade || []).reduce((s, b) => s + b.hours, 0));
-  if (brigadeHours > 0) {
-    const rate = object?.billRate || 0, cur = object?.billCur || "EUR";
-    const amt = round2(brigadeHours * rate);
+  (brigade || []).forEach((b) => {
+    // posebna cijena te brigade (ako je upisana) nadjačava zadanu cijenu objekta
+    const rate = b.billRate > 0 ? b.billRate : (object?.billRate || 0);
+    const cur = b.billRate > 0 ? b.billCur : (object?.billCur || "EUR");
+    const amt = round2(b.hours * rate);
     if (cur === "CZK") revenueKc = round2(revenueKc + amt); else revenue = round2(revenue + amt);
-    const key = "__brigada__|" + cur;
+    const key = "__brigada__|" + cur + "|" + rate;
     const row = byPos.get(key) || { position: "Brigada (bez imena)", cur, hours: 0, rate, amount: 0 };
-    row.hours = round2(row.hours + brigadeHours);
+    row.hours = round2(row.hours + b.hours);
     row.amount = round2(row.amount + amt);
     byPos.set(key, row);
-  }
+  });
   return { revenue, revenueKc, byPosition: [...byPos.values()].sort((a, b) => a.position.localeCompare(b.position, "hr")) };
 }
 
@@ -498,6 +499,7 @@ async function fetchAll(isAdmin) {
     brigadeCosts: brigadeCosts.map((b) => ({
       id: b.id, objectId: b.object_id, date: b.work_date, hours: Number(b.hours) || 0,
       amount: Number(b.amount) || 0, currency: b.currency === "EUR" ? "EUR" : "CZK", note: b.note || "",
+      billRate: Number(b.bill_rate) || 0, billCur: b.bill_currency === "CZK" ? "CZK" : "EUR",
     })),
     loginLog: loginLog.map((l) => ({ id: l.id, userName: l.user_name || "", at: l.at, userAgent: l.user_agent || "" })),
     errorLog: errorLog.map((e) => ({ id: e.id, userName: e.user_name || "", message: e.message, url: e.url || "", at: e.at })),
@@ -889,9 +891,10 @@ export default function App() {
       `Isplatio proviziju ${p.name}: ${money(amount, cur)}${note ? " (" + note + ")" : ""}`),
     delCommissionPayout: (cp, pName) => act(() => softDel("commission_payouts", cp.id),
       `Obrisao isplatu provizije za ${pName}: ${money(cp.amount, cp.currency)}`),
-    addBrigadeCost: (object, date, hours, amount, cur, note) => act(() => ins("brigade_costs",
-      { object_id: object.id, work_date: date, hours, amount, currency: cur || "CZK", note: note || "", created_by: session.user.id }),
-      `Upisao brigadu na ${object.name}: ${fmtH(hours)} za ${money(amount, cur)} (${fmtDate(date)})`),
+    addBrigadeCost: (object, date, hours, amount, cur, note, billRate, billCur) => act(() => ins("brigade_costs",
+      { object_id: object.id, work_date: date, hours, amount, currency: cur || "CZK", note: note || "",
+        bill_rate: billRate || 0, bill_currency: billCur || "EUR", created_by: session.user.id }),
+      `Upisao brigadu na ${object.name}: ${fmtH(hours)} za ${money(amount, cur)} (${fmtDate(date)})${billRate > 0 ? ` — posebna cijena naplate ${money(billRate, billCur)}/h` : ""}`),
     delBrigadeCost: (b, objName) => act(() => softDel("brigade_costs", b.id),
       `Obrisao brigadu na ${objName}: ${fmtH(b.hours)} / ${money(b.amount, b.currency)} (${fmtDate(b.date)})`),
     toggleMember: (object, p, on) => act(() =>
@@ -2709,7 +2712,7 @@ function ObjectDetail({ object, data, api, onBack, onOpenWorker }) {
   const [budgetEdit, setBudgetEdit] = useState(String(object.monthlyBudget || ""));
   const [posRateForm, setPosRateForm] = useState({ position: "", mode: "fixed", value: "", currency: object.billCur || "EUR" });
   const [posRateEditing, setPosRateEditing] = useState(null); // pozicija koja se trenutno uređuje, ili null za novu
-  const [brigForm, setBrigForm] = useState({ date: todayISO(), hours: "", amount: "", cur: object.billCur === "EUR" ? "EUR" : "CZK", note: "" });
+  const [brigForm, setBrigForm] = useState({ date: todayISO(), hours: "", amount: "", cur: object.billCur === "EUR" ? "EUR" : "CZK", note: "", billRate: "", billCur: object.billCur || "EUR" });
   const [invoices, setInvoices] = useState(null);
   const [invErr, setInvErr] = useState("");
   const [invViewer, setInvViewer] = useState(null);
@@ -2818,9 +2821,10 @@ function ObjectDetail({ object, data, api, onBack, onOpenWorker }) {
   const addBrigade = async () => {
     const hours = round2(parseNum(brigForm.hours) || 0);
     const amount = round2(parseNum(brigForm.amount) || 0);
+    const billRate = round2(parseNum(brigForm.billRate) || 0);
     if (!brigForm.date || hours <= 0 || amount <= 0) return;
-    if (await api.addBrigadeCost(object, brigForm.date, hours, amount, brigForm.cur, brigForm.note)) {
-      setBrigForm({ date: brigForm.date, hours: "", amount: "", cur: brigForm.cur, note: "" });
+    if (await api.addBrigadeCost(object, brigForm.date, hours, amount, brigForm.cur, brigForm.note, billRate, brigForm.billCur)) {
+      setBrigForm({ date: brigForm.date, hours: "", amount: "", cur: brigForm.cur, note: "", billRate: "", billCur: brigForm.billCur });
     }
   };
 
@@ -3013,6 +3017,16 @@ function ObjectDetail({ object, data, api, onBack, onOpenWorker }) {
                 </div>
                 <CurChips small value={brigForm.cur} onChange={(v) => setBrigForm({ ...brigForm, cur: v })} />
               </div>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 6, alignItems: "center" }}>
+                <div style={{ flex: "1 1 160px" }}>
+                  <input inputMode="decimal" value={brigForm.billRate} onChange={(e) => setBrigForm({ ...brigForm, billRate: e.target.value })}
+                    placeholder={`cijena/sat (zadano ${object.billRate || 0})`} />
+                </div>
+                <CurChips small value={brigForm.billCur} onChange={(v) => setBrigForm({ ...brigForm, billCur: v })} />
+              </div>
+              <div style={{ fontSize: 11, color: S.sub, margin: "-4px 0 10px" }}>
+                Ostavi prazno da koristi zadanu cijenu objekta ({money(object.billRate || 0, object.billCur || "EUR")}/h) — upiši samo ako hotel ovu brigadu plaća drugačije.
+              </div>
               <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
                 <input value={brigForm.note} onChange={(e) => setBrigForm({ ...brigForm, note: e.target.value })} placeholder="Napomena (opcionalno)" style={{ flex: 1 }} />
                 <Btn small onClick={addBrigade}>Spremi</Btn>
@@ -3021,7 +3035,10 @@ function ObjectDetail({ object, data, api, onBack, onOpenWorker }) {
                 <div style={{ marginBottom: 4 }}>
                   {[...objBrigade].sort((a, b) => b.date.localeCompare(a.date)).map((bg) => (
                     <div key={bg.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 0", fontSize: 12.5, borderBottom: "1px dashed #EBD9B4" }}>
-                      <span style={{ flex: 1 }}>{fmtDate(bg.date)} · {fmtH(bg.hours)}{bg.note ? " · " + bg.note : ""}</span>
+                      <span style={{ flex: 1 }}>
+                        {fmtDate(bg.date)} · {fmtH(bg.hours)}{bg.note ? " · " + bg.note : ""}
+                        {bg.billRate > 0 && <span style={{ color: S.blue, fontWeight: 700 }}> · {money(bg.billRate, bg.billCur)}/h posebno</span>}
+                      </span>
                       <span className="num" style={{ fontWeight: 700 }}>{money(bg.amount, bg.currency)}</span>
                       <button onClick={() => api.delBrigadeCost(bg, object.name)} style={{ background: "none", border: "none", color: S.red, fontSize: 14, cursor: "pointer", padding: 2 }}>✕</button>
                     </div>
@@ -3974,8 +3991,11 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
     const ob = data.objects.find((o) => o.id === bg.objectId);
     const cur = byObject.get(bg.objectId) || { hours: 0, gross: 0, grossKc: 0, revenue: 0, revenueKc: 0, costs: 0, costsKc: 0 };
     cur.hours = round2(cur.hours + bg.hours);
-    const rv = round2(bg.hours * (ob?.billRate || 0));
-    if ((ob?.billCur || "EUR") === "CZK") cur.revenueKc = round2(cur.revenueKc + rv); else cur.revenue = round2(cur.revenue + rv);
+    // posebna cijena te brigade (ako je upisana) nadjačava zadanu cijenu objekta
+    const brate = bg.billRate > 0 ? bg.billRate : (ob?.billRate || 0);
+    const bcur2 = bg.billRate > 0 ? bg.billCur : (ob?.billCur || "EUR");
+    const rv = round2(bg.hours * brate);
+    if (bcur2 === "CZK") cur.revenueKc = round2(cur.revenueKc + rv); else cur.revenue = round2(cur.revenue + rv);
     if (bg.currency === "CZK") cur.costsKc = round2((cur.costsKc || 0) + bg.amount); else cur.costs = round2((cur.costs || 0) + bg.amount);
     byObject.set(bg.objectId, cur);
   });

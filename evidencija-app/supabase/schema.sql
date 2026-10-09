@@ -630,3 +630,7 @@ alter table brigade_costs enable row level security;
 drop policy if exists "brigade_admin_all" on brigade_costs;
 create policy "brigade_admin_all" on brigade_costs for all to authenticated
   using (is_admin()) with check (is_admin());
+
+-- Posebna cijena naplate za baš tu brigadu (nadjačava zadanu cijenu objekta gore) — 0 = koristi zadanu
+alter table brigade_costs add column if not exists bill_rate numeric default 0;
+alter table brigade_costs add column if not exists bill_currency text default 'EUR';
