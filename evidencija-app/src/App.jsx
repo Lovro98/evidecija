@@ -4139,15 +4139,15 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
     printDoc("Koverte " + periodLabel + (objFilterName ? " — " + objFilterName : ""), `<style>
       @page{size:220mm 110mm;margin:0}
       body{padding:0!important;margin:0!important;max-width:none!important}
-      .env{width:220mm;height:110mm;box-sizing:border-box;padding:8mm 18mm 6mm;page-break-after:always;
-        text-align:center;display:flex;flex-direction:column}
-      .env-top{font-size:12pt;color:#444;line-height:1.35}
-      .env-mid{margin:3mm 0 2mm}
-      .env-name{font-size:21pt;font-weight:bold;letter-spacing:.5px;margin-bottom:1mm;text-transform:uppercase}
-      .env-hours{font-size:12.5pt}
-      .env-break{font-size:10pt;color:#444;margin-bottom:1.5mm}
-      .env-total{border-top:2px solid #000;width:70%;margin:0 auto;padding-top:2.5mm;font-size:19pt;font-weight:bold;line-height:1.25}
-      .env-space{flex:1;min-height:24mm}
+      .env{width:220mm;height:110mm;box-sizing:border-box;padding:8mm 18mm 6mm;page-break-after:always;page-break-inside:avoid;
+        overflow:hidden;text-align:center;display:flex;flex-direction:column}
+      .env-top{font-size:12pt;color:#444;line-height:1.3}
+      .env-mid{margin:2mm 0 1.5mm}
+      .env-name{font-size:19pt;font-weight:bold;letter-spacing:.5px;margin-bottom:1mm;text-transform:uppercase}
+      .env-hours{font-size:11.5pt}
+      .env-break{font-size:9pt;color:#444;line-height:1.25;margin-bottom:1mm}
+      .env-total{border-top:2px solid #000;width:70%;margin:0 auto;padding-top:2mm;font-size:17pt;font-weight:bold;line-height:1.2}
+      .env-space{flex:1}
     </style>${pages}`);
   };
 
