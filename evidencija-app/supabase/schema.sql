@@ -607,3 +607,26 @@ alter table settings add column if not exists payday_reminder_days numeric defau
 -- se ta ponuda više ne prikazuje (da se netko slučajno ne zamijeni dvaput).
 -- ============================================================
 alter table settings add column if not exists name_order_migrated boolean default false;
+
+-- ============================================================
+-- BRIGADA (ČEŠKA): kad na hotel pošalješ dodatnu osobu "na dan" i odmah je
+-- platiš u cashu — bez imena, samo datum/objekt/sati/iznos. Ulazi i u naplatu
+-- objekta (sati se naplaćuju hotelu po zadanoj cijeni objekta) i u trošak
+-- (isplaćeni cash se oduzima od dobiti) — samo admin.
+-- ============================================================
+create table if not exists brigade_costs (
+  id uuid primary key default gen_random_uuid(),
+  object_id uuid not null references objects on delete cascade,
+  work_date date not null default current_date,
+  hours numeric not null default 0,
+  amount numeric not null default 0,
+  currency text not null default 'CZK',
+  note text default '',
+  created_by uuid references profiles,
+  created_at timestamptz default now(),
+  deleted_at timestamptz
+);
+alter table brigade_costs enable row level security;
+drop policy if exists "brigade_admin_all" on brigade_costs;
+create policy "brigade_admin_all" on brigade_costs for all to authenticated
+  using (is_admin()) with check (is_admin());

@@ -276,7 +276,8 @@ function billRateForLog(data, object, worker, date) {
   }
   return { rate: object?.billRate || 0, cur: object?.billCur || "EUR" };
 }
-function objRevenue(data, object, logs) {
+// brigade (po danu, bez imena) se naplaćuje hotelu po zadanoj cijeni objekta (nema pozicije/radnika)
+function objRevenue(data, object, logs, brigade) {
   let revenue = 0, revenueKc = 0;
   const byPos = new Map();
   logs.forEach((l) => {
@@ -290,6 +291,17 @@ function objRevenue(data, object, logs) {
     row.amount = round2(row.amount + amt);
     byPos.set(key, row);
   });
+  const brigadeHours = round2((brigade || []).reduce((s, b) => s + b.hours, 0));
+  if (brigadeHours > 0) {
+    const rate = object?.billRate || 0, cur = object?.billCur || "EUR";
+    const amt = round2(brigadeHours * rate);
+    if (cur === "CZK") revenueKc = round2(revenueKc + amt); else revenue = round2(revenue + amt);
+    const key = "__brigada__|" + cur;
+    const row = byPos.get(key) || { position: "Brigada (bez imena)", cur, hours: 0, rate, amount: 0 };
+    row.hours = round2(row.hours + brigadeHours);
+    row.amount = round2(row.amount + amt);
+    byPos.set(key, row);
+  }
   return { revenue, revenueKc, byPosition: [...byPos.values()].sort((a, b) => a.position.localeCompare(b.position, "hr")) };
 }
 
@@ -404,9 +416,9 @@ async function fetchAll(isAdmin) {
   const err = [workers, objects, logs, payments, assignments, rateChanges, profiles, payouts].find((r) => r.error);
   if (err) throw err.error;
 
-  let billing = [], audit = [], trash = [], members = [], invoicePayments = [], settings = {}, objectInvoices = [], payrollNotes = [], positionBilling = [], reminders = [], loginLog = [], errorLog = [], commissionRates = [], commissionPayouts = [];
+  let billing = [], audit = [], trash = [], members = [], invoicePayments = [], settings = {}, objectInvoices = [], payrollNotes = [], positionBilling = [], reminders = [], loginLog = [], errorLog = [], commissionRates = [], commissionPayouts = [], brigadeCosts = [];
   if (isAdmin) {
-    const [b, a, tw, tl, tp, om, ip, st, oi, pn, pb, rm, ll, el, cr, cp] = await Promise.all([
+    const [b, a, tw, tl, tp, om, ip, st, oi, pn, pb, rm, ll, el, cr, cp, bg] = await Promise.all([
       supabase.from("object_billing").select("*"),
       supabase.from("audit_log").select("*").order("at", { ascending: false }).limit(80),
       supabase.from("workers").select("*").not("deleted_at", "is", null),
@@ -423,10 +435,11 @@ async function fetchAll(isAdmin) {
       supabase.from("error_log").select("*").order("at", { ascending: false }).limit(50),
       supabase.from("commission_rates").select("*"),
       live(supabase.from("commission_payouts").select("*")),
+      live(supabase.from("brigade_costs").select("*")),
     ]);
     billing = b.data || []; audit = a.data || []; members = om.data || [];
     invoicePayments = ip.data || []; settings = st.data || {}; objectInvoices = oi.data || []; payrollNotes = pn.data || [];
-    positionBilling = pb.data || []; reminders = rm.data || []; loginLog = ll.data || []; errorLog = el.data || []; commissionRates = cr.data || []; commissionPayouts = cp.data || [];
+    positionBilling = pb.data || []; reminders = rm.data || []; loginLog = ll.data || []; errorLog = el.data || []; commissionRates = cr.data || []; commissionPayouts = cp.data || []; brigadeCosts = bg.data || [];
     trash = [
       ...(tw.data || []).map((r) => ({ table: "workers", row: r, label: `Radnik: ${r.name}` })),
       ...(tl.data || []).map((r) => ({ table: "work_logs", row: r, label: `Sati: ${fmtH(r.hours)} (${fmtDate(r.work_date)})` })),
@@ -481,6 +494,10 @@ async function fetchAll(isAdmin) {
     commissionPayouts: commissionPayouts.map((c) => ({
       id: c.id, userId: c.user_id, payDate: c.pay_date, amount: Number(c.amount) || 0,
       currency: c.currency === "CZK" ? "CZK" : "EUR", note: c.note || "",
+    })),
+    brigadeCosts: brigadeCosts.map((b) => ({
+      id: b.id, objectId: b.object_id, date: b.work_date, hours: Number(b.hours) || 0,
+      amount: Number(b.amount) || 0, currency: b.currency === "EUR" ? "EUR" : "CZK", note: b.note || "",
     })),
     loginLog: loginLog.map((l) => ({ id: l.id, userName: l.user_name || "", at: l.at, userAgent: l.user_agent || "" })),
     errorLog: errorLog.map((e) => ({ id: e.id, userName: e.user_name || "", message: e.message, url: e.url || "", at: e.at })),
@@ -872,6 +889,11 @@ export default function App() {
       `Isplatio proviziju ${p.name}: ${money(amount, cur)}${note ? " (" + note + ")" : ""}`),
     delCommissionPayout: (cp, pName) => act(() => softDel("commission_payouts", cp.id),
       `Obrisao isplatu provizije za ${pName}: ${money(cp.amount, cp.currency)}`),
+    addBrigadeCost: (object, date, hours, amount, cur, note) => act(() => ins("brigade_costs",
+      { object_id: object.id, work_date: date, hours, amount, currency: cur || "CZK", note: note || "", created_by: session.user.id }),
+      `Upisao brigadu na ${object.name}: ${fmtH(hours)} za ${money(amount, cur)} (${fmtDate(date)})`),
+    delBrigadeCost: (b, objName) => act(() => softDel("brigade_costs", b.id),
+      `Obrisao brigadu na ${objName}: ${fmtH(b.hours)} / ${money(b.amount, b.currency)} (${fmtDate(b.date)})`),
     toggleMember: (object, p, on) => act(() =>
       (on ? supabase.from("object_members").insert({ object_id: object.id, user_id: p.id })
           : supabase.from("object_members").delete().eq("object_id", object.id).eq("user_id", p.id)
@@ -2115,12 +2137,13 @@ function ObjectsTab({ data, api, onOpenObject }) {
   const shown = list.filter((o) => (o.country || "HR") === country);
   const renderObject = (o) => {
         const logs = data.logs.filter((l) => l.objectId === o.id && monthKey(l.date) === mk);
-        const hrs = round2(logs.reduce((s, l) => s + l.hours, 0));
+        const brigadeM = (data.brigadeCosts || []).filter((b) => b.objectId === o.id && monthKey(b.date) === mk);
+        const hrs = round2(logs.reduce((s, l) => s + l.hours, 0) + brigadeM.reduce((s, b) => s + b.hours, 0));
         const workerIds = new Set([
           ...data.workers.filter((w) => !w.archived && w.objectId === o.id).map((w) => w.id),
           ...logs.map((l) => l.workerId),
         ]);
-        const rv = objRevenue(data, o, logs);
+        const rv = objRevenue(data, o, logs, brigadeM);
         return (
           <Card key={o.id} style={{ cursor: "pointer" }} onClick={() => onOpenObject(o.id)}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
@@ -2686,6 +2709,7 @@ function ObjectDetail({ object, data, api, onBack, onOpenWorker }) {
   const [budgetEdit, setBudgetEdit] = useState(String(object.monthlyBudget || ""));
   const [posRateForm, setPosRateForm] = useState({ position: "", mode: "fixed", value: "", currency: object.billCur || "EUR" });
   const [posRateEditing, setPosRateEditing] = useState(null); // pozicija koja se trenutno uređuje, ili null za novu
+  const [brigForm, setBrigForm] = useState({ date: todayISO(), hours: "", amount: "", cur: object.billCur === "EUR" ? "EUR" : "CZK", note: "" });
   const [invoices, setInvoices] = useState(null);
   const [invErr, setInvErr] = useState("");
   const [invViewer, setInvViewer] = useState(null);
@@ -2734,7 +2758,10 @@ function ObjectDetail({ object, data, api, onBack, onOpenWorker }) {
     await loadInvoices();
   };
 
-  const objHoursFor = (mo) => round2(data.logs.filter((l) => l.objectId === object.id && monthKey(l.date) === mo).reduce((s, l) => s + l.hours, 0));
+  const objHoursFor = (mo) => round2(
+    data.logs.filter((l) => l.objectId === object.id && monthKey(l.date) === mo).reduce((s, l) => s + l.hours, 0)
+    + (data.brigadeCosts || []).filter((bg) => bg.objectId === object.id && monthKey(bg.date) === mo).reduce((s, bg) => s + bg.hours, 0)
+  );
   const openGenerator = () => {
     const hrs = objHoursFor(genMonth);
     setGenHours(String(hrs));
@@ -2786,6 +2813,15 @@ function ObjectDetail({ object, data, api, onBack, onOpenWorker }) {
     const val = round2(parseNum(posRateForm.value) || 0);
     if (!pos) return;
     if (await api.setPositionRate(object, pos, { mode: posRateForm.mode, value: val, currency: posRateForm.currency })) resetPositionForm();
+  };
+
+  const addBrigade = async () => {
+    const hours = round2(parseNum(brigForm.hours) || 0);
+    const amount = round2(parseNum(brigForm.amount) || 0);
+    if (!brigForm.date || hours <= 0 || amount <= 0) return;
+    if (await api.addBrigadeCost(object, brigForm.date, hours, amount, brigForm.cur, brigForm.note)) {
+      setBrigForm({ date: brigForm.date, hours: "", amount: "", cur: brigForm.cur, note: "" });
+    }
   };
 
   const commitDay = (w) => {
@@ -2871,7 +2907,8 @@ function ObjectDetail({ object, data, api, onBack, onOpenWorker }) {
       {api.admin && (() => {
         const mk = mode === "day" ? monthKey(date) : month;
         const objLogs = data.logs.filter((l) => l.objectId === object.id && monthKey(l.date) === mk);
-        const rv = objRevenue(data, object, objLogs);
+        const objBrigade = (data.brigadeCosts || []).filter((bg) => bg.objectId === object.id && monthKey(bg.date) === mk);
+        const rv = objRevenue(data, object, objLogs, objBrigade);
         const bc = object.billCur || "EUR";
         let costE = 0, costK = 0;
         objLogs.forEach((l) => {
@@ -2881,6 +2918,8 @@ function ObjectDetail({ object, data, api, onBack, onOpenWorker }) {
         });
         costE = round2(costE); costK = round2(costK);
         const oPays = data.payments.filter((pp) => !pp.workerId && pp.objectId === object.id && monthKey(pp.date) === mk);
+        const brigadeCostE = round2(objBrigade.filter((bg) => (bg.currency || "CZK") === "EUR").reduce((s, bg) => s + bg.amount, 0));
+        const brigadeCostK = round2(objBrigade.filter((bg) => bg.currency === "CZK").reduce((s, bg) => s + bg.amount, 0));
         const extraCost = round2(oPays.filter((pp) => (pp.currency || "EUR") === "EUR").reduce((s, pp) => s + pp.amount, 0));
         const extraCostKc = round2(oPays.filter((pp) => pp.currency === "CZK").reduce((s, pp) => s + pp.amount, 0));
         return (
@@ -2901,7 +2940,7 @@ function ObjectDetail({ object, data, api, onBack, onOpenWorker }) {
                 <Btn small onClick={() => api.setBudget(object, parseNum(budgetEdit) || 0, bc)}>Spremi</Btn>
               </div>
               {object.monthlyBudget > 0 && (() => {
-                const spent = bc === "CZK" ? costK + extraCostKc : costE + extraCost;
+                const spent = bc === "CZK" ? costK + extraCostKc + brigadeCostK : costE + extraCost + brigadeCostE;
                 const pct = round2((spent / object.monthlyBudget) * 100);
                 const over = spent > object.monthlyBudget;
                 return (
@@ -2957,10 +2996,44 @@ function ObjectDetail({ object, data, api, onBack, onOpenWorker }) {
               </div>
             </div>
 
+            <div style={{ borderTop: `1px dashed #EBD9B4`, marginTop: 4, paddingTop: 10 }}>
+              <div style={{ fontSize: 12.5, fontWeight: 700, color: S.amber, marginBottom: 6 }}>👷 Brigada (bez imena) — isplaćeno u cashu</div>
+              <div style={{ fontSize: 11.5, color: S.sub, marginBottom: 8 }}>
+                Za kad pošalješ dodatnu osobu na dan i odmah je platiš. Sati se naplaćuju hotelu po zadanoj cijeni objekta, a iznos ide kao trošak.
+              </div>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 6 }}>
+                <div style={{ flex: "1 1 130px" }}>
+                  <input type="date" value={brigForm.date} onChange={(e) => setBrigForm({ ...brigForm, date: e.target.value })} />
+                </div>
+                <div style={{ flex: "1 1 90px" }}>
+                  <input inputMode="decimal" value={brigForm.hours} onChange={(e) => setBrigForm({ ...brigForm, hours: e.target.value })} placeholder="sati" />
+                </div>
+                <div style={{ flex: "1 1 110px" }}>
+                  <input inputMode="decimal" value={brigForm.amount} onChange={(e) => setBrigForm({ ...brigForm, amount: e.target.value })} placeholder="dao (iznos)" />
+                </div>
+                <CurChips small value={brigForm.cur} onChange={(v) => setBrigForm({ ...brigForm, cur: v })} />
+              </div>
+              <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+                <input value={brigForm.note} onChange={(e) => setBrigForm({ ...brigForm, note: e.target.value })} placeholder="Napomena (opcionalno)" style={{ flex: 1 }} />
+                <Btn small onClick={addBrigade}>Spremi</Btn>
+              </div>
+              {objBrigade.length > 0 && (
+                <div style={{ marginBottom: 4 }}>
+                  {[...objBrigade].sort((a, b) => b.date.localeCompare(a.date)).map((bg) => (
+                    <div key={bg.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 0", fontSize: 12.5, borderBottom: "1px dashed #EBD9B4" }}>
+                      <span style={{ flex: 1 }}>{fmtDate(bg.date)} · {fmtH(bg.hours)}{bg.note ? " · " + bg.note : ""}</span>
+                      <span className="num" style={{ fontWeight: 700 }}>{money(bg.amount, bg.currency)}</span>
+                      <button onClick={() => api.delBrigadeCost(bg, object.name)} style={{ background: "none", border: "none", color: S.red, fontSize: 14, cursor: "pointer", padding: 2 }}>✕</button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
             {(() => {
               const revE = rv.revenue, revK = rv.revenueKc;
-              const profitE = round2(revE - costE - extraCost);
-              const profitK = round2(revK - costK - extraCostKc);
+              const profitE = round2(revE - costE - extraCost - brigadeCostE);
+              const profitK = round2(revK - costK - extraCostKc - brigadeCostK);
               return (
                 <div className="num" style={{ fontSize: 14, borderTop: `1px dashed #EBD9B4`, marginTop: 10, paddingTop: 10 }}>
                   {rv.byPosition.length === 0 && (
@@ -2975,6 +3048,8 @@ function ObjectDetail({ object, data, api, onBack, onOpenWorker }) {
                   {costK > 0 && <div style={{ display: "flex", justifyContent: "space-between", padding: "3px 0" }}><span>Plaća radnika (Kč)</span><b>−{czk(costK)}</b></div>}
                   {extraCost > 0 && <div style={{ display: "flex", justifyContent: "space-between", padding: "3px 0" }}><span>Troškovi objekta (€)</span><b>−{eur(extraCost)}</b></div>}
                   {extraCostKc > 0 && <div style={{ display: "flex", justifyContent: "space-between", padding: "3px 0" }}><span>Troškovi objekta (Kč)</span><b>−{czk(extraCostKc)}</b></div>}
+                  {brigadeCostE > 0 && <div style={{ display: "flex", justifyContent: "space-between", padding: "3px 0" }}><span>Brigada — isplaćeno cash (€)</span><b>−{eur(brigadeCostE)}</b></div>}
+                  {brigadeCostK > 0 && <div style={{ display: "flex", justifyContent: "space-between", padding: "3px 0" }}><span>Brigada — isplaćeno cash (Kč)</span><b>−{czk(brigadeCostK)}</b></div>}
                   <div style={{ borderTop: `1px dashed #EBD9B4`, paddingTop: 5, marginTop: 2 }}>
                     {(profitE !== 0 || profitK === 0) && (
                       <div style={{ display: "flex", justifyContent: "space-between", fontWeight: 800 }}>
@@ -3866,6 +3941,7 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
   };
 
   const periodLogs = data.logs.filter((l) => (view === "month" ? inMonth : inYear)(l.date) && (objFilters.size === 0 || objFilters.has(l.objectId)));
+  const periodBrigade = (data.brigadeCosts || []).filter((bg) => (view === "month" ? inMonth : inYear)(bg.date) && (objFilters.size === 0 || objFilters.has(bg.objectId)));
   const periodLabel = view === "month" ? `${MONTHS[m - 1]} ${y}.` : `${y}. godina`;
 
   const totals = rows.reduce((t, r) => ({
@@ -3876,8 +3952,10 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
   }), { hours: 0, gross: 0, net: 0, firm: 0, bonus: 0, netKc: 0, firmKc: 0, grossKc: 0, bonusKc: 0 });
 
   const objPays = data.payments.filter((p) => !p.workerId && p.objectId && (view === "month" ? inMonth : inYear)(p.date));
-  const objCostsTotal = round2(objPays.filter((p) => (p.currency || "EUR") === "EUR").reduce((s, p) => s + p.amount, 0));
-  const objCostsTotalKc = round2(objPays.filter((p) => p.currency === "CZK").reduce((s, p) => s + p.amount, 0));
+  const brigadeCostsTotal = round2(periodBrigade.filter((bg) => (bg.currency || "CZK") === "EUR").reduce((s, bg) => s + bg.amount, 0));
+  const brigadeCostsTotalKc = round2(periodBrigade.filter((bg) => bg.currency === "CZK").reduce((s, bg) => s + bg.amount, 0));
+  const objCostsTotal = round2(objPays.filter((p) => (p.currency || "EUR") === "EUR").reduce((s, p) => s + p.amount, 0) + brigadeCostsTotal);
+  const objCostsTotalKc = round2(objPays.filter((p) => p.currency === "CZK").reduce((s, p) => s + p.amount, 0) + brigadeCostsTotalKc);
   const byObject = new Map();
   periodLogs.forEach((l) => {
     const key = l.objectId || "__none__";
@@ -3891,6 +3969,15 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
     const rv = l.hours * brate;
     if (bcur === "CZK") cur.revenueKc = round2(cur.revenueKc + rv); else cur.revenue = round2(cur.revenue + rv);
     byObject.set(key, cur);
+  });
+  periodBrigade.forEach((bg) => {
+    const ob = data.objects.find((o) => o.id === bg.objectId);
+    const cur = byObject.get(bg.objectId) || { hours: 0, gross: 0, grossKc: 0, revenue: 0, revenueKc: 0, costs: 0, costsKc: 0 };
+    cur.hours = round2(cur.hours + bg.hours);
+    const rv = round2(bg.hours * (ob?.billRate || 0));
+    if ((ob?.billCur || "EUR") === "CZK") cur.revenueKc = round2(cur.revenueKc + rv); else cur.revenue = round2(cur.revenue + rv);
+    if (bg.currency === "CZK") cur.costsKc = round2((cur.costsKc || 0) + bg.amount); else cur.costs = round2((cur.costs || 0) + bg.amount);
+    byObject.set(bg.objectId, cur);
   });
   objPays.forEach((p) => {
     const cur = byObject.get(p.objectId) || { hours: 0, gross: 0, grossKc: 0, revenue: 0, revenueKc: 0, costs: 0, costsKc: 0 };
@@ -3970,11 +4057,13 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
     const st = api.settings;
     const ob = data.objects.find((o) => o.id === key);
     const ls = periodLogs.filter((l) => l.objectId === key).sort((a, b) => a.date.localeCompare(b.date));
+    const brig = periodBrigade.filter((bg) => bg.objectId === key).sort((a, b) => a.date.localeCompare(b.date));
     const rowsHtml = ls.map((l) => {
       const wk = data.workers.find((x) => x.id === l.workerId);
       return `<tr><td>${fmtDate(l.date)}</td><td>${wk?.name || ""}${wk?.position ? " · " + wk.position : ""}</td><td>${logSpan(l)}</td><td class="right">${fmtH(l.hours)}</td></tr>`;
-    }).join("");
-    const rv = objRevenue(data, ob, ls);
+    }).join("") + brig.map((bg) =>
+      `<tr><td>${fmtDate(bg.date)}</td><td>Brigada (bez imena)</td><td>—</td><td class="right">${fmtH(bg.hours)}</td></tr>`).join("");
+    const rv = objRevenue(data, ob, ls, brig);
     const priceRowsHtml = rv.byPosition.map((row) =>
       `<tr><td>${row.position || "Naplata"}: ${fmtH(row.hours)} × ${money(row.rate, row.cur)}/h</td><td class="right">${money(row.amount, row.cur)}</td></tr>`).join("");
     const totalRowsHtml = [
