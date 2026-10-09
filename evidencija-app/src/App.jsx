@@ -4138,14 +4138,13 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
     printDoc("Koverte " + periodLabel + (objFilterName ? " — " + objFilterName : ""), `<style>
       @page{size:220mm 110mm;margin:0}
       body{padding:0!important;margin:0!important;max-width:none!important}
-      .env{width:220mm;height:110mm;box-sizing:border-box;padding:8mm 18mm 6mm;page-break-after:always;page-break-inside:avoid;
-        position:relative;overflow:hidden;text-align:center}
+      .env{width:220mm;box-sizing:border-box;padding:10mm 18mm 0;page-break-after:always;page-break-inside:avoid;text-align:center}
       .env-top{font-size:12pt;color:#444;line-height:1.3}
       .env-mid{margin:2mm 0 1.5mm}
       .env-name{font-size:19pt;font-weight:bold;letter-spacing:.5px;margin-bottom:1mm;text-transform:uppercase}
       .env-hours{font-size:11.5pt}
       .env-break{font-size:9pt;color:#444;line-height:1.25;margin-bottom:1mm}
-      .env-total{position:absolute;left:18mm;right:18mm;bottom:6mm;border-top:2px solid #000;padding-top:2mm;font-size:17pt;font-weight:bold;line-height:1.2}
+      .env-total{border-top:2px solid #000;width:70%;margin:4mm auto 0;padding-top:2mm;font-size:17pt;font-weight:bold;line-height:1.2}
     </style>${pages}`);
   };
 
