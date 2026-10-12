@@ -434,6 +434,41 @@ function splitPdfInvoices(pages) {
   });
   return chunks.map((pageGroup) => pageGroup.flat());
 }
+// OCR (čitanje teksta sa slike) — za skenirane/fotografirane PDF-ove koji nemaju pravi tekst sloj.
+// Renderira svaku stranicu u sliku pa pušta tesseract.js (učitava se tek kad zatreba, ne usporava app inače).
+// Vraća podatke u ISTOM obliku kao extractPdfPages, da se mogu koristiti isti splitPdfInvoices/parseInvoicePdf.
+async function ocrPdfPages(file, onProgress) {
+  const { createWorker } = await import("tesseract.js");
+  const buf = await file.arrayBuffer();
+  const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
+  const worker = await createWorker("ces");
+  const pages = [];
+  try {
+    for (let p = 1; p <= pdf.numPages; p++) {
+      if (onProgress) onProgress(p, pdf.numPages);
+      const page = await pdf.getPage(p);
+      const viewport = page.getViewport({ scale: 2.5 });
+      const canvas = document.createElement("canvas");
+      canvas.width = viewport.width;
+      canvas.height = viewport.height;
+      await page.render({ canvasContext: canvas.getContext("2d"), viewport }).promise;
+      const { data } = await worker.recognize(canvas);
+      const words = (data.words || []).filter((w) => w.text && w.text.trim());
+      const rows = new Map();
+      words.forEach((w) => {
+        const cy = Math.round(((w.bbox.y0 + w.bbox.y1) / 2) / 12) * 12;
+        if (!rows.has(cy)) rows.set(cy, []);
+        rows.get(cy).push({ x: w.bbox.x0, s: w.text });
+      });
+      const ys = [...rows.keys()].sort((a, b) => a - b);
+      const lines = ys.map((y) => rows.get(y).sort((a, b) => a.x - b.x)).filter((r) => r.length);
+      pages.push(lines);
+    }
+  } finally {
+    await worker.terminate();
+  }
+  return pages;
+}
 const MONTHS_CZ = { leden: 1, únor: 2, brezen: 3, březen: 3, duben: 4, květen: 5, kveten: 5, červen: 6, cerven: 6,
   červenec: 7, cervenec: 7, srpen: 8, září: 9, zari: 9, říjen: 10, rijen: 10, listopad: 11, prosinec: 12 };
 function parseInvoicePdf(lineItems) {
@@ -2297,6 +2332,7 @@ function ObjectsTab({ data, api, onOpenObject }) {
   const [invReview, setInvReview] = useState(null); // [{ id, file, fileName, parsed:{...}, objectId, remember, include, error }]
   const [invShowRaw, setInvShowRaw] = useState(() => new Set());
   const [invBusy, setInvBusy] = useState(false);
+  const [invOcrStatus, setInvOcrStatus] = useState(""); // "" ili npr. "OCR: ime.pdf (stranica 1/2)…"
   const invImportRef = useRef(null);
   const addObject = async () => {
     const n = newObj.trim(); if (!n) return;
@@ -2320,15 +2356,24 @@ function ObjectsTab({ data, api, onOpenObject }) {
     const rows = [];
     for (const file of files) {
       try {
-        const pages = await extractPdfPages(file);
+        let pages = await extractPdfPages(file);
+        let usedOcr = false;
+        if (!pages.some((p) => p.length > 0)) {
+          // nema teksta u PDF-u (vjerojatno skenirano/fotografirano) — pokušaj OCR (čitanje sa slike)
+          usedOcr = true;
+          setInvOcrStatus(`🔍 OCR čita: ${file.name}…`);
+          pages = await ocrPdfPages(file, (p, total) => setInvOcrStatus(`🔍 OCR čita: ${file.name} (stranica ${p}/${total})…`));
+          setInvOcrStatus("");
+        }
         const invoiceChunks = splitPdfInvoices(pages);
         invoiceChunks.forEach((items, idx) => {
           const id = Date.now() + "_" + Math.random().toString(36).slice(2) + "_" + idx;
           const parsed = parseInvoicePdf(items);
-          const label = invoiceChunks.length > 1 ? `${file.name} — faktura ${idx + 1}/${invoiceChunks.length}` : file.name;
-          rows.push({ id, file, fileName: label, parsed, objectId: matchObjectByCustomer(parsed.customerName), remember: true, include: true });
+          const label = (invoiceChunks.length > 1 ? `${file.name} — faktura ${idx + 1}/${invoiceChunks.length}` : file.name) + (usedOcr ? " · OCR" : "");
+          rows.push({ id, file, fileName: label, parsed, objectId: matchObjectByCustomer(parsed.customerName), remember: true, include: true, ocr: usedOcr });
         });
       } catch {
+        setInvOcrStatus("");
         const id = Date.now() + "_" + Math.random().toString(36).slice(2);
         rows.push({ id, file, fileName: file.name,
           parsed: { number: "", issueDate: todayISO(), amount: 0, vatAmount: 0, period: curMonth(), customerName: "" },
@@ -2422,9 +2467,14 @@ function ObjectsTab({ data, api, onOpenObject }) {
 
       {api.admin && (
         <>
-          <Btn small kind="ghost" onClick={() => invImportRef.current?.click()} style={{ width: "100%", marginBottom: 14 }}>
+          <Btn small kind="ghost" onClick={() => invImportRef.current?.click()} disabled={!!invOcrStatus} style={{ width: "100%", marginBottom: invOcrStatus ? 4 : 14 }}>
             📥 Uvoz faktura (PDF, više odjednom)
           </Btn>
+          {invOcrStatus && (
+            <div style={{ fontSize: 12.5, color: S.blue, fontWeight: 600, marginBottom: 14 }}>
+              {invOcrStatus} (sken bez teksta — ovo može potrajati pola minute po stranici)
+            </div>
+          )}
           <input ref={invImportRef} type="file" accept="application/pdf" multiple onChange={handleInvoiceFiles} style={{ display: "none" }} />
         </>
       )}
@@ -2442,6 +2492,11 @@ function ObjectsTab({ data, api, onOpenObject }) {
                   <button onClick={() => removeInvRow(r.id)} style={{ background: "none", border: "none", color: S.red, fontSize: 15, cursor: "pointer", padding: 2 }}>✕</button>
                 </div>
                 {r.error && <div style={{ fontSize: 12, color: S.red, marginBottom: 6 }}>⚠️ {r.error}</div>}
+                {r.ocr && !r.error && (
+                  <div style={{ fontSize: 11.5, color: S.amber, fontWeight: 600, marginBottom: 6 }}>
+                    🔍 Pročitano OCR-om sa skena — manje pouzdano, pažljivo provjeri brojeve ispod prije uvoza.
+                  </div>
+                )}
                 <div style={{ marginBottom: 6 }}>
                   <select value={r.objectId} onChange={(e) => updInvRow(r.id, { objectId: e.target.value })}
                     style={{ borderColor: matched ? S.green : S.amber, fontWeight: 700, color: matched ? S.green : S.amber }}>
