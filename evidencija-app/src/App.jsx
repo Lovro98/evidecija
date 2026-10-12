@@ -494,7 +494,7 @@ function parseInvoicePdf(lineItems) {
     }
   }
 
-  return { number, issueDate, amount, vatAmount, period, customerName, currency: "CZK" };
+  return { number, issueDate, amount, vatAmount, period, customerName, currency: "CZK", rawText: flatText };
 }
 
 /* ================================================================== */
@@ -2295,6 +2295,7 @@ function ObjectsTab({ data, api, onOpenObject }) {
   const [country, setCountry] = useState("HR"); // aktivni filter/tab — i zadana država za novi objekt
   const [q, setQ] = useState("");
   const [invReview, setInvReview] = useState(null); // [{ id, file, fileName, parsed:{...}, objectId, remember, include, error }]
+  const [invShowRaw, setInvShowRaw] = useState(() => new Set());
   const [invBusy, setInvBusy] = useState(false);
   const invImportRef = useRef(null);
   const addObject = async () => {
@@ -2470,6 +2471,15 @@ function ObjectsTab({ data, api, onOpenObject }) {
                     <input type="checkbox" checked={r.remember} onChange={(e) => updInvRow(r.id, { remember: e.target.checked })} style={{ width: 15, height: 15 }} />
                     Zapamti "{r.parsed.customerName}" za odabrani objekt (kad ga odabereš)
                   </label>
+                )}
+                <button onClick={() => setInvShowRaw((s) => { const n = new Set(s); n.has(r.id) ? n.delete(r.id) : n.add(r.id); return n; })}
+                  style={{ background: "none", border: "none", color: S.blue, fontSize: 11.5, cursor: "pointer", padding: "4px 0", marginTop: 4 }}>
+                  {invShowRaw.has(r.id) ? "▲ Sakrij pročitani tekst" : "▼ Prikaži pročitani tekst iz PDF-a (ako iznos/PDV nisu točni)"}
+                </button>
+                {invShowRaw.has(r.id) && (
+                  <div style={{ fontSize: 10.5, fontFamily: "monospace", background: S.bg, borderRadius: 8, padding: 8, marginTop: 4, maxHeight: 180, overflowY: "auto", whiteSpace: "pre-wrap", color: S.sub }}>
+                    {r.parsed.rawText || "(ništa pročitano)"}
+                  </div>
                 )}
               </div>
             );
