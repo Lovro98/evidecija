@@ -400,6 +400,75 @@ function parseMzdyPdf(lines) {
   return out;
 }
 
+/* ---------- čitanje izlaznih faktura (PDF) — izvlači iznos, PDV, kupca, broj, datum ---------- */
+// kao extractPdfLines, ali čuva x-poziciju svake riječi po retku — treba za dvostupačni
+// "Dodavatel / Odběratel" dio fakture (dva imena na istoj visini, različit x)
+async function extractPdfLineItems(file) {
+  const buf = await file.arrayBuffer();
+  const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
+  const lines = [];
+  for (let p = 1; p <= pdf.numPages; p++) {
+    const page = await pdf.getPage(p);
+    const content = await page.getTextContent();
+    const rows = new Map();
+    content.items.forEach((it) => {
+      const y = Math.round(it.transform[5] / 2) * 2;
+      if (!rows.has(y)) rows.set(y, []);
+      rows.get(y).push({ x: it.transform[4], s: it.str });
+    });
+    const ys = [...rows.keys()].sort((a, b) => b - a);
+    ys.forEach((y) => {
+      const items = rows.get(y).sort((a, b) => a.x - b.x).filter((it) => it.s.trim());
+      if (items.length) lines.push(items);
+    });
+  }
+  return lines;
+}
+const MONTHS_CZ = { leden: 1, únor: 2, brezen: 3, březen: 3, duben: 4, květen: 5, kveten: 5, červen: 6, cerven: 6,
+  červenec: 7, cervenec: 7, srpen: 8, září: 9, zari: 9, říjen: 10, rijen: 10, listopad: 11, prosinec: 12 };
+function parseInvoicePdf(lineItems) {
+  const joined = lineItems.map((row) => row.map((it) => it.s).join(" ").replace(/\s+/g, " ").trim());
+  const fullText = joined.join("\n");
+
+  const numM = fullText.match(/Faktura\s*č\.?\s*([A-Za-z0-9/\-]+)/i);
+  const number = numM ? numM[1] : "";
+
+  const dateM = fullText.match(/Datum vystaven[ií]:?\s*(\d{1,2})\.\s*(\d{1,2})\.\s*(\d{4})/i);
+  const issueDate = dateM ? `${dateM[3]}-${dateM[2].padStart(2, "0")}-${dateM[1].padStart(2, "0")}` : "";
+
+  const totalM = fullText.match(/Celkem k úhrad[ěe]:?\s*([\d\s.,]+)\s*Kč/i);
+  const amount = totalM ? czNum(totalM[1]) : 0;
+
+  let vatAmount = 0;
+  const vatRowM = fullText.match(/(\d{1,2})\s*%\s*([\d\s.,]+)\s*Kč\s*([\d\s.,]+)\s*Kč\s*([\d\s.,]+)\s*Kč/);
+  if (vatRowM) vatAmount = czNum(vatRowM[3]);
+
+  let period = "";
+  const perM = fullText.match(/za m[ěe]s[ií]c\s+([A-Za-zÁ-Žá-ž]+)\s+(\d{4})/i);
+  if (perM) {
+    const mo = MONTHS_CZ[perM[1].toLowerCase()];
+    if (mo) period = `${perM[2]}-${String(mo).padStart(2, "0")}`;
+  }
+  if (!period && issueDate) period = issueDate.slice(0, 7);
+
+  // "Dodavatel" i "Odběratel" stoje jedan kraj drugog u istom retku (zaglavlje dva stupca);
+  // ime kupca je u sljedećem retku, na x-poziciji poravnatoj s "Odběratel" (desni stupac)
+  let customerName = "";
+  for (let i = 0; i < lineItems.length - 1; i++) {
+    const row = lineItems[i];
+    const odb = row.find((it) => /^Odběratel$/i.test(it.s.trim()));
+    const dod = row.find((it) => /^Dodavatel$/i.test(it.s.trim()));
+    if (odb && dod) {
+      const nameRow = lineItems[i + 1] || [];
+      const rightTokens = nameRow.filter((it) => it.x >= odb.x - 5);
+      customerName = rightTokens.map((it) => it.s).join(" ").replace(/\s+/g, " ").trim();
+      break;
+    }
+  }
+
+  return { number, issueDate, amount, vatAmount, period, customerName, currency: "CZK" };
+}
+
 /* ================================================================== */
 /*  UČITAVANJE PODATAKA                                                */
 /* ================================================================== */
@@ -460,6 +529,7 @@ async function fetchAll(isAdmin) {
     objects: (objects.data || []).map((o) => ({
       id: o.id, name: o.name, billRate: billMap[o.id]?.rate || 0, billCur: billMap[o.id]?.cur || countryCur(o.country || "HR"), country: o.country || "HR",
       archived: !!o.archived, archivedDate: o.archived_date || "", monthlyBudget: billMap[o.id]?.budget || 0,
+      invoiceCustomerName: o.invoice_customer_name || "",
     })),
     logs: (logs.data || []).map((l) => ({
       id: l.id, workerId: l.worker_id, objectId: l.object_id || "", date: l.work_date,
@@ -744,6 +814,8 @@ export default function App() {
     },
     setObjectCountry: (o, country) => act(() => upd("objects", o.id, { country }),
       `Premjestio objekt ${o.name} u: ${COUNTRY_NAME[country] || country}`),
+    setInvoiceCustomerName: (o, name) => act(() => upd("objects", o.id, { invoice_customer_name: name }),
+      `Postavio naziv kupca na fakturi za ${o.name}: "${name}" (za prepoznavanje kod uvoza PDF faktura)`),
     delObject: (o) => act(() => softDel("objects", o.id), `Obrisao objekt: ${o.name}`),
     archiveObject: (o, on) => act(() => upd("objects", o.id, { archived: on, archived_date: on ? todayISO() : null }),
       on ? `Zatvorio objekt: ${o.name}` : `Ponovno otvorio objekt: ${o.name}`),
@@ -859,6 +931,15 @@ export default function App() {
     addInvoicePayment: (o, mo, amount) => act(() => ins("invoice_payments", { object_id: o.id, month: mo, amount }),
       `Upisao uplatu od ${o.name}: ${eur(amount)} (${mo})`),
     delInvoicePayment: (p, oName) => act(() => softDel("invoice_payments", p.id), `Obrisao uplatu od ${oName}: ${eur(p.amount)}`),
+    importObjectInvoices: (invs) => act(async () => {
+      const { error } = await supabase.from("object_invoices").insert(invs.map((inv) => ({
+        object_id: inv.objectId, number: inv.number, period: inv.period, issue_date: inv.issueDate,
+        hours: inv.hours || 0, rate: inv.rate || 0, amount: inv.amount, currency: inv.currency || "EUR", note: inv.note || "",
+        vat_amount: inv.vatAmount || 0, vat_currency: inv.vatCurrency || "EUR", file_path: inv.filePath || "",
+        created_by: session.user.id,
+      })));
+      if (error) throw error;
+    }, `Uvezao ${invs.length} ${invs.length === 1 ? "fakturu" : "fakture"} iz PDF-a`),
     addObjectInvoice: (inv, oName) => act(() => ins("object_invoices", {
       object_id: inv.objectId, number: inv.number, period: inv.period, issue_date: inv.issueDate,
       hours: inv.hours, rate: inv.rate, amount: inv.amount, currency: inv.currency, note: inv.note || "",
@@ -2185,10 +2266,73 @@ function ObjectsTab({ data, api, onOpenObject }) {
   const [newObj, setNewObj] = useState("");
   const [country, setCountry] = useState("HR"); // aktivni filter/tab — i zadana država za novi objekt
   const [q, setQ] = useState("");
+  const [invReview, setInvReview] = useState(null); // [{ id, file, fileName, parsed:{...}, objectId, remember, include, error }]
+  const [invBusy, setInvBusy] = useState(false);
+  const invImportRef = useRef(null);
   const addObject = async () => {
     const n = newObj.trim(); if (!n) return;
     if (data.objects.find((o) => o.name.toLowerCase() === n.toLowerCase())) { setNewObj(""); return; }
     await api.addObject(n, country); setNewObj("");
+  };
+
+  const matchObjectByCustomer = (customerName) => {
+    if (!customerName) return "";
+    const norm = (s) => (s || "").toLowerCase().trim();
+    const target = norm(customerName);
+    const byMap = data.objects.find((o) => o.invoiceCustomerName && norm(o.invoiceCustomerName) === target);
+    if (byMap) return byMap.id;
+    const byName = data.objects.find((o) => norm(o.name) === target);
+    return byName ? byName.id : "";
+  };
+  const handleInvoiceFiles = async (e) => {
+    const files = Array.from(e.target.files || []);
+    e.target.value = "";
+    if (!files.length) return;
+    const rows = [];
+    for (const file of files) {
+      const id = Date.now() + "_" + Math.random().toString(36).slice(2);
+      try {
+        const items = await extractPdfLineItems(file);
+        const parsed = parseInvoicePdf(items);
+        rows.push({ id, file, fileName: file.name, parsed, objectId: matchObjectByCustomer(parsed.customerName), remember: true, include: true });
+      } catch {
+        rows.push({ id, file, fileName: file.name,
+          parsed: { number: "", issueDate: todayISO(), amount: 0, vatAmount: 0, period: curMonth(), customerName: "" },
+          objectId: "", remember: true, include: true, error: "Nisam uspio pročitati ovaj PDF — provjeri/upiši ručno." });
+      }
+    }
+    setInvReview((prev) => (prev ? [...prev, ...rows] : rows));
+  };
+  const updInvRow = (id, patch) => setInvReview((rows) => rows.map((r) => (r.id === id ? { ...r, ...patch } : r)));
+  const updInvField = (id, field, value) => setInvReview((rows) => rows.map((r) => (r.id === id ? { ...r, parsed: { ...r.parsed, [field]: value } } : r)));
+  const removeInvRow = (id) => setInvReview((rows) => { const n = rows.filter((r) => r.id !== id); return n.length ? n : null; });
+  const submitInvImport = async () => {
+    const toImport = invReview.filter((r) => r.include && r.objectId);
+    if (!toImport.length) return;
+    setInvBusy(true);
+    const invs = [];
+    const rememberPairs = [];
+    for (const r of toImport) {
+      const object = data.objects.find((o) => o.id === r.objectId);
+      if (!object) continue;
+      let filePath = "";
+      const path = `${object.id}/invoice_import_${Date.now()}_${r.fileName}`;
+      const { error: upErr } = await supabase.storage.from("invoices").upload(path, r.file);
+      if (!upErr) filePath = path;
+      const amount = round2(parseNum(r.parsed.amount) || 0);
+      const vatAmount = round2(parseNum(r.parsed.vatAmount) || 0);
+      const issueDate = r.parsed.issueDate || todayISO();
+      const period = r.parsed.period || issueDate.slice(0, 7);
+      const number = (r.parsed.number || "").trim() || `UVOZ-${object.name.slice(0, 3).toUpperCase()}-${period}`;
+      invs.push({ objectId: object.id, number, period, issueDate, hours: 0, rate: 0, amount, currency: "CZK", note: "Uvezeno iz PDF-a", vatAmount, vatCurrency: "CZK", filePath });
+      if (r.remember && r.parsed.customerName && object.invoiceCustomerName !== r.parsed.customerName) {
+        rememberPairs.push({ object, name: r.parsed.customerName });
+      }
+    }
+    if (invs.length) await api.importObjectInvoices(invs);
+    for (const { object, name } of rememberPairs) await api.setInvoiceCustomerName(object, name);
+    setInvBusy(false);
+    setInvReview(null);
   };
   const list = sortedObjects(data.objects.filter((o) => !o.archived));
   const closedList = sortedObjects(data.objects.filter((o) => o.archived));
@@ -2240,6 +2384,74 @@ function ObjectsTab({ data, api, onOpenObject }) {
         <input value={newObj} onChange={(e) => setNewObj(e.target.value)} onKeyDown={(e) => e.key === "Enter" && addObject()} placeholder={`${api.t("newObjectPh")} ${COUNTRY_NAME[country]}…`} />
         <Btn small onClick={addObject}>{api.t("addBtn")}</Btn>
       </div>
+
+      {api.admin && (
+        <>
+          <Btn small kind="ghost" onClick={() => invImportRef.current?.click()} style={{ width: "100%", marginBottom: 14 }}>
+            📥 Uvoz faktura (PDF, više odjednom)
+          </Btn>
+          <input ref={invImportRef} type="file" accept="application/pdf" multiple onChange={handleInvoiceFiles} style={{ display: "none" }} />
+        </>
+      )}
+
+      {invReview && (
+        <Card style={{ background: S.blueSoft, borderColor: "#CBDCEA", marginBottom: 14 }}>
+          <div style={{ fontWeight: 700, color: S.blue, marginBottom: 8 }}>📥 Pregled uvezenih faktura ({invReview.length})</div>
+          {invReview.map((r) => {
+            const matched = !!r.objectId;
+            return (
+              <div key={r.id} style={{ background: "#fff", borderRadius: 10, padding: "10px 12px", marginBottom: 8 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                  <input type="checkbox" checked={r.include} onChange={(e) => updInvRow(r.id, { include: e.target.checked })} style={{ width: 18, height: 18 }} />
+                  <span style={{ flex: 1, fontSize: 12.5, fontWeight: 700, color: S.sub }}>{r.fileName}</span>
+                  <button onClick={() => removeInvRow(r.id)} style={{ background: "none", border: "none", color: S.red, fontSize: 15, cursor: "pointer", padding: 2 }}>✕</button>
+                </div>
+                {r.error && <div style={{ fontSize: 12, color: S.red, marginBottom: 6 }}>⚠️ {r.error}</div>}
+                <div style={{ marginBottom: 6 }}>
+                  <select value={r.objectId} onChange={(e) => updInvRow(r.id, { objectId: e.target.value })}
+                    style={{ borderColor: matched ? S.green : S.amber, fontWeight: 700, color: matched ? S.green : S.amber }}>
+                    <option value="">— odaberi objekt —</option>
+                    {sortedObjects(data.objects.filter((o) => !o.archived)).map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}
+                  </select>
+                  {r.parsed.customerName && (
+                    <div style={{ fontSize: 11.5, color: S.sub, marginTop: 3 }}>
+                      Kupac na fakturi: "{r.parsed.customerName}"{matched ? " — prepoznato ✓" : " — nije prepoznato, odaberi ručno"}
+                    </div>
+                  )}
+                </div>
+                <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 6 }}>
+                  <input value={r.parsed.number} onChange={(e) => updInvField(r.id, "number", e.target.value)} placeholder="broj fakture" style={{ flex: "1 1 110px" }} />
+                  <input type="date" value={r.parsed.issueDate} onChange={(e) => updInvField(r.id, "issueDate", e.target.value)} style={{ flex: "1 1 130px" }} />
+                  <input inputMode="decimal" value={r.parsed.amount} onChange={(e) => updInvField(r.id, "amount", e.target.value)} placeholder="iznos Kč" style={{ flex: "1 1 100px" }} />
+                  <input inputMode="decimal" value={r.parsed.vatAmount} onChange={(e) => updInvField(r.id, "vatAmount", e.target.value)} placeholder="PDV Kč" style={{ flex: "1 1 100px" }} />
+                </div>
+                {matched && r.parsed.customerName && (
+                  <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: S.sub, cursor: "pointer" }}>
+                    <input type="checkbox" checked={r.remember} onChange={(e) => updInvRow(r.id, { remember: e.target.checked })} style={{ width: 15, height: 15 }} />
+                    Zapamti ovaj naziv za ubuduće automatsko prepoznavanje
+                  </label>
+                )}
+                {!matched && r.parsed.customerName && (
+                  <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: S.sub, cursor: "pointer" }}>
+                    <input type="checkbox" checked={r.remember} onChange={(e) => updInvRow(r.id, { remember: e.target.checked })} style={{ width: 15, height: 15 }} />
+                    Zapamti "{r.parsed.customerName}" za odabrani objekt (kad ga odabereš)
+                  </label>
+                )}
+              </div>
+            );
+          })}
+          <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
+            <Btn onClick={submitInvImport} disabled={invBusy || !invReview.some((r) => r.include && r.objectId)} style={{ flex: 1 }}>
+              {invBusy ? "Uvozim…" : `✓ Uvezi (${invReview.filter((r) => r.include && r.objectId).length})`}
+            </Btn>
+            <Btn kind="ghost" onClick={() => setInvReview(null)} disabled={invBusy}>Odustani</Btn>
+          </div>
+          <div style={{ fontSize: 11.5, color: S.sub, marginTop: 8 }}>
+            Podaci se čitaju automatski iz PDF-a (broj, datum, iznos, PDV, kupac) — provjeri prije uvoza, po potrebi ispravi ručno.
+          </div>
+        </Card>
+      )}
+
       {shown.length > 5 && (
         <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="🔍 Traži objekt po imenu…" style={{ marginBottom: 12 }} />
       )}
@@ -2789,7 +3001,8 @@ function ObjectDetail({ object, data, api, onBack, onOpenWorker }) {
   const invPdfRef = useRef(null);
   const invPdfTarget = useRef(null);
 
-  useEffect(() => { setRateEdit(String(object.billRate || "")); setBillCur(object.billCur || "EUR"); setBudgetEdit(String(object.monthlyBudget || "")); }, [object.id, object.billRate, object.billCur, object.monthlyBudget]);
+  const [custNameEdit, setCustNameEdit] = useState(object.invoiceCustomerName || "");
+  useEffect(() => { setRateEdit(String(object.billRate || "")); setBillCur(object.billCur || "EUR"); setBudgetEdit(String(object.monthlyBudget || "")); setCustNameEdit(object.invoiceCustomerName || ""); }, [object.id, object.billRate, object.billCur, object.monthlyBudget, object.invoiceCustomerName]);
 
   const loadInvoices = useCallback(async () => {
     if (!api.admin) return;
@@ -3018,6 +3231,16 @@ function ObjectDetail({ object, data, api, onBack, onOpenWorker }) {
                 <Btn small onClick={() => api.setBillRate(object, parseNum(rateEdit) || 0, billCur)}>Spremi</Btn>
               </div>
               <div style={{ fontSize: 11.5, color: S.sub, marginTop: 4 }}>Ovo je zadana (default) cijena za sve pozicije koje nemaju svoju cijenu ispod.</div>
+            </Field>
+
+            <Field label="Naziv kupca na PDF fakturi (za automatski uvoz) — nije obavezno">
+              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                <input value={custNameEdit} onChange={(e) => setCustNameEdit(e.target.value)} placeholder="npr. F&B Solutions s.r.o." />
+                <Btn small onClick={() => api.setInvoiceCustomerName(object, custNameEdit.trim())}>Spremi</Btn>
+              </div>
+              <div style={{ fontSize: 11.5, color: S.sub, marginTop: 4 }}>
+                Mora točno odgovarati imenu "Odběratel" na fakturi — Objekti tab → "📥 Uvoz faktura" će onda ovaj objekt sam prepoznati.
+              </div>
             </Field>
 
             <Field label={`Mjesečni proračun troška (${bc === "CZK" ? "Kč" : "€"}) — nije obavezno`}>

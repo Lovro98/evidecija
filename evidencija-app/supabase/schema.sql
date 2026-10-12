@@ -642,3 +642,7 @@ alter table brigade_costs add column if not exists bill_currency text default 'E
 alter table object_invoices add column if not exists vat_amount numeric default 0;
 alter table object_invoices add column if not exists vat_currency text default 'EUR';
 alter table object_invoices add column if not exists file_path text default '';
+
+-- Naziv kupca kako stoji na PDF fakturi ("Odběratel") — pamti se po objektu da se
+-- kod sljedećeg uvoza PDF faktura automatski prepozna kojem objektu pripada
+alter table objects add column if not exists invoice_customer_name text default '';
