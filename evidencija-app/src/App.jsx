@@ -446,12 +446,22 @@ function parseInvoicePdf(lineItems) {
   const dateM = fullText.match(/Datum vystaven[ií]:?\s*(\d{1,2})\.\s*(\d{1,2})\.\s*(\d{4})/i);
   const issueDate = dateM ? `${dateM[3]}-${dateM[2].padStart(2, "0")}-${dateM[1].padStart(2, "0")}` : "";
 
-  const totalM = fullText.match(/Celkem k úhrad[ěe]:?\s*([\d\s.,]+)\s*Kč/i);
-  const amount = totalM ? czNum(totalM[1]) : 0;
+  // pdfjs zna izdvojiti "Kč" kao dva odvojena dijela ("K" i "č") — zato svugdje K\s*č umjesto Kč
+  const totalM = fullText.match(/Celkem k úhrad[ěe]:?\s*([\d\s.,]+)\s*K\s*č/i);
+  let amount = totalM ? czNum(totalM[1]) : 0;
 
   let vatAmount = 0;
-  const vatRowM = fullText.match(/(\d{1,2})\s*%\s*([\d\s.,]+)\s*Kč\s*([\d\s.,]+)\s*Kč\s*([\d\s.,]+)\s*Kč/);
-  if (vatRowM) vatAmount = czNum(vatRowM[3]);
+  // red iz zbirne tablice "Sazba | Základ | DPH | Včetně DPH", npr. "21 % 613 060,00 Kč 128 742,60 Kč 741 802,60 Kč"
+  const vatRowM = fullText.match(/(\d{1,2})\s*%\s*([\d\s.,]+)\s*K\s*č\s*([\d\s.,]+)\s*K\s*č\s*([\d\s.,]+)\s*K\s*č/);
+  if (vatRowM) {
+    vatAmount = czNum(vatRowM[3]);
+    if (!amount) amount = czNum(vatRowM[4]); // ako "Celkem k úhradě" nije pronađeno, uzmi "Včetně DPH" iz iste tablice
+  }
+  if (!amount) {
+    // posljednji fallback: zadnji "X Kč" iznos u cijelom dokumentu (obično je to upravo ukupan iznos)
+    const allKc = [...fullText.matchAll(/([\d\s]+(?:[.,]\d{2})?)\s*K\s*č/gi)];
+    if (allKc.length) amount = czNum(allKc[allKc.length - 1][1]);
+  }
 
   let period = "";
   const perM = fullText.match(/za m[ěe]s[ií]c\s+([A-Za-zÁ-Žá-ž]+)\s+(\d{4})/i);
