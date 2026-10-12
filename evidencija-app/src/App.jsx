@@ -439,6 +439,11 @@ const MONTHS_CZ = { leden: 1, únor: 2, brezen: 3, březen: 3, duben: 4, květen
 function parseInvoicePdf(lineItems) {
   const joined = lineItems.map((row) => row.map((it) => it.s).join(" ").replace(/\s+/g, " ").trim());
   const fullText = joined.join("\n");
+  // sve riječi zaredom u jedan jedini niz, bez obzira na to kako su se retci grupirali po Y-poziciji
+  // (otporno na to ako je "Celkem"/"DPH"/iznos slučajno završio u susjednom, a ne istom retku)
+  const flatText = lineItems.flat().map((it) => it.s).join(" ").replace(/\s+/g, " ").trim();
+  // jedan broj u češkom formatu: "613 060,00" ili "613060.00" ili i bez decimala "613060"
+  const NUM = "\\d[\\d\\s]*(?:[.,]\\d{1,2})?";
 
   const numM = fullText.match(/Faktura\s*č\.?\s*([A-Za-z0-9/\-]+)/i);
   const number = numM ? numM[1] : "";
@@ -446,21 +451,24 @@ function parseInvoicePdf(lineItems) {
   const dateM = fullText.match(/Datum vystaven[ií]:?\s*(\d{1,2})\.\s*(\d{1,2})\.\s*(\d{4})/i);
   const issueDate = dateM ? `${dateM[3]}-${dateM[2].padStart(2, "0")}-${dateM[1].padStart(2, "0")}` : "";
 
-  // pdfjs zna izdvojiti "Kč" kao dva odvojena dijela ("K" i "č") — zato svugdje K\s*č umjesto Kč
-  const totalM = fullText.match(/Celkem k úhrad[ěe]:?\s*([\d\s.,]+)\s*K\s*č/i);
-  let amount = totalM ? czNum(totalM[1]) : 0;
-
-  let vatAmount = 0;
-  // red iz zbirne tablice "Sazba | Základ | DPH | Včetně DPH", npr. "21 % 613 060,00 Kč 128 742,60 Kč 741 802,60 Kč"
-  const vatRowM = fullText.match(/(\d{1,2})\s*%\s*([\d\s.,]+)\s*K\s*č\s*([\d\s.,]+)\s*K\s*č\s*([\d\s.,]+)\s*K\s*č/);
+  let amount = 0, vatAmount = 0;
+  // zbirni red "Sazba | Základ | DPH | Včetně DPH", npr. "21 % 613 060,00 Kč 128 742,60 Kč 741 802,60 Kč" —
+  // NE oslanja se na to da je "Kč" ispravno pročitan (ponekad pdfjs razdvoji ili izgubi taj simbol),
+  // nego samo traži tri broja s decimalama jedan iza drugog nakon postotka
+  const vatRe = new RegExp(`(\\d{1,2})\\s*%\\D{0,10}(${NUM})\\D{0,10}(${NUM})\\D{0,10}(${NUM})`);
+  const vatRowM = flatText.match(vatRe) || fullText.match(vatRe);
   if (vatRowM) {
     vatAmount = czNum(vatRowM[3]);
-    if (!amount) amount = czNum(vatRowM[4]); // ako "Celkem k úhradě" nije pronađeno, uzmi "Včetně DPH" iz iste tablice
+    amount = czNum(vatRowM[4]); // "Včetně DPH" = ukupan iznos s PDV-om
   }
+  // "Celkem k úhradě: ..." — ako postoji, to je pouzdaniji izvor ukupnog iznosa, prebije gornje
+  const totalRe = new RegExp(`Celkem k úhrad[ěe]:?\\D{0,6}(${NUM})`, "i");
+  const totalM = flatText.match(totalRe) || fullText.match(totalRe);
+  if (totalM) amount = czNum(totalM[1]);
   if (!amount) {
-    // posljednji fallback: zadnji "X Kč" iznos u cijelom dokumentu (obično je to upravo ukupan iznos)
-    const allKc = [...fullText.matchAll(/([\d\s]+(?:[.,]\d{2})?)\s*K\s*č/gi)];
-    if (allKc.length) amount = czNum(allKc[allKc.length - 1][1]);
+    // posljednji fallback: zadnji broj s dvije decimale u cijelom dokumentu (obično je to ukupan iznos)
+    const allNums = [...flatText.matchAll(/\d[\d\s]*[.,]\d{2}/g)];
+    if (allNums.length) amount = czNum(allNums[allNums.length - 1][0]);
   }
 
   let period = "";
