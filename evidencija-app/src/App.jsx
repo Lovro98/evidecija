@@ -334,6 +334,7 @@ function printGeneratedInvoice(inv, object, st) {
     <tr><td>Usluge iznajmljivanja radne snage — ${periodLabel}${inv.note ? " · " + inv.note : ""}</td>
       <td class="right">${fmtH(inv.hours)}</td><td class="right">${money(inv.rate, inv.currency)}</td><td class="right">${money(inv.amount, inv.currency)}</td></tr>
     <tr class="tot"><td colspan="3">UKUPNO ZA PLATITI</td><td class="right">${money(inv.amount, inv.currency)}</td></tr></table>
+    ${inv.vatAmount ? `<div class="muted">Od čega PDV: <b>${money(inv.vatAmount, inv.vatCurrency || inv.currency)}</b></div>` : ""}
     ${st.iban ? `<div class="muted">Uplata na IBAN: <b>${st.iban}</b></div>` : ""}
     <div class="muted" style="margin-top:20px">Datum dospijeća: ______________________</div>`);
 }
@@ -481,6 +482,7 @@ async function fetchAll(isAdmin) {
       id: i.id, objectId: i.object_id, number: i.number, period: i.period, issueDate: i.issue_date,
       hours: Number(i.hours) || 0, rate: Number(i.rate) || 0, amount: Number(i.amount) || 0,
       currency: i.currency === "CZK" ? "CZK" : "EUR", note: i.note || "",
+      vatAmount: Number(i.vat_amount) || 0, vatCurrency: i.vat_currency === "CZK" ? "CZK" : "EUR", filePath: i.file_path || "",
     })),
     payrollNotes: payrollNotes.map((n) => ({
       id: n.id, workerId: n.worker_id, month: n.month, amount: Number(n.amount) || 0,
@@ -860,9 +862,17 @@ export default function App() {
     addObjectInvoice: (inv, oName) => act(() => ins("object_invoices", {
       object_id: inv.objectId, number: inv.number, period: inv.period, issue_date: inv.issueDate,
       hours: inv.hours, rate: inv.rate, amount: inv.amount, currency: inv.currency, note: inv.note || "",
+      vat_amount: inv.vatAmount || 0, vat_currency: inv.vatCurrency || inv.currency || "EUR", file_path: inv.filePath || "",
       created_by: session.user.id,
-    }), `Generirao fakturu ${inv.number} za ${oName}: ${money(inv.amount, inv.currency)}`),
+    }), `Generirao fakturu ${inv.number} za ${oName}: ${money(inv.amount, inv.currency)}${inv.vatAmount ? ` (PDV ${money(inv.vatAmount, inv.vatCurrency)})` : ""}`),
     delObjectInvoice: (inv, oName) => act(() => softDel("object_invoices", inv.id), `Obrisao fakturu ${inv.number} (${oName})`),
+    setInvoiceFile: (inv, filePath, oName) => act(() => upd("object_invoices", inv.id, { file_path: filePath }),
+      `Dodao PDF uz fakturu ${inv.number} (${oName})`),
+    delInvoiceFile: (inv, oName) => act(async () => {
+      if (inv.filePath) await supabase.storage.from("invoices").remove([inv.filePath]);
+      const { error } = await supabase.from("object_invoices").update({ file_path: "" }).eq("id", inv.id);
+      if (error) throw error;
+    }, `Uklonio PDF uz fakturu ${inv.number} (${oName})`),
     addPayrollNote: (note, wName) => act(() => ins("payroll_notes", {
       worker_id: note.workerId, month: note.month, amount: note.amount, currency: note.currency,
       source_czk: note.sourceCzk, note: note.note || "", created_by: session.user.id,
@@ -1269,6 +1279,7 @@ function AdminPanels({ data, api, panel, setPanel, onOpenWorker, onOpenProfile }
   const [objCommEdit, setObjCommEdit] = useState({}); // "profileId:objectId" -> { rate, cur }
   const [apprSel, setApprSel] = useState(() => new Set());
   const [apprBusy, setApprBusy] = useState(false);
+  const [vatMonth, setVatMonth] = useState(curMonth());
   const [lastBackup, setLastBackup] = useState(() => { try { return localStorage.getItem("evidencija_last_backup"); } catch { return null; } });
   const daysSinceBackup = lastBackup ? Math.floor((Date.now() - new Date(lastBackup).getTime()) / 86400000) : null;
   const doBackup = () => {
@@ -1306,7 +1317,7 @@ function AdminPanels({ data, api, panel, setPanel, onOpenWorker, onOpenProfile }
         background: S.amberSoft, border: `1px solid #EBD9B4`, borderRadius: 12, padding: "9px 12px" }}>
         <span style={{ fontWeight: 700, color: S.amber, fontSize: 13.5 }}>👑 Admin</span>
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-          {[["approvals",`⏳${(data.payouts || []).filter((p) => !p.approved).length ? (data.payouts || []).filter((p) => !p.approved).length : ""}`],["users","👥"],["audit","📜"],["logins","🔐"],["errors",`🐛${(data.errorLog || []).length ? (data.errorLog || []).length : ""}`],["trash",`🗑${data.trash.length ? data.trash.length : ""}`],["firm","⚙️"]].map(([id, label]) => (
+          {[["approvals",`⏳${(data.payouts || []).filter((p) => !p.approved).length ? (data.payouts || []).filter((p) => !p.approved).length : ""}`],["users","👥"],["vat","💸 PDV"],["audit","📜"],["logins","🔐"],["errors",`🐛${(data.errorLog || []).length ? (data.errorLog || []).length : ""}`],["trash",`🗑${data.trash.length ? data.trash.length : ""}`],["firm","⚙️"]].map(([id, label]) => (
             <button key={id} onClick={() => setPanel(panel === id ? "" : id)} style={{
               background: panel === id ? S.amber : "#fff", color: panel === id ? "#fff" : S.amber,
               border: `1px solid ${S.amber}`, borderRadius: 8, padding: "5px 10px", fontSize: 13, fontWeight: 700, cursor: "pointer" }}>
@@ -1452,6 +1463,52 @@ function AdminPanels({ data, api, panel, setPanel, onOpenWorker, onOpenProfile }
           </div>
         </Card>
       )}
+
+      {panel === "vat" && (() => {
+        const [vy, vm] = vatMonth.split("-").map(Number);
+        const prevVM = () => setVatMonth(vm === 1 ? `${vy - 1}-12` : `${vy}-${String(vm - 1).padStart(2, "0")}`);
+        const nextVM = () => setVatMonth(vm === 12 ? `${vy + 1}-01` : `${vy}-${String(vm + 1).padStart(2, "0")}`);
+        const objName = (id) => data.objects.find((o) => o.id === id)?.name || "Obrisan objekt";
+        const monthInvoices = [...(data.objectInvoices || [])].filter((i) => monthKey(i.issueDate) === vatMonth).sort((a, b) => a.issueDate.localeCompare(b.issueDate));
+        const totals = {}, vatTotals = {};
+        monthInvoices.forEach((i) => {
+          totals[i.currency] = round2((totals[i.currency] || 0) + i.amount);
+          if (i.vatAmount) vatTotals[i.vatCurrency] = round2((vatTotals[i.vatCurrency] || 0) + i.vatAmount);
+        });
+        return (
+          <Card style={{ marginTop: 8 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+              <div style={{ fontWeight: 700 }}>💸 PDV na izlaznim fakturama</div>
+              <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+                <button onClick={prevVM} style={{ background: "#fff", border: `1px solid ${S.line}`, borderRadius: 8, width: 26, height: 26, cursor: "pointer", fontWeight: 700 }}>‹</button>
+                <div style={{ fontWeight: 700, padding: "0 4px", fontSize: 13.5 }}>{MONTHS[vm - 1]} {vy}.</div>
+                <button onClick={nextVM} style={{ background: "#fff", border: `1px solid ${S.line}`, borderRadius: 8, width: 26, height: 26, cursor: "pointer", fontWeight: 700 }}>›</button>
+              </div>
+            </div>
+            <div style={{ fontSize: 11.5, color: S.sub, marginBottom: 8 }}>
+              Prema datumu izdavanja fakture. PDV iznos je onaj koji je upisan ručno kod generiranja fakture (kako stoji na PDF-u).
+            </div>
+            {monthInvoices.length === 0 ? (
+              <div style={{ color: S.sub, fontSize: 13.5 }}>Nema izdanih faktura u ovom mjesecu.</div>
+            ) : (
+              <>
+                {monthInvoices.map((i) => (
+                  <div key={i.id} style={{ display: "flex", justifyContent: "space-between", gap: 8, padding: "5px 0", borderBottom: `1px solid ${S.line}`, fontSize: 13 }}>
+                    <span>{fmtDate(i.issueDate)} · {objName(i.objectId)} · {i.number}</span>
+                    <span className="num" style={{ textAlign: "right" }}>{money(i.amount, i.currency)}{i.vatAmount ? <span style={{ color: S.amber, fontWeight: 700 }}> (PDV {money(i.vatAmount, i.vatCurrency)})</span> : ""}</span>
+                  </div>
+                ))}
+                <div style={{ marginTop: 10, borderTop: `1px dashed ${S.line}`, paddingTop: 8 }}>
+                  <div style={{ fontWeight: 700, fontSize: 13.5 }}>Ukupno fakturirano: {Object.entries(totals).map(([c, v]) => money(v, c)).join(" + ") || money(0, "EUR")}</div>
+                  <div style={{ fontWeight: 800, color: S.amber, marginTop: 4, fontSize: 14.5 }}>
+                    Ukupan PDV ovaj mjesec: {Object.keys(vatTotals).length ? Object.entries(vatTotals).map(([c, v]) => money(v, c)).join(" + ") : money(0, "EUR")}
+                  </div>
+                </div>
+              </>
+            )}
+          </Card>
+        );
+      })()}
 
       {panel === "audit" && (
         <Card style={{ marginTop: 8 }}>
@@ -2726,6 +2783,11 @@ function ObjectDetail({ object, data, api, onBack, onOpenWorker }) {
   const [autoAmount, setAutoAmount] = useState(true);
   const [genAmountManual, setGenAmountManual] = useState("");
   const [genNote, setGenNote] = useState("");
+  const [genVat, setGenVat] = useState("");
+  const [genVatCur, setGenVatCur] = useState(object.billCur || "EUR");
+  const [invFileBusy, setInvFileBusy] = useState(null); // id fakture za koju se trenutno uploada PDF
+  const invPdfRef = useRef(null);
+  const invPdfTarget = useRef(null);
 
   useEffect(() => { setRateEdit(String(object.billRate || "")); setBillCur(object.billCur || "EUR"); setBudgetEdit(String(object.monthlyBudget || "")); }, [object.id, object.billRate, object.billCur, object.monthlyBudget]);
 
@@ -2775,6 +2837,8 @@ function ObjectDetail({ object, data, api, onBack, onOpenWorker }) {
     setAutoAmount(true);
     setGenAmountManual("");
     setGenNote("");
+    setGenVat("");
+    setGenVatCur(object.billCur || "EUR");
     setShowGen(true);
   };
   const pickGenMonth = (mo) => {
@@ -2786,14 +2850,32 @@ function ObjectDetail({ object, data, api, onBack, onOpenWorker }) {
     const hours = round2(parseNum(genHours) || 0);
     const rate = round2(parseNum(genRate) || 0);
     const amount = autoAmount ? genAuto : round2(parseNum(genAmountManual) || 0);
+    const vatAmount = round2(parseNum(genVat) || 0);
     if (!genNumber.trim() || amount <= 0) return;
-    const inv = { objectId: object.id, number: genNumber.trim(), period: genMonth, issueDate: todayISO(), hours, rate, amount, currency: genCur, note: genNote };
+    const inv = { objectId: object.id, number: genNumber.trim(), period: genMonth, issueDate: todayISO(), hours, rate, amount, currency: genCur, note: genNote, vatAmount, vatCurrency: genVatCur };
     if (await api.addObjectInvoice(inv, object.name)) {
       printGeneratedInvoice(inv, object, data.settings || {});
       setShowGen(false);
     }
   };
   const myInvoices = (data.objectInvoices || []).filter((i) => i.objectId === object.id);
+  const triggerInvPdfUpload = (inv) => { invPdfTarget.current = inv; invPdfRef.current?.click(); };
+  const uploadInvoicePdf = async (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    const inv = invPdfTarget.current;
+    if (!file || !inv) return;
+    setInvFileBusy(inv.id);
+    const path = `${object.id}/invoice_${inv.id}_${Date.now()}_${file.name}`;
+    const { error } = await supabase.storage.from("invoices").upload(path, file);
+    if (error) { setInvErr(error.message); setInvFileBusy(null); return; }
+    await api.setInvoiceFile(inv, path, object.name);
+    setInvFileBusy(null);
+  };
+  const viewInvoicePdf = async (inv) => {
+    const { data: s } = await supabase.storage.from("invoices").createSignedUrl(inv.filePath, 300);
+    if (s?.signedUrl) setInvViewer({ name: inv.number, url: s.signedUrl, image: /\.(jpe?g|png|gif|webp)$/i.test(inv.filePath) });
+  };
 
   const setIn = (id, patch) => setInputs((p) => ({ ...p, [id]: { ...(p[id] || { from: "", to: "", hours: "" }), ...patch } }));
   const [my, mm] = month.split("-").map(Number);
@@ -3158,6 +3240,7 @@ function ObjectDetail({ object, data, api, onBack, onOpenWorker }) {
               <Btn small kind="ghost" onClick={() => invFileRef.current?.click()}>+ Dodaj datoteku</Btn>
             </div>
             <input ref={invFileRef} type="file" accept="image/*,.pdf,.doc,.docx,.xls,.xlsx,.txt" multiple onChange={uploadInvoice} style={{ display: "none" }} />
+            <input ref={invPdfRef} type="file" accept="application/pdf,image/*" onChange={uploadInvoicePdf} style={{ display: "none" }} />
           </div>
 
           {showGen && (
@@ -3190,6 +3273,12 @@ function ObjectDetail({ object, data, api, onBack, onOpenWorker }) {
                   : <input inputMode="decimal" value={genAmountManual} onChange={(e) => setGenAmountManual(e.target.value)} />}
               </Field>
               <Field label="Napomena na fakturi (nije obavezno)"><input value={genNote} onChange={(e) => setGenNote(e.target.value)} placeholder="npr. uključuje prekovremene" /></Field>
+              <Field label="PDV na fakturi (iznos koji vidiš na PDF-u, nije obavezno)">
+                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                  <input inputMode="decimal" value={genVat} onChange={(e) => setGenVat(e.target.value)} placeholder="0.00" />
+                  <CurChips small value={genVatCur} onChange={setGenVatCur} />
+                </div>
+              </Field>
               <Btn onClick={submitInvoice} style={{ width: "100%" }}>🧾 Generiraj i spremi fakturu</Btn>
             </div>
           )}
@@ -3200,12 +3289,25 @@ function ObjectDetail({ object, data, api, onBack, onOpenWorker }) {
             <div style={{ marginBottom: 14 }}>
               <div style={{ fontSize: 12.5, fontWeight: 700, color: S.sub, marginBottom: 6 }}>Generirane fakture</div>
               {myInvoices.map((inv) => (
-                <div key={inv.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 0", borderBottom: `1px solid ${S.line}` }}>
+                <div key={inv.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 0", borderBottom: `1px solid ${S.line}`, flexWrap: "wrap" }}>
                   <div style={{ flex: 1 }}>
                     <div style={{ fontWeight: 600, fontSize: 13.5 }}>{inv.number}</div>
-                    <div className="num" style={{ fontSize: 12, color: S.sub }}>{fmtDate(inv.issueDate)} · {fmtH(inv.hours)} · {money(inv.amount, inv.currency)}</div>
+                    <div className="num" style={{ fontSize: 12, color: S.sub }}>
+                      {fmtDate(inv.issueDate)} · {fmtH(inv.hours)} · {money(inv.amount, inv.currency)}
+                      {inv.vatAmount > 0 && <> · PDV {money(inv.vatAmount, inv.vatCurrency)}</>}
+                    </div>
                   </div>
                   <Btn small kind="ghost" onClick={() => printGeneratedInvoice(inv, object, data.settings || {})}>🖨</Btn>
+                  {inv.filePath ? (
+                    <>
+                      <Btn small kind="ghost" onClick={() => viewInvoicePdf(inv)}>📄 PDF</Btn>
+                      <button onClick={() => api.delInvoiceFile(inv, object.name)} title="Ukloni PDF" style={{ background: "none", border: "none", color: S.red, fontSize: 13, cursor: "pointer", padding: 4 }}>PDF ✕</button>
+                    </>
+                  ) : (
+                    <Btn small kind="ghost" onClick={() => triggerInvPdfUpload(inv)} disabled={invFileBusy === inv.id}>
+                      {invFileBusy === inv.id ? "Učitavam…" : "+ PDF"}
+                    </Btn>
+                  )}
                   <button onClick={() => api.delObjectInvoice(inv, object.name)} style={{ background: "none", border: "none", color: S.red, fontSize: 16, cursor: "pointer", padding: 4 }}>✕</button>
                 </div>
               ))}

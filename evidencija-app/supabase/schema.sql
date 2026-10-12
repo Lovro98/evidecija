@@ -634,3 +634,11 @@ create policy "brigade_admin_all" on brigade_costs for all to authenticated
 -- Posebna cijena naplate za baš tu brigadu (nadjačava zadanu cijenu objekta gore) — 0 = koristi zadanu
 alter table brigade_costs add column if not exists bill_rate numeric default 0;
 alter table brigade_costs add column if not exists bill_currency text default 'EUR';
+
+-- ============================================================
+-- PDV NA IZLAZNIM FAKTURAMA (hotelima) + PDF faktura spremljen uz zapis
+-- vat_amount se upisuje ručno (onoliko koliko admin vidi na stvarnoj fakturi/PDF-u)
+-- ============================================================
+alter table object_invoices add column if not exists vat_amount numeric default 0;
+alter table object_invoices add column if not exists vat_currency text default 'EUR';
+alter table object_invoices add column if not exists file_path text default '';
