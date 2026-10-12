@@ -401,12 +401,13 @@ function parseMzdyPdf(lines) {
 }
 
 /* ---------- čitanje izlaznih faktura (PDF) — izvlači iznos, PDV, kupca, broj, datum ---------- */
-// kao extractPdfLines, ali čuva x-poziciju svake riječi po retku — treba za dvostupačni
-// "Dodavatel / Odběratel" dio fakture (dva imena na istoj visini, različit x)
-async function extractPdfLineItems(file) {
+// kao extractPdfLines, ali čuva x-poziciju svake riječi po retku (treba za dvostupačni
+// "Dodavatel / Odběratel" dio fakture) I vraća stranice ODVOJENO — jedan PDF zna sadržavati
+// više faktura zaredom (npr. izvoz iz Vyfakturuj.cz), svaka počinje na svojoj stranici
+async function extractPdfPages(file) {
   const buf = await file.arrayBuffer();
   const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
-  const lines = [];
+  const pages = [];
   for (let p = 1; p <= pdf.numPages; p++) {
     const page = await pdf.getPage(p);
     const content = await page.getTextContent();
@@ -417,12 +418,21 @@ async function extractPdfLineItems(file) {
       rows.get(y).push({ x: it.transform[4], s: it.str });
     });
     const ys = [...rows.keys()].sort((a, b) => b - a);
-    ys.forEach((y) => {
-      const items = rows.get(y).sort((a, b) => a.x - b.x).filter((it) => it.s.trim());
-      if (items.length) lines.push(items);
-    });
+    const lines = ys.map((y) => rows.get(y).sort((a, b) => a.x - b.x).filter((it) => it.s.trim())).filter((r) => r.length);
+    pages.push(lines);
   }
-  return lines;
+  return pages; // [ [row,row,...], [row,row,...], ... ] — jedan niz redaka po stranici
+}
+// grupira stranice u pojedinačne fakture: nova faktura počinje na svakoj stranici koja ima "Faktura č. ..."
+// (stranice bez tog obilježja se nadovezuju na prethodnu fakturu — npr. duga specifikacija na 2 stranice)
+function splitPdfInvoices(pages) {
+  const chunks = [];
+  pages.forEach((page) => {
+    const hasMarker = page.some((row) => /Faktura\s*č\.?\s*[A-Za-z0-9/\-]+/i.test(row.map((it) => it.s).join(" ")));
+    if (hasMarker || chunks.length === 0) chunks.push([page]);
+    else chunks[chunks.length - 1].push(page);
+  });
+  return chunks.map((pageGroup) => pageGroup.flat());
 }
 const MONTHS_CZ = { leden: 1, únor: 2, brezen: 3, březen: 3, duben: 4, květen: 5, kveten: 5, červen: 6, cerven: 6,
   červenec: 7, cervenec: 7, srpen: 8, září: 9, zari: 9, říjen: 10, rijen: 10, listopad: 11, prosinec: 12 };
@@ -2290,12 +2300,17 @@ function ObjectsTab({ data, api, onOpenObject }) {
     if (!files.length) return;
     const rows = [];
     for (const file of files) {
-      const id = Date.now() + "_" + Math.random().toString(36).slice(2);
       try {
-        const items = await extractPdfLineItems(file);
-        const parsed = parseInvoicePdf(items);
-        rows.push({ id, file, fileName: file.name, parsed, objectId: matchObjectByCustomer(parsed.customerName), remember: true, include: true });
+        const pages = await extractPdfPages(file);
+        const invoiceChunks = splitPdfInvoices(pages);
+        invoiceChunks.forEach((items, idx) => {
+          const id = Date.now() + "_" + Math.random().toString(36).slice(2) + "_" + idx;
+          const parsed = parseInvoicePdf(items);
+          const label = invoiceChunks.length > 1 ? `${file.name} — faktura ${idx + 1}/${invoiceChunks.length}` : file.name;
+          rows.push({ id, file, fileName: label, parsed, objectId: matchObjectByCustomer(parsed.customerName), remember: true, include: true });
+        });
       } catch {
+        const id = Date.now() + "_" + Math.random().toString(36).slice(2);
         rows.push({ id, file, fileName: file.name,
           parsed: { number: "", issueDate: todayISO(), amount: 0, vatAmount: 0, period: curMonth(), customerName: "" },
           objectId: "", remember: true, include: true, error: "Nisam uspio pročitati ovaj PDF — provjeri/upiši ručno." });
@@ -2316,7 +2331,8 @@ function ObjectsTab({ data, api, onOpenObject }) {
       const object = data.objects.find((o) => o.id === r.objectId);
       if (!object) continue;
       let filePath = "";
-      const path = `${object.id}/invoice_import_${Date.now()}_${r.fileName}`;
+      const safeName = r.fileName.replace(/[^\w.\-]+/g, "_").slice(0, 80);
+      const path = `${object.id}/invoice_import_${Date.now()}_${safeName}`;
       const { error: upErr } = await supabase.storage.from("invoices").upload(path, r.file);
       if (!upErr) filePath = path;
       const amount = round2(parseNum(r.parsed.amount) || 0);
