@@ -4549,8 +4549,9 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
         r.bank ? "na račun −" + eur(r.bank) : "", r.czk.bank ? "na račun −" + czk(r.czk.bank) : "",
         note ? `${noteLabel} −${money(note.amount, note.currency)}` : "",
       ].filter(Boolean).join(" · ");
+      const envPeriodLabel = view === "month" ? `${m}. ${y}.` : `${y}.`;
       return `<div class="env">
-        <div class="env-top">${periodLabel}${objLine ? "<br>" + objLine : ""}</div>
+        <div class="env-top">${envPeriodLabel}${objLine ? "<br>" + objLine : ""}</div>
         <div class="env-mid">
           <div class="env-name">${r.w.name}</div>
           <div class="env-hours">${fmtH(r.hours)}</div>
