@@ -66,6 +66,11 @@ function BrandMark({ size = 34 }) {
   );
 }
 const MONTHS = ["Siječanj","Veljača","Ožujak","Travanj","Svibanj","Lipanj","Srpanj","Kolovoz","Rujan","Listopad","Studeni","Prosinac"];
+const MONTHS_UK = ["Січень","Лютий","Березень","Квітень","Травень","Червень","Липень","Серпень","Вересень","Жовтень","Листопад","Грудень"];
+const MONTHS_SHORT_UK = ["січ","лют","бер","кві","тра","чер","лип","сер","вер","жов","лис","гру"];
+// nazivi mjeseci za prikaz na ekranu (prema odabranom jeziku); MONTHS ostaje za ispise i povijest
+const mName = (i) => (CUR_LANG === "UK" ? MONTHS_UK : MONTHS)[i];
+const mShort = (i) => (CUR_LANG === "UK" ? MONTHS_SHORT_UK : MONTHS_SHORT)[i];
 const MONTHS_SHORT = ["sij","vlj","ožu","tra","svi","lip","srp","kol","ruj","lis","stu","pro"];
 
 function hoursBetween(from, to) {
@@ -218,7 +223,7 @@ function LangSwitch({ lang, setLang, dark, labeled }) {
           background: lang === l ? (dark ? "rgba(255,255,255,.22)" : S.green) : (dark ? "rgba(255,255,255,.08)" : "#fff"),
           border: dark ? "1px solid rgba(255,255,255,.25)" : `1px solid ${S.line}`,
           borderRadius: 8, padding: "4px 7px", fontSize: 15, cursor: "pointer", lineHeight: 1 }}>
-          {LANG_FLAG[l]}{labeled && <span style={{ fontSize: 12.5, fontWeight: 700, marginLeft: 5, color: lang === l ? "#fff" : S.ink }}>{l === "UK" ? "UA" : l}</span>}
+          {LANG_FLAG[l]}{labeled && <span style={{ fontSize: 12.5, fontWeight: 700, marginLeft: 5, color: lang === l ? "#fff" : S.ink }}>{l === "UK" ? tr("UA") : l}</span>}
         </button>
       ))}
     </div>
@@ -797,7 +802,7 @@ export default function App() {
     const p = prof || profile;
     if (!p) return;
     try { setData(await fetchAll(p.role === "admin")); setErr(""); }
-    catch (e) { setErr("Greška pri učitavanju: " + (e.message || e)); }
+    catch (e) { setErr(tr("Greška pri učitavanju: ") + (e.message || e)); }
   }, [profile]);
 
   const queuePush = (type, payload) => {
@@ -849,7 +854,7 @@ export default function App() {
     if (!session) { setProfile(null); setData(null); return; }
     (async () => {
       const { data: p, error } = await supabase.from("profiles").select("*").eq("id", session.user.id).single();
-      if (error) { setErr("Ne mogu učitati profil: " + error.message); return; }
+      if (error) { setErr(tr("Ne mogu učitati profil: ") + error.message); return; }
       setProfile(p);
       await reload(p);
       if (!loginLogged.current) {
@@ -909,7 +914,7 @@ export default function App() {
       await reload();
       setErr("");
       return true;
-    } catch (e) { setErr("Greška: " + (e.message || e)); return false; }
+    } catch (e) { setErr(tr("Greška: ") + (e.message || e)); return false; }
     finally { setBusy(false); }
   };
   const ins = (table, row) => supabase.from(table).insert(row).then(({ error }) => { if (error) throw error; });
@@ -919,7 +924,7 @@ export default function App() {
   const guardPaid = (workerId, dateOrMonth) => {
     const mo = dateOrMonth.length === 7 ? dateOrMonth : monthKey(dateOrMonth);
     const p = paidFor(data, workerId, mo);
-    if (p && p.approved) throw new Error(`Mjesec ${mo} je ODOBREN i zaključan za tog radnika. Admin ga može otključati u Obračunu.`);
+    if (p && p.approved) throw new Error(tr("Mjesec {0} je ODOBREN i zaključan za tog radnika. Admin ga može otključati u Obračunu.", mo));
   };
 
   const api = {
@@ -927,7 +932,7 @@ export default function App() {
     run: (fn, auditText) => act(fn, auditText),
     addWorker: (f) => act(async () => {
       const name = normalizeName(f.name);
-      if (!name) throw new Error("Ime radnika ne smije biti prazno.");
+      if (!name) throw new Error(tr("Ime radnika ne smije biti prazno."));
       const { data: w, error } = await supabase.from("workers")
         .insert({ name, phone: f.phone, base_rate: parseNum(f.rate) || 0, rate_currency: f.rateCur || "EUR", object_id: f.objectId || null, note: f.note,
           permit_expiry: f.permitExpiry || null, contract_expiry: f.contractExpiry || null, position: f.position || "", created_by: session.user.id })
@@ -938,7 +943,7 @@ export default function App() {
     }, `Dodao radnika: ${normalizeName(f.name)}`),
     addWorkersBulk: (rows) => act(async () => {
       const clean = rows.map((r) => ({ ...r, name: normalizeName(r.name) })).filter((r) => r.name);
-      if (!clean.length) throw new Error("Nema redaka s imenom za uvoz.");
+      if (!clean.length) throw new Error(tr("Nema redaka s imenom za uvoz."));
       const payload = clean.map((r) => ({
         name: r.name, phone: r.phone || "", base_rate: parseNum(r.rate) || 0, rate_currency: r.rateCur || "EUR",
         object_id: r.objectId || null, position: r.position || "", note: r.note || "",
@@ -949,7 +954,7 @@ export default function App() {
     }, `Uvezao ${rows.length} radnika iz Excela`),
     updWorker: (id, f, name) => {
       const newName = normalizeName(f.name);
-      if (!newName) { setErr("Greška: Ime radnika ne smije biti prazno."); return Promise.resolve(false); }
+      if (!newName) { setErr(tr("Greška: Ime radnika ne smije biti prazno.")); return Promise.resolve(false); }
       const old = data.workers.find((w) => w.id === id);
       const objName = (oid) => data.objects.find((o) => o.id === oid)?.name || "—";
       const diffs = [];
@@ -998,7 +1003,7 @@ export default function App() {
     delRateChange: (r, wName) => act(() => softDel("rate_changes", r.id), `Obrisao promjenu satnice radnika ${wName}`),
     addObject: async (name, country = "HR") => {
       const { data: o, error } = await supabase.from("objects").insert({ name, country, created_by: session.user.id }).select().single();
-      if (error) { setErr("Greška: " + error.message); return null; }
+      if (error) { setErr(tr("Greška: ") + error.message); return null; }
       await supabase.from("audit_log").insert({ user_id: session.user.id, user_name: profile?.name || "", action: `Dodao objekt: ${name} (${country})` });
       await reload();
       return o.id;
@@ -1023,7 +1028,7 @@ export default function App() {
     delPositionRate: (o, position) => act(() => supabase.from("position_billing").delete().eq("object_id", o.id).eq("position", position)
       .then(({ error }) => { if (error) throw error; }), `Obrisao naplatu za poziciju "${position}" (${o.name})`),
     addLog: async (l, wName, objName) => {
-      try { guardPaid(l.workerId, l.date); } catch (e) { setErr("Greška: " + e.message); return false; }
+      try { guardPaid(l.workerId, l.date); } catch (e) { setErr(tr("Greška: ") + e.message); return false; }
       if (!l.monthly) {
         const sameDay = data.logs.filter((x) => x.workerId === l.workerId && x.date === l.date && !x.monthly);
         if (sameDay.length && !window.confirm(tr("{0} već ima upisano {1} za {2}.\n\nUpisati još jedan unos za isti dan?", wName, fmtH(round2(sameDay.reduce((s, x) => s + x.hours, 0))), fmtDate(l.date)))) return false;
@@ -1042,7 +1047,7 @@ export default function App() {
         await ins("work_logs", row);
       } catch (e) {
         if (isNetworkError(e)) { queuePush("work_log", row); setErr(""); setBusy(false); return true; }
-        setErr("Greška: " + (e.message || e)); setBusy(false); return false;
+        setErr(tr("Greška: ") + (e.message || e)); setBusy(false); return false;
       }
       try { await supabase.from("audit_log").insert({ user_id: session.user.id, user_name: profile?.name || "",
         action: `Upisao sate: ${wName} ${fmtH(l.hours)}${objName ? " (" + objName + ")" : ""} (${fmtDate(l.date)})` }); } catch {}
@@ -1096,7 +1101,7 @@ export default function App() {
     }, `Ispravio sate: ${wName} ${fmtH(patch.hours)} (${fmtDate(l.date)} → ${fmtDate(patch.date)})`),
     copyDay: (object, fromDate, toDate) => act(async () => {
       const src = data.logs.filter((l) => l.objectId === object.id && l.date === fromDate && !l.monthly);
-      if (!src.length) throw new Error(`Za ${fmtDate(fromDate)} nema upisa na ovom objektu.`);
+      if (!src.length) throw new Error(tr("Za {0} nema upisa na ovom objektu.", fmtDate(fromDate)));
       for (const l of src) {
         guardPaid(l.workerId, toDate);
         await ins("work_logs", { worker_id: l.workerId, object_id: object.id, work_date: toDate,
@@ -1215,7 +1220,7 @@ export default function App() {
         await reload();
         setErr(res?.warning ? "Upozorenje: " + res.warning : "");
         return true;
-      } catch (e) { setErr("Greška: " + (e.message || e)); return false; }
+      } catch (e) { setErr(tr("Greška: ") + (e.message || e)); return false; }
       finally { setBusy(false); }
     },
     logDoc: (text) => supabase.from("audit_log").insert({ user_id: session.user.id, user_name: profile?.name || "", action: text }),
@@ -1313,7 +1318,7 @@ function Login({ lang, setLang, t }) {
   const loginGoogle = async () => {
     setErr("");
     const { error } = await supabase.auth.signInWithOAuth({ provider: "google", options: { redirectTo: window.location.origin } });
-    if (error) setErr("Google prijava nije uključena — treba se postaviti u Supabase Dashboardu (Authentication → Providers → Google).");
+    if (error) setErr(tr("Google prijava nije uključena — treba se postaviti u Supabase Dashboardu (Authentication → Providers → Google)."));
   };
   return (
     <div style={{ minHeight: "100vh", background: S.bg, fontFamily: "'Segoe UI', system-ui, sans-serif", color: S.ink }}>
@@ -1500,15 +1505,15 @@ function SignaturePad({ title, onSave, onClose }) {
     <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(10,14,12,.92)", zIndex: 60,
       display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>
       <div onClick={(e) => e.stopPropagation()} style={{ background: "#fff", borderRadius: 14, padding: 16, maxWidth: 420, width: "100%" }}>
-        <div style={{ fontWeight: 700, marginBottom: 8 }}>✍️ {title || "Potpis"}</div>
+        <div style={{ fontWeight: 700, marginBottom: 8 }}>✍️ {title || tr("Potpis")}</div>
         <canvas ref={canvasRef} width={380} height={180}
           onMouseDown={start} onMouseMove={move} onMouseUp={end} onMouseLeave={end}
           onTouchStart={start} onTouchMove={move} onTouchEnd={end}
           style={{ width: "100%", height: 180, border: `1px solid ${S.line}`, borderRadius: 10, touchAction: "none", background: "#FAFBF9", display: "block" }} />
         <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
-          <Btn small kind="ghost" onClick={clear}>Obriši</Btn>
-          <Btn small onClick={save} disabled={empty} style={{ flex: 1 }}>✓ Spremi potpis</Btn>
-          <Btn small kind="ghost" onClick={onClose}>Zatvori</Btn>
+          <Btn small kind="ghost" onClick={clear}>{tr("Obriši")}</Btn>
+          <Btn small onClick={save} disabled={empty} style={{ flex: 1 }}>{tr("✓ Spremi potpis")}</Btn>
+          <Btn small kind="ghost" onClick={onClose}>{tr("Zatvori")}</Btn>
         </div>
       </div>
     </div>
@@ -1675,8 +1680,10 @@ const adminBadge = (data, id) => id === "approvals" ? (data.payouts || []).filte
 /*  Tablice: unpaid_wages (koverta = radnik + mjesec), unpaid_wage_payments */
 /* ================================================================== */
 const monthLabel = (mo) => { if (!mo) return ""; const [y, m] = mo.split("-").map(Number); return `${String(m).padStart(2, "0")}/${y}`; };
-const monthLong = (mo) => { if (!mo) return ""; const [y, m] = mo.split("-").map(Number); return `${MONTHS[m - 1]} ${y}.`; };
-const plural = (n, one, few, many) => { const m10 = n % 10, m100 = n % 100; return `${n} ${m10 === 1 && m100 !== 11 ? one : m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14) ? few : many}`; };
+const monthLong = (mo) => { if (!mo) return ""; const [y, m] = mo.split("-").map(Number); return `${mName(m - 1)} ${y}.`; };
+// ukrajinski ima ista pravila množine (1 / 2–4 / 5+), pa se samo zamijene riječi
+const PLURAL_UK = { osoba: ["особа", "особи", "осіб"], koverta: ["конверт", "конверти", "конвертів"], mjesec: ["місяць", "місяці", "місяців"], "otvoren mjesec": ["відкритий місяць", "відкриті місяці", "відкритих місяців"] };
+const plural = (n, one, few, many) => { const m10 = n % 10, m100 = n % 100; const f = CUR_LANG === "UK" && PLURAL_UK[one]; if (f) [one, few, many] = f; return `${n} ${m10 === 1 && m100 !== 11 ? one : m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14) ? few : many}`; };
 function UnpaidPanel({ data, api, onOpenWorker }) {
   const [rows, setRows] = useState(null);      // koverte sa stanjem (view unpaid_wages_balance)
   const [pays, setPays] = useState([]);        // pojedinačne isplate
@@ -1703,8 +1710,8 @@ function UnpaidPanel({ data, api, onOpenWorker }) {
   }, []);
   useEffect(() => { load(); }, [load]);
 
-  if (loadErr) return <Card style={{ marginTop: 8, color: S.red }}>Ne mogu učitati neisplaćeno: {loadErr}</Card>;
-  if (!rows) return <Card style={{ marginTop: 8, color: S.sub }}>Učitavam…</Card>;
+  if (loadErr) return <Card style={{ marginTop: 8, color: S.red }}>{tr("Ne mogu učitati neisplaćeno:")}{" "}{loadErr}</Card>;
+  if (!rows) return <Card style={{ marginTop: 8, color: S.sub }}>{tr("Učitavam…")}</Card>;
 
   const OPEN = 0.004;
   const isOpen = (x) => x.remaining > OPEN;
@@ -1749,14 +1756,14 @@ function UnpaidPanel({ data, api, onOpenWorker }) {
   const savePayment = async () => {
     const g = groups[payForm.key];
     const amount = parseNum(payForm.amount);
-    if (!(amount > 0)) { alert("Upiši iznos isplate."); return; }
+    if (!(amount > 0)) { alert(tr("Upiši iznos isplate.")); return; }
     let parts = [];
     if (payForm.wageId) {
       const r = g.list.find((x) => x.id === payForm.wageId);
-      if (amount > r.remaining + OPEN && !confirm(`Iznos je veći od ostatka za ${monthLabel(r.month)} (${czk(r.remaining)}). Svejedno spremiti?`)) return;
+      if (amount > r.remaining + OPEN && !confirm(tr("Iznos je veći od ostatka za {0} ({1}). Svejedno spremiti?", monthLabel(r.month), czk(r.remaining)))) return;
       parts = [{ id: r.id, amount }];
     } else {
-      if (amount > g.remaining + OPEN) { alert(`Iznos je veći od ukupnog duga (${czk(g.remaining)}).`); return; }
+      if (amount > g.remaining + OPEN) { alert(tr("Iznos je veći od ukupnog duga ({0}).", czk(g.remaining))); return; }
       let left = amount;
       for (const r of g.list.filter(isOpen).sort((a, b) => a.month.localeCompare(b.month))) {
         if (left <= 0) break; const a = Math.min(left, r.remaining); parts.push({ id: r.id, amount: round2(a) }); left = round2(left - a);
@@ -1771,7 +1778,7 @@ function UnpaidPanel({ data, api, onOpenWorker }) {
     if (ok) { setPayForm(null); load(); }
   };
   const delPayment = async (p, name) => {
-    if (!confirm(`Obrisati isplatu ${czk(p.amount)}?`)) return;
+    if (!confirm(tr("Obrisati isplatu {0}?", czk(p.amount)))) return;
     const ok = await api.run(async () => {
       const { error } = await supabase.from("unpaid_wage_payments").update({ deleted_at: new Date().toISOString() }).eq("id", p.id);
       if (error) throw error;
@@ -1779,7 +1786,7 @@ function UnpaidPanel({ data, api, onOpenWorker }) {
     if (ok) load();
   };
   const delWage = async (r) => {
-    if (!confirm(`Obrisati kovertu ${r.worker_name} ${monthLabel(r.month)} (${czk(r.amount)})?`)) return;
+    if (!confirm(tr("Obrisati kovertu {0} {1} ({2})?", r.worker_name, monthLabel(r.month), czk(r.amount)))) return;
     const ok = await api.run(async () => {
       const { error } = await supabase.from("unpaid_wages").update({ deleted_at: new Date().toISOString() }).eq("id", r.id);
       if (error) throw error;
@@ -1790,7 +1797,7 @@ function UnpaidPanel({ data, api, onOpenWorker }) {
   const addWage = async () => {
     const w = data.workers.find((x) => x.id === nf.workerId);
     const amount = parseNum(nf.amount);
-    if (!w || !/^\d{4}-\d{2}$/.test(nf.month) || !(amount > 0)) { alert("Odaberi radnika, mjesec i iznos."); return; }
+    if (!w || !/^\d{4}-\d{2}$/.test(nf.month) || !(amount > 0)) { alert(tr("Odaberi radnika, mjesec i iznos.")); return; }
     const objectId = nf.objectId || w.objectId || null;
     const ok = await api.run(async () => {
       const { error } = await supabase.from("unpaid_wages").insert({
@@ -1803,7 +1810,7 @@ function UnpaidPanel({ data, api, onOpenWorker }) {
   };
 
   const exportXlsx = async () => {
-    if (!scopeRows.length) { alert("Nema koverti za izvoz."); return; }
+    if (!scopeRows.length) { alert(tr("Nema koverti za izvoz.")); return; }
     const clean = (t) => t.normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[^\w]+/g, "_").replace(/^_|_$/g, "");
     const suffix = scopeLabel ? "_" + clean(scopeLabel) : "";
     setExporting(true);
@@ -1824,8 +1831,8 @@ function UnpaidPanel({ data, api, onOpenWorker }) {
   );
   const amountEl = (t, big) => (
     <div style={{ textAlign: "right", flexShrink: 0 }}>
-      <div className="num" style={{ fontWeight: 800, fontSize: big ? 17 : 15.5, color: t.remaining > OPEN ? S.amber : S.green }}>{t.remaining > OPEN ? czk(t.remaining) : "✓ isplaćeno"}</div>
-      <div className="num" style={{ fontSize: 11.5, color: S.sub }}>od {czk(t.amount)}</div>
+      <div className="num" style={{ fontWeight: 800, fontSize: big ? 17 : 15.5, color: t.remaining > OPEN ? S.amber : S.green }}>{t.remaining > OPEN ? czk(t.remaining) : tr("✓ isplaćeno")}</div>
+      <div className="num" style={{ fontSize: 11.5, color: S.sub }}>{tr("od")}{" "}{czk(t.amount)}</div>
     </div>
   );
   const rowCard = ({ key, title, sub, t, onClick }) => (
@@ -1845,15 +1852,15 @@ function UnpaidPanel({ data, api, onOpenWorker }) {
       <div style={{ fontSize: 12, fontWeight: 700, color: S.amber, textTransform: "uppercase", letterSpacing: 0.6 }}>{label}</div>
       <div className="num" style={{ fontSize: 30, fontWeight: 800, color: S.ink, margin: "2px 0 6px" }}>{czk(t.remaining)}</div>
       <div style={{ display: "flex", gap: 14, flexWrap: "wrap", fontSize: 12.5, color: S.sub }} className="num">
-        <span>Na kovertama <b style={{ color: S.ink }}>{czk(t.amount)}</b></span>
-        <span>Isplaćeno <b style={{ color: S.green }}>{czk(t.paid)}</b></span>
+        <span>{tr("Na kovertama")}{" "}<b style={{ color: S.ink }}>{czk(t.amount)}</b></span>
+        <span>{tr("Isplaćeno")}{" "}<b style={{ color: S.green }}>{czk(t.paid)}</b></span>
         {sub && <span>{sub}</span>}
       </div>
       {bar(t.paid, t.amount)}
       <div style={{ display: "flex", gap: 8, marginTop: 12, flexWrap: "wrap" }}>
-        <Btn small kind="excel" onClick={exportXlsx} disabled={exporting}>{exporting ? "Pripremam…" : "⬇ Excel"}</Btn>
-        <Btn small kind="ghost" onClick={openNew}>＋ Nova koverta</Btn>
-        <Btn small kind="ghost" onClick={() => setShowClosed(!showClosed)}>{showClosed ? "Sakrij isplaćene" : "Prikaži isplaćene"}</Btn>
+        <Btn small kind="excel" onClick={exportXlsx} disabled={exporting}>{exporting ? tr("Pripremam…") : tr("⬇ Excel")}</Btn>
+        <Btn small kind="ghost" onClick={openNew}>{tr("＋ Nova koverta")}</Btn>
+        <Btn small kind="ghost" onClick={() => setShowClosed(!showClosed)}>{showClosed ? tr("Sakrij isplaćene") : tr("Prikaži isplaćene")}</Btn>
       </div>
     </Card>
   );
@@ -1883,21 +1890,21 @@ function UnpaidPanel({ data, api, onOpenWorker }) {
   );
   const payFormEl = (g) => (
     <div style={{ marginTop: 10, background: "#fff", border: `1px solid ${S.line}`, borderRadius: 12, padding: 12 }}>
-      <div style={{ fontWeight: 700, marginBottom: 8 }}>💶 Isplata — {g.name}</div>
-      <Field label="Za koji mjesec">
+      <div style={{ fontWeight: 700, marginBottom: 8 }}>{tr("💶 Isplata —")}{" "}{g.name}</div>
+      <Field label={tr("Za koji mjesec")}>
         <select value={payForm.wageId} onChange={(e) => setPayForm({ ...payForm, wageId: e.target.value })}>
-          <option value="">Automatski — od najstarijeg mjeseca</option>
+          <option value="">{tr("Automatski — od najstarijeg mjeseca")}</option>
           {g.list.filter(isOpen).sort((a, b) => a.month.localeCompare(b.month)).map((r) => (
-            <option key={r.id} value={r.id}>{monthLabel(r.month)} — ostaje {czk(r.remaining)}</option>
+            <option key={r.id} value={r.id}>{monthLabel(r.month)} {tr("— ostaje")}{" "}{czk(r.remaining)}</option>
           ))}
         </select>
       </Field>
       <div style={{ display: "flex", gap: 10 }}>
-        <div style={{ flex: 1 }}><Field label="Iznos (Kč)"><input inputMode="decimal" autoFocus value={payForm.amount} onChange={(e) => setPayForm({ ...payForm, amount: e.target.value })} /></Field></div>
-        <div style={{ flex: 1 }}><Field label="Datum"><input type="date" value={payForm.date} onChange={(e) => setPayForm({ ...payForm, date: e.target.value })} /></Field></div>
+        <div style={{ flex: 1 }}><Field label={tr("Iznos (Kč)")}><input inputMode="decimal" autoFocus value={payForm.amount} onChange={(e) => setPayForm({ ...payForm, amount: e.target.value })} /></Field></div>
+        <div style={{ flex: 1 }}><Field label={tr("Datum")}><input type="date" value={payForm.date} onChange={(e) => setPayForm({ ...payForm, date: e.target.value })} /></Field></div>
       </div>
-      <Field label="Napomena (nije obavezno)"><input value={payForm.note} onChange={(e) => setPayForm({ ...payForm, note: e.target.value })} placeholder="npr. gotovina, banka" /></Field>
-      <div style={{ display: "flex", gap: 8 }}><Btn small onClick={savePayment}>Spremi isplatu</Btn><Btn small kind="ghost" onClick={() => setPayForm(null)}>Odustani</Btn></div>
+      <Field label={tr("Napomena (nije obavezno)")}><input value={payForm.note} onChange={(e) => setPayForm({ ...payForm, note: e.target.value })} placeholder={tr("npr. gotovina, banka")} /></Field>
+      <div style={{ display: "flex", gap: 8 }}><Btn small onClick={savePayment}>{tr("Spremi isplatu")}</Btn><Btn small kind="ghost" onClick={() => setPayForm(null)}>{tr("Odustani")}</Btn></div>
     </div>
   );
   // jedna koverta s isplatama i gumbima; label = mjesec ili ime osobe
@@ -1916,13 +1923,13 @@ function UnpaidPanel({ data, api, onOpenWorker }) {
         {r.note && <div style={{ fontSize: 11.5, color: S.amber, marginTop: 2 }}>ⓘ {r.note}</div>}
         {paysOf(r.id).map((p) => (
           <div key={p.id} className="num" style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12.5, marginTop: 4, color: S.green }}>
-            <span style={{ flex: 1 }}>− {czk(p.amount)} · {p.pay_date ? fmtDate(p.pay_date) : "bez datuma"}{p.note ? " · " + p.note : ""}</span>
-            <button onClick={() => delPayment(p, r.worker_name)} title="Obriši isplatu" style={{ background: "none", border: "none", color: S.red, cursor: "pointer", fontSize: 14 }}>✕</button>
+            <span style={{ flex: 1 }}>− {czk(p.amount)} · {p.pay_date ? fmtDate(p.pay_date) : tr("bez datuma")}{p.note ? " · " + p.note : ""}</span>
+            <button onClick={() => delPayment(p, r.worker_name)} title={tr("Obriši isplatu")} style={{ background: "none", border: "none", color: S.red, cursor: "pointer", fontSize: 14 }}>✕</button>
           </div>
         ))}
         <div style={{ display: "flex", gap: 6, marginTop: 7, flexWrap: "wrap" }}>
-          {isOpen(r) && <Btn small kind="ghost" onClick={() => setPayForm({ key: keyOf(r), wageId: r.id, amount: String(r.remaining), date: todayISO(), note: "", at: r.id })}>💶 Isplati</Btn>}
-          <Btn small kind="danger" onClick={() => delWage(r)}>Obriši</Btn>
+          {isOpen(r) && <Btn small kind="ghost" onClick={() => setPayForm({ key: keyOf(r), wageId: r.id, amount: String(r.remaining), date: todayISO(), note: "", at: r.id })}>{tr("💶 Isplati")}</Btn>}
+          <Btn small kind="danger" onClick={() => delWage(r)}>{tr("Obriši")}</Btn>
         </div>
         {payForm && payForm.at === r.id && g && payFormEl(g)}
       </div>
@@ -1933,26 +1940,26 @@ function UnpaidPanel({ data, api, onOpenWorker }) {
   const objectOptions = sortedObjects(data.objects.filter((o) => !o.archived || o.id === nf.objectId));
   const newForm = newOpen && (
     <Card>
-      <div style={{ fontWeight: 700, marginBottom: 8 }}>＋ Nova neisplaćena koverta</div>
-      <Field label="Objekt">
+      <div style={{ fontWeight: 700, marginBottom: 8 }}>{tr("＋ Nova neisplaćena koverta")}</div>
+      <Field label={tr("Objekt")}>
         <select value={nf.objectId} onChange={(e) => setNf({ ...nf, objectId: e.target.value })}>
-          <option value="">— objekt radnika —</option>
+          <option value="">{tr("— objekt radnika —")}</option>
           {objectOptions.map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}
         </select>
       </Field>
-      <Field label="Radnik">
+      <Field label={tr("Radnik")}>
         <select value={nf.workerId} onChange={(e) => setNf({ ...nf, workerId: e.target.value })}>
-          <option value="">— odaberi —</option>
-          {workerOptions.filter((w) => !nf.objectId || w.objectId === nf.objectId || w.archived).map((w) => <option key={w.id} value={w.id}>{w.name}{w.archived ? " (arhiviran)" : ""}</option>)}
+          <option value="">{tr("— odaberi —")}</option>
+          {workerOptions.filter((w) => !nf.objectId || w.objectId === nf.objectId || w.archived).map((w) => <option key={w.id} value={w.id}>{w.name}{w.archived ? tr(" (arhiviran)") : ""}</option>)}
         </select>
       </Field>
       <div style={{ display: "flex", gap: 10 }}>
-        <div style={{ flex: 1 }}><Field label="Mjesec"><input type="month" value={nf.month} onChange={(e) => setNf({ ...nf, month: e.target.value })} /></Field></div>
-        <div style={{ flex: 1 }}><Field label="Iznos (Kč)"><input inputMode="decimal" value={nf.amount} onChange={(e) => setNf({ ...nf, amount: e.target.value })} /></Field></div>
+        <div style={{ flex: 1 }}><Field label={tr("Mjesec")}><input type="month" value={nf.month} onChange={(e) => setNf({ ...nf, month: e.target.value })} /></Field></div>
+        <div style={{ flex: 1 }}><Field label={tr("Iznos (Kč)")}><input inputMode="decimal" value={nf.amount} onChange={(e) => setNf({ ...nf, amount: e.target.value })} /></Field></div>
       </div>
-      <Field label="Odjel (npr. bílá, studená)"><input value={nf.section} onChange={(e) => setNf({ ...nf, section: e.target.value })} /></Field>
-      <Field label="Izračun s koverte (nije obavezno)"><input value={nf.calc} onChange={(e) => setNf({ ...nf, calc: e.target.value })} placeholder="npr. 250 h × 150 − soc.-zdr. 5 500 − banka 19 011" /></Field>
-      <div style={{ display: "flex", gap: 8 }}><Btn small onClick={addWage}>Spremi kovertu</Btn><Btn small kind="ghost" onClick={() => setNewOpen(false)}>Odustani</Btn></div>
+      <Field label={tr("Odjel (npr. bílá, studená)")}><input value={nf.section} onChange={(e) => setNf({ ...nf, section: e.target.value })} /></Field>
+      <Field label={tr("Izračun s koverte (nije obavezno)")}><input value={nf.calc} onChange={(e) => setNf({ ...nf, calc: e.target.value })} placeholder={tr("npr. 250 h × 150 − soc.-zdr. 5 500 − banka 19 011")} /></Field>
+      <div style={{ display: "flex", gap: 8 }}><Btn small onClick={addWage}>{tr("Spremi kovertu")}</Btn><Btn small kind="ghost" onClick={() => setNewOpen(false)}>{tr("Odustani")}</Btn></div>
     </Card>
   );
 
@@ -1964,8 +1971,8 @@ function UnpaidPanel({ data, api, onOpenWorker }) {
       <div style={{ marginTop: 8 }}>
         {summary({ label: "Ukupno dugujem — svi objekti", t: allT, sub: `${objList.filter(isOpen).length} objekata` })}
         {newForm}
-        <div style={{ fontSize: 12.5, fontWeight: 700, color: S.sub, textTransform: "uppercase", letterSpacing: 0.6, margin: "4px 2px 8px" }}>Odaberi objekt</div>
-        {shown.length === 0 && <Empty text="Nema neisplaćenih koverti. 🎉" />}
+        <div style={{ fontSize: 12.5, fontWeight: 700, color: S.sub, textTransform: "uppercase", letterSpacing: 0.6, margin: "4px 2px 8px" }}>{tr("Odaberi objekt")}</div>
+        {shown.length === 0 && <Empty text={tr("Nema neisplaćenih koverti. 🎉")} />}
         {shown.map((o) => rowCard({ key: o.key, title: `🏨 ${o.name}`, sub: `${plural(o.people, "osoba", "osobe", "osoba")} s dugom · ${plural(o.list.filter(isOpen).length, "koverta", "koverte", "koverti")}`, t: o, onClick: () => goObj(o.key) }))}
       </div>
     );
@@ -1984,7 +1991,7 @@ function UnpaidPanel({ data, api, onOpenWorker }) {
         {summary({ label: `${objName(obj)} — ${monthLong(selMonth)}`, t, sub: plural(new Set((m?.list || []).filter(isOpen).map(personKey)).size, "osoba", "osobe", "osoba") })}
         {newForm}
         <Card style={{ padding: "2px 14px 6px" }}>
-          {list.length === 0 && <Empty text="U ovom mjesecu sve je isplaćeno. 🎉" />}
+          {list.length === 0 && <Empty text={tr("U ovom mjesecu sve je isplaćeno. 🎉")} />}
           {list.map((r) => envelope(r,
             <button onClick={() => openPerson(keyOf(r))} style={{ background: "none", border: "none", padding: 0, fontWeight: 700, fontSize: 14.5, color: S.blue, cursor: "pointer", textAlign: "left" }}>{r.worker_name}</button>))}
         </Card>
@@ -2003,12 +2010,12 @@ function UnpaidPanel({ data, api, onOpenWorker }) {
         {summary({ label: g.name, t: g, sub: plural(g.list.filter(isOpen).length, "otvoren mjesec", "otvorena mjeseca", "otvorenih mjeseci") })}
         {newForm}
         <div style={{ display: "flex", gap: 8, marginBottom: 10, flexWrap: "wrap" }}>
-          {isOpen(g) && <Btn small onClick={() => setPayForm({ key: g.key, wageId: "", amount: "", date: todayISO(), note: "", at: "person" })}>💶 Dodaj isplatu</Btn>}
-          {g.workerId && onOpenWorker && <Btn small kind="ghost" onClick={() => onOpenWorker(g.workerId)}>Otvori radnika</Btn>}
+          {isOpen(g) && <Btn small onClick={() => setPayForm({ key: g.key, wageId: "", amount: "", date: todayISO(), note: "", at: "person" })}>{tr("💶 Dodaj isplatu")}</Btn>}
+          {g.workerId && onOpenWorker && <Btn small kind="ghost" onClick={() => onOpenWorker(g.workerId)}>{tr("Otvori radnika")}</Btn>}
         </div>
         {payForm && payForm.at === "person" && payFormEl(g)}
         <Card style={{ padding: "2px 14px 6px", marginTop: 10 }}>
-          {list.length === 0 && <Empty text="Sve je isplaćeno. 🎉" />}
+          {list.length === 0 && <Empty text={tr("Sve je isplaćeno. 🎉")} />}
           {list.map((r) => envelope(r, monthLong(r.month)))}
         </Card>
       </div>
@@ -2027,14 +2034,14 @@ function UnpaidPanel({ data, api, onOpenWorker }) {
 
       {view === "mjeseci" && (
         <>
-          {shownMonths.length === 0 && <Empty text="Nema neisplaćenih mjeseci. 🎉" />}
+          {shownMonths.length === 0 && <Empty text={tr("Nema neisplaćenih mjeseci. 🎉")} />}
           {shownMonths.map((m) => rowCard({ key: m.month, title: monthLong(m.month), sub: `${plural(m.people, "osoba", "osobe", "osoba")} · ${plural(m.list.filter(isOpen).length, "koverta", "koverte", "koverti")}`, t: m, onClick: () => openMonth(m.month) }))}
         </>
       )}
 
       {view === "osobe" && (
         <>
-          {shownPeople.length === 0 && <Empty text="Nema neisplaćenih osoba. 🎉" />}
+          {shownPeople.length === 0 && <Empty text={tr("Nema neisplaćenih osoba. 🎉")} />}
           {shownPeople.map((g) => rowCard({ key: g.key, title: g.name, sub: g.list.filter(isOpen).sort((a, b) => a.month.localeCompare(b.month)).map((r) => monthLabel(r.month)).join(", ") || "sve isplaćeno", t: g, onClick: () => openPerson(g.key) }))}
         </>
       )}
@@ -2045,7 +2052,7 @@ function UnpaidPanel({ data, api, onOpenWorker }) {
             ["Po osobama", shownPeople.map((g) => ({ k: g.key, label: g.name, t: g, go: () => openPerson(g.key) }))]].map(([title, items]) => (
             <div key={title}>
               <div style={{ display: "flex", justifyContent: "space-between", padding: "10px 14px", background: S.greenSoft, fontSize: 12, fontWeight: 700, color: S.green, textTransform: "uppercase", letterSpacing: 0.5 }}>
-                <span>{title}</span><span>Ostaje</span>
+                <span>{title}</span><span>{tr("Ostaje")}</span>
               </div>
               {items.map((x) => (
                 <div key={x.k} onClick={x.go} style={{ display: "flex", justifyContent: "space-between", gap: 10, padding: "9px 14px", borderBottom: `1px solid ${S.line}`, cursor: "pointer", fontSize: 14 }}>
@@ -2054,7 +2061,7 @@ function UnpaidPanel({ data, api, onOpenWorker }) {
                 </div>
               ))}
               <div style={{ display: "flex", justifyContent: "space-between", padding: "10px 14px", fontWeight: 800, fontSize: 14, borderBottom: `1px solid ${S.line}` }} className="num">
-                <span>Ukupno</span><span>{czk(objT.remaining)}</span>
+                <span>{tr("Ukupno")}</span><span>{czk(objT.remaining)}</span>
               </div>
             </div>
           ))}
@@ -2108,21 +2115,21 @@ function AdminPanels({ data, api, panel, setPanel, onOpenWorker, onOpenProfile }
     <div style={{ marginBottom: 12 }}>
       {panel && (
         <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
-          <Btn small kind="ghost" onClick={() => setPanel("")}>← Zatvori</Btn>
+          <Btn small kind="ghost" onClick={() => setPanel("")}>{tr("← Zatvori")}</Btn>
           <div style={{ fontWeight: 800, fontSize: 15 }}>{(ADMIN_MENU.find((m) => m[0] === panel) || [])[2]}</div>
         </div>
       )}
 
       {panel === "approvals" && (
         <Card style={{ marginTop: 8 }}>
-          <div style={{ fontWeight: 700, marginBottom: 8 }}>⏳ Isplate koje čekaju odobrenje — svi mjeseci i radnici na jednom mjestu</div>
+          <div style={{ fontWeight: 700, marginBottom: 8 }}>{tr("⏳ Isplate koje čekaju odobrenje — svi mjeseci i radnici na jednom mjestu")}</div>
           {pendingPayouts.length === 0 ? (
-            <div style={{ color: S.sub, fontSize: 13.5 }}>Nema ničega na čekanju. 🎉</div>
+            <div style={{ color: S.sub, fontSize: 13.5 }}>{tr("Nema ničega na čekanju. 🎉")}</div>
           ) : (
             <>
               <label style={{ display: "flex", alignItems: "center", gap: 7, fontSize: 13, cursor: "pointer", marginBottom: 8 }}>
                 <input type="checkbox" checked={allApprSelected} onChange={toggleApprSelectAll} style={{ width: 18, height: 18 }} />
-                Odaberi sve ({pendingPayouts.length})
+                {tr("Odaberi sve (")}{pendingPayouts.length})
               </label>
               {pendingPayouts.map((p) => {
                 const live = liveNetFor(p.workerId, p.month);
@@ -2134,19 +2141,19 @@ function AdminPanels({ data, api, panel, setPanel, onOpenWorker, onOpenProfile }
                     <span onClick={() => onOpenWorker && onOpenWorker(p.workerId)} style={{ fontWeight: 700, cursor: onOpenWorker ? "pointer" : "default", color: onOpenWorker ? S.blue : "inherit" }}>
                       {wName(p.workerId)}
                     </span>
-                    <span className="num" style={{ color: S.sub }}> · {p.month} · predloženo {fmtDate(p.paidAt)}</span>
+                    <span className="num" style={{ color: S.sub }}> · {p.month} {tr("· predloženo")}{" "}{fmtDate(p.paidAt)}</span>
                   </div>
                   <span className="num" style={{ fontWeight: 700, color: S.amber }}>
                     {[p.amount ? eur(p.amount) : "", p.amountKc ? czk(p.amountKc) : ""].filter(Boolean).join(" + ") || eur(0)}
                   </span>
-                  <Btn small onClick={() => approveList([p])} disabled={apprBusy}>✓ Odobri</Btn>
-                  <button onClick={() => api.unmarkPaid(p, wName(p.workerId))} title="Odbaci" style={{ background: "none", border: "none", color: S.red, fontSize: 16, cursor: "pointer", padding: 4 }}>✕</button>
+                  <Btn small onClick={() => approveList([p])} disabled={apprBusy}>{tr("✓ Odobri")}</Btn>
+                  <button onClick={() => api.unmarkPaid(p, wName(p.workerId))} title={tr("Odbaci")} style={{ background: "none", border: "none", color: S.red, fontSize: 16, cursor: "pointer", padding: 4 }}>✕</button>
                   {mismatch && (
                     <div style={{ width: "100%", display: "flex", alignItems: "center", gap: 8, background: S.redSoft, borderRadius: 8, padding: "5px 9px" }}>
                       <span style={{ fontSize: 11.5, color: S.red, fontWeight: 700, flex: 1 }}>
-                        ⚠️ Promijenjeno nakon prijedloga — sad bi bilo {[live.net ? eur(live.net) : "", live.netKc ? czk(live.netKc) : ""].filter(Boolean).join(" + ") || eur(0)}
+                        {tr("⚠️ Promijenjeno nakon prijedloga — sad bi bilo")}{" "}{[live.net ? eur(live.net) : "", live.netKc ? czk(live.netKc) : ""].filter(Boolean).join(" + ") || eur(0)}
                       </span>
-                      <Btn small onClick={() => api.refreshPayout(p, live.net, live.netKc, wName(p.workerId))}>🔄 Osvježi</Btn>
+                      <Btn small onClick={() => api.refreshPayout(p, live.net, live.netKc, wName(p.workerId))}>{tr("🔄 Osvježi")}</Btn>
                     </div>
                   )}
                 </div>
@@ -2155,11 +2162,11 @@ function AdminPanels({ data, api, panel, setPanel, onOpenWorker, onOpenProfile }
               <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
                 {apprSel.size > 0 && (
                   <Btn small onClick={() => approveList(pendingPayouts.filter((p) => apprSel.has(p.id)))} disabled={apprBusy}>
-                    {apprBusy ? "Odobravam…" : `✓ Odobri odabrane (${apprSel.size})`}
+                    {apprBusy ? tr("Odobravam…") : tr("✓ Odobri odabrane ({0})", apprSel.size)}
                   </Btn>
                 )}
                 <Btn small kind={apprSel.size > 0 ? "ghost" : "primary"} onClick={() => approveList(pendingPayouts)} disabled={apprBusy}>
-                  {apprBusy ? "Odobravam…" : `✓✓ Odobri sve (${pendingPayouts.length})`}
+                  {apprBusy ? tr("Odobravam…") : tr("✓✓ Odobri sve ({0})", pendingPayouts.length)}
                 </Btn>
               </div>
             </>
@@ -2171,7 +2178,7 @@ function AdminPanels({ data, api, panel, setPanel, onOpenWorker, onOpenProfile }
 
       {panel === "users" && (
         <Card style={{ marginTop: 8 }}>
-          <div style={{ fontWeight: 700, marginBottom: 8 }}>👥 Zaposlenici s pristupom</div>
+          <div style={{ fontWeight: 700, marginBottom: 8 }}>{tr("👥 Zaposlenici s pristupom")}</div>
           {[...data.profiles].sort((a, b) => (a.name || "").localeCompare(b.name || "", "hr")).map((p) => {
             const edit = commEdit[p.id];
             const cVal = edit !== undefined ? edit.rate : String(p.hourly_commission || "");
@@ -2193,26 +2200,26 @@ function AdminPanels({ data, api, panel, setPanel, onOpenWorker, onOpenProfile }
               <div key={p.id} style={{ padding: "9px 0", borderBottom: `1px solid ${S.line}` }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                   <span onClick={() => onOpenProfile && onOpenProfile(p.id)} style={{ flex: 1, fontWeight: 600, fontSize: 14, cursor: onOpenProfile ? "pointer" : "default", color: onOpenProfile ? S.blue : "inherit" }}>
-                    {p.role === "admin" ? "👑 " : ""}{p.name || "(bez imena)"} {onOpenProfile && <span style={{ fontWeight: 700 }}>›</span>}
+                    {p.role === "admin" ? "👑 " : ""}{p.name || tr("(bez imena)")} {onOpenProfile && <span style={{ fontWeight: 700 }}>›</span>}
                   </span>
                   <select value={p.role} onChange={(e) => api.setRole(p, e.target.value)} style={{ width: "auto", padding: "6px 8px", fontSize: 13 }}>
-                    <option value="employee">Zaposlenik</option>
-                    <option value="admin">Admin</option>
+                    <option value="employee">{tr("Zaposlenik")}</option>
+                    <option value="admin">{tr("Admin")}</option>
                   </select>
                 </div>
                 {p.role !== "admin" && (
                   <div style={{ marginTop: 6 }}>
-                    <div style={{ fontSize: 11.5, color: S.sub, marginBottom: 3 }}>Zadana provizija po satu (za objekte bez posebne cijene ispod)</div>
+                    <div style={{ fontSize: 11.5, color: S.sub, marginBottom: 3 }}>{tr("Zadana provizija po satu (za objekte bez posebne cijene ispod)")}</div>
                     <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
                       <input inputMode="decimal" value={cVal} onChange={(e) => setCommEdit((p2) => ({ ...p2, [p.id]: { rate: e.target.value, cur: cCur } }))}
-                        placeholder="npr. 0.50" style={{ flex: 1 }} />
+                        placeholder={tr("npr. 0.50")} style={{ flex: 1 }} />
                       <CurChips small value={cCur} onChange={(v) => setCommEdit((p2) => ({ ...p2, [p.id]: { rate: cVal, cur: v } }))} />
-                      <Btn small onClick={() => api.setCommission(p, round2(parseNum(cVal) || 0), cCur)}>Spremi</Btn>
+                      <Btn small onClick={() => api.setCommission(p, round2(parseNum(cVal) || 0), cCur)}>{tr("Spremi")}</Btn>
                     </div>
 
                     {myObjects.length > 0 && (
                       <div style={{ marginTop: 8, borderTop: `1px dashed ${S.line}`, paddingTop: 6 }}>
-                        <div style={{ fontSize: 11.5, color: S.sub, marginBottom: 4 }}>Posebna cijena po objektu (opcionalno — nadjačava zadanu gore)</div>
+                        <div style={{ fontSize: 11.5, color: S.sub, marginBottom: 4 }}>{tr("Posebna cijena po objektu (opcionalno — nadjačava zadanu gore)")}</div>
                         {myObjects.map((o) => {
                           const ov = (data.commissionRates || []).find((c) => c.userId === p.id && c.objectId === o.id);
                           const key = `${p.id}:${o.id}`;
@@ -2228,7 +2235,7 @@ function AdminPanels({ data, api, panel, setPanel, onOpenWorker, onOpenProfile }
                                 placeholder={cVal || "0"} style={{ width: 64, padding: "5px 6px" }} />
                               <CurChips small value={oCur} onChange={(v) => setObjCommEdit((p2) => ({ ...p2, [key]: { rate: oVal, cur: v } }))} />
                               <Btn small kind="ghost" onClick={() => api.setCommissionRate(o, p, round2(parseNum(oVal) || 0), oCur)}>✓</Btn>
-                              {ov && <button onClick={() => api.delCommissionRate(o, p)} title="Obriši (vrati na zadanu)" style={{ background: "none", border: "none", color: S.red, fontSize: 15, cursor: "pointer", padding: 2 }}>✕</button>}
+                              {ov && <button onClick={() => api.delCommissionRate(o, p)} title={tr("Obriši (vrati na zadanu)")} style={{ background: "none", border: "none", color: S.red, fontSize: 15, cursor: "pointer", padding: 2 }}>✕</button>}
                               <span className="num" style={{ fontWeight: 700, color: S.green, minWidth: 62, textAlign: "right" }}>{money(round2(h * effRate), effCur)}</span>
                             </div>
                           );
@@ -2238,7 +2245,7 @@ function AdminPanels({ data, api, panel, setPanel, onOpenWorker, onOpenProfile }
 
                     {Object.values(totalsByCur).some((v) => v !== 0) && (
                       <div style={{ fontSize: 12.5, color: S.sub, marginTop: 6, fontWeight: 700 }}>
-                        Ovaj mjesec ukupno za isplatu: {Object.entries(totalsByCur).filter(([, v]) => v !== 0).map(([c, v]) => money(v, c)).join(" + ")}
+                        {tr("Ovaj mjesec ukupno za isplatu:")}{" "}{Object.entries(totalsByCur).filter(([, v]) => v !== 0).map(([c, v]) => money(v, c)).join(" + ")}
                       </div>
                     )}
                   </div>
@@ -2269,67 +2276,66 @@ function AdminPanels({ data, api, panel, setPanel, onOpenWorker, onOpenProfile }
         return (
           <Card style={{ marginTop: 8 }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-              <div style={{ fontWeight: 700 }}>🧾 DPH za razdoblje</div>
+              <div style={{ fontWeight: 700 }}>{tr("🧾 DPH za razdoblje")}</div>
               <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
                 <button onClick={prevVM} style={{ background: "#fff", border: `1px solid ${S.line}`, borderRadius: 8, width: 26, height: 26, cursor: "pointer", fontWeight: 700 }}>‹</button>
-                <div style={{ fontWeight: 700, padding: "0 4px", fontSize: 13.5 }}>{MONTHS[vm - 1]} {vy}.</div>
+                <div style={{ fontWeight: 700, padding: "0 4px", fontSize: 13.5 }}>{mName(vm - 1)} {vy}.</div>
                 <button onClick={nextVM} style={{ background: "#fff", border: `1px solid ${S.line}`, borderRadius: 8, width: 26, height: 26, cursor: "pointer", fontWeight: 700 }}>›</button>
               </div>
             </div>
 
             <div style={{ background: v.payable > 0 ? S.amberSoft : S.greenSoft, borderRadius: 12, padding: "10px 12px", marginBottom: 10 }}>
-              <div style={{ ...row, borderBottom: "none", padding: "2px 0" }}><span>DPH na izdanim fakturama</span><b className="num">{czk(v.outVat)}</b></div>
-              <div style={{ ...row, borderBottom: "none", padding: "2px 0" }}><span>− odbitak s primljenih faktura</span><b className="num">{czk(v.inVat)}</b></div>
+              <div style={{ ...row, borderBottom: "none", padding: "2px 0" }}><span>{tr("DPH na izdanim fakturama")}</span><b className="num">{czk(v.outVat)}</b></div>
+              <div style={{ ...row, borderBottom: "none", padding: "2px 0" }}><span>{tr("− odbitak s primljenih faktura")}</span><b className="num">{czk(v.inVat)}</b></div>
               <div style={{ ...row, borderBottom: "none", borderTop: `1px dashed ${S.line}`, paddingTop: 6, marginTop: 4, fontSize: 15 }}>
-                <b>{v.payable >= 0 ? "Za platiti" : "Nadměrný odpočet (vraća se vama)"}</b>
+                <b>{v.payable >= 0 ? tr("Za platiti") : tr("Nadměrný odpočet (vraća se vama)")}</b>
                 <b className="num" style={{ color: v.payable > 0 ? S.amber : S.green, fontSize: 16 }}>{czk(Math.abs(v.payable))}</b>
               </div>
               <div style={{ fontSize: 13, marginTop: 4, color: dd < 0 ? S.red : S.ink }}>
-                📅 Rok za prijavu i plaćanje: <b>{fmtDate(v.due)}</b>{" "}
-                <span style={{ color: dd < 0 ? S.red : S.sub }}>({dd === 0 ? "danas" : dd > 0 ? `za ${dd} ${dd === 1 ? "dan" : "dana"}` : `prošao prije ${-dd} ${-dd === 1 ? "dan" : "dana"}`})</span>
+                {tr("📅 Rok za prijavu i plaćanje:")}{" "}<b>{fmtDate(v.due)}</b>{" "}
+                <span style={{ color: dd < 0 ? S.red : S.sub }}>({dd === 0 ? tr("danas") : dd > 0 ? tr("za {0} {1}", dd, dd === 1 ? "dan" : "dana") : tr("prošao prije {0} {1}", -dd, -dd === 1 ? "dan" : "dana")})</span>
               </div>
-              {v.eurUsed && <div style={{ fontSize: 11.5, color: S.amber, marginTop: 4 }}>Dio DPH-a je u €, preračunato po tečaju {v.rate} — za prijavu vrijedi tečaj ČNB na dan DUZP.</div>}
+              {v.eurUsed && <div style={{ fontSize: 11.5, color: S.amber, marginTop: 4 }}>{tr("Dio DPH-a je u €, preračunato po tečaju")}{" "}{v.rate} {tr("— za prijavu vrijedi tečaj ČNB na dan DUZP.")}</div>}
             </div>
             <div style={{ fontSize: 11.5, color: S.sub, marginBottom: 10 }}>
-              Faktura ide u mjesec prema DUZP-u. Ako DUZP nije upisan, prema razdoblju fakture ("za měsíc …"), a tek onda prema datumu izdavanja.
-              Rok vrijedi za mjesečnog platitelja DPH (25. idućeg mjeseca, pomaknuto na radni dan). Ovo je pomoć za planiranje, konačan iznos potvrdi s knjigovođom.
+              {tr("Faktura ide u mjesec prema DUZP-u. Ako DUZP nije upisan, prema razdoblju fakture (\"za měsíc …\"), a tek onda prema datumu izdavanja. Rok vrijedi za mjesečnog platitelja DPH (25. idućeg mjeseca, pomaknuto na radni dan). Ovo je pomoć za planiranje, konačan iznos potvrdi s knjigovođom.")}
             </div>
 
-            <div style={{ fontWeight: 700, fontSize: 13.5, margin: "4px 0" }}>Izdane fakture ({v.out.length})</div>
+            <div style={{ fontWeight: 700, fontSize: 13.5, margin: "4px 0" }}>{tr("Izdane fakture (")}{v.out.length})</div>
             {outSorted.length === 0 ? (
-              <div style={{ color: S.sub, fontSize: 13 }}>Nema izdanih faktura za ovo razdoblje. Uvezi PDF-ove iz Vyfakturuja u kartici Objekti → "📥 Uvoz faktura".</div>
+              <div style={{ color: S.sub, fontSize: 13 }}>{tr("Nema izdanih faktura za ovo razdoblje. Uvezi PDF-ove iz Vyfakturuja u kartici Objekti → \"📥 Uvoz faktura\".")}</div>
             ) : outSorted.map((i) => (
               <div key={i.id} style={row}>
-                <span>{objName(i.objectId)} · {i.number}<br /><span style={{ fontSize: 11.5, color: S.sub }}>{i.duzp ? "DUZP " + fmtDate(i.duzp) : "izdano " + fmtDate(i.issueDate)} · po {invoiceTaxBasis(i)}</span></span>
-                <span className="num" style={{ textAlign: "right" }}>{money(i.amount, i.currency)}<br /><b style={{ color: S.amber }}>DPH {money(i.vatAmount || 0, i.vatCurrency)}</b></span>
+                <span>{objName(i.objectId)} · {i.number}<br /><span style={{ fontSize: 11.5, color: S.sub }}>{i.duzp ? "DUZP " + fmtDate(i.duzp) : "izdano " + fmtDate(i.issueDate)} {tr("· po")}{" "}{invoiceTaxBasis(i)}</span></span>
+                <span className="num" style={{ textAlign: "right" }}>{money(i.amount, i.currency)}<br /><b style={{ color: S.amber }}>{tr("DPH")}{" "}{money(i.vatAmount || 0, i.vatCurrency)}</b></span>
               </div>
             ))}
 
-            <div style={{ fontWeight: 700, fontSize: 13.5, margin: "12px 0 4px" }}>Primljene fakture s DPH-om — odbitak ({v.inn.length})</div>
+            <div style={{ fontWeight: 700, fontSize: 13.5, margin: "12px 0 4px" }}>{tr("Primljene fakture s DPH-om — odbitak (")}{v.inn.length})</div>
             {v.inn.map((pi) => (
               <div key={pi.id} style={row}>
-                <span>{pi.supplier}{pi.number ? " · " + pi.number : ""}<br /><span style={{ fontSize: 11.5, color: S.sub }}>DUZP {fmtDate(pi.duzp)}{pi.base ? " · základ " + money(pi.base, pi.currency) : ""}</span></span>
+                <span>{pi.supplier}{pi.number ? " · " + pi.number : ""}<br /><span style={{ fontSize: 11.5, color: S.sub }}>{tr("DUZP")}{" "}{fmtDate(pi.duzp)}{pi.base ? " · základ " + money(pi.base, pi.currency) : ""}</span></span>
                 <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                  <b className="num" style={{ color: S.green }}>DPH {money(pi.vat, pi.currency)}</b>
-                  <button onClick={() => window.confirm(`Obrisati fakturu ${pi.supplier} ${pi.number}?`) && api.delPurchaseInvoice(pi)} style={{ background: "none", border: "none", color: S.red, cursor: "pointer", fontSize: 15 }}>✕</button>
+                  <b className="num" style={{ color: S.green }}>{tr("DPH")}{" "}{money(pi.vat, pi.currency)}</b>
+                  <button onClick={() => window.confirm(tr("Obrisati fakturu {0} {1}?", pi.supplier, pi.number)) && api.delPurchaseInvoice(pi)} style={{ background: "none", border: "none", color: S.red, cursor: "pointer", fontSize: 15 }}>✕</button>
                 </span>
               </div>
             ))}
             <div style={{ background: S.bg, borderRadius: 10, padding: 10, marginTop: 8 }}>
-              <div style={{ fontSize: 12.5, fontWeight: 700, marginBottom: 6 }}>➕ Dodaj primljenu fakturu (gorivo, najam, knjigovođa, oprema…)</div>
+              <div style={{ fontSize: 12.5, fontWeight: 700, marginBottom: 6 }}>{tr("➕ Dodaj primljenu fakturu (gorivo, najam, knjigovođa, oprema…)")}</div>
               <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 6 }}>
-                <input value={piForm.supplier} onChange={(e) => setPiForm({ ...piForm, supplier: e.target.value })} placeholder="dobavljač" style={{ flex: "2 1 140px" }} />
-                <input value={piForm.number} onChange={(e) => setPiForm({ ...piForm, number: e.target.value })} placeholder="broj fakture" style={{ flex: "1 1 100px" }} />
-                <label style={{ flex: "1 1 130px", fontSize: 11, color: S.sub }}>DUZP
+                <input value={piForm.supplier} onChange={(e) => setPiForm({ ...piForm, supplier: e.target.value })} placeholder={tr("dobavljač")} style={{ flex: "2 1 140px" }} />
+                <input value={piForm.number} onChange={(e) => setPiForm({ ...piForm, number: e.target.value })} placeholder={tr("broj fakture")} style={{ flex: "1 1 100px" }} />
+                <label style={{ flex: "1 1 130px", fontSize: 11, color: S.sub }}>{tr("DUZP")}
                   <input type="date" value={piForm.duzp} onChange={(e) => setPiForm({ ...piForm, duzp: e.target.value })} />
                 </label>
               </div>
               <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
-                <input inputMode="decimal" value={piForm.base} onChange={(e) => setPiForm({ ...piForm, base: e.target.value })} placeholder="základ bez DPH" style={{ flex: "1 1 100px" }} />
+                <input inputMode="decimal" value={piForm.base} onChange={(e) => setPiForm({ ...piForm, base: e.target.value })} placeholder={tr("základ bez DPH")} style={{ flex: "1 1 100px" }} />
                 <Btn small kind="ghost" onClick={fillVat21}>21 %</Btn>
-                <input inputMode="decimal" value={piForm.vat} onChange={(e) => setPiForm({ ...piForm, vat: e.target.value })} placeholder="DPH" style={{ flex: "1 1 90px" }} />
+                <input inputMode="decimal" value={piForm.vat} onChange={(e) => setPiForm({ ...piForm, vat: e.target.value })} placeholder={tr("DPH")} style={{ flex: "1 1 90px" }} />
                 <CurChips small value={piForm.currency} onChange={(c) => setPiForm({ ...piForm, currency: c })} />
-                <Btn small onClick={submitPi} disabled={!piForm.supplier.trim() || !(parseNum(piForm.vat) > 0)}>Spremi</Btn>
+                <Btn small onClick={submitPi} disabled={!piForm.supplier.trim() || !(parseNum(piForm.vat) > 0)}>{tr("Spremi")}</Btn>
               </div>
             </div>
           </Card>
@@ -2338,14 +2344,14 @@ function AdminPanels({ data, api, panel, setPanel, onOpenWorker, onOpenProfile }
 
       {panel === "audit" && (
         <Card style={{ marginTop: 8 }}>
-          <div style={{ fontWeight: 700, marginBottom: 8 }}>📜 Tko je što radio</div>
-          {data.audit.length === 0 ? <div style={{ color: S.sub, fontSize: 13.5 }}>Još nema zabilježenih radnji.</div> : (
+          <div style={{ fontWeight: 700, marginBottom: 8 }}>{tr("📜 Tko je što radio")}</div>
+          {data.audit.length === 0 ? <div style={{ color: S.sub, fontSize: 13.5 }}>{tr("Još nema zabilježenih radnji.")}</div> : (
             <>
-              <input value={auditQ} onChange={(e) => setAuditQ(e.target.value)} placeholder="🔍 Traži po osobi ili radnji…" style={{ marginBottom: 8 }} />
+              <input value={auditQ} onChange={(e) => setAuditQ(e.target.value)} placeholder={tr("🔍 Traži po osobi ili radnji…")} style={{ marginBottom: 8 }} />
               {(() => {
                 const t = auditQ.trim().toLowerCase();
                 const filtered = t ? data.audit.filter((a) => (a.user_name || "").toLowerCase().includes(t) || (a.action || "").toLowerCase().includes(t)) : data.audit;
-                return filtered.length === 0 ? <div style={{ color: S.sub, fontSize: 13.5 }}>Nema rezultata (pretražuje se zadnjih {data.audit.length} zabilježenih radnji).</div>
+                return filtered.length === 0 ? <div style={{ color: S.sub, fontSize: 13.5 }}>{tr("Nema rezultata (pretražuje se zadnjih")}{" "}{data.audit.length} {tr("zabilježenih radnji).")}</div>
                   : filtered.map((a) => (
                     <div key={a.id} style={{ padding: "6px 0", borderBottom: `1px solid ${S.line}`, fontSize: 13 }}>
                       <span className="num" style={{ color: S.sub }}>{fmtDT(a.at)}</span>{" · "}<b>{a.user_name}</b> — {a.action}
@@ -2359,11 +2365,11 @@ function AdminPanels({ data, api, panel, setPanel, onOpenWorker, onOpenProfile }
 
       {panel === "logins" && (
         <Card style={{ marginTop: 8 }}>
-          <div style={{ fontWeight: 700, marginBottom: 8 }}>🔐 Povijest prijava</div>
-          {(data.loginLog || []).length === 0 ? <div style={{ color: S.sub, fontSize: 13.5 }}>Još nema zabilježenih prijava.</div>
+          <div style={{ fontWeight: 700, marginBottom: 8 }}>{tr("🔐 Povijest prijava")}</div>
+          {(data.loginLog || []).length === 0 ? <div style={{ color: S.sub, fontSize: 13.5 }}>{tr("Još nema zabilježenih prijava.")}</div>
             : (data.loginLog || []).map((l) => (
               <div key={l.id} style={{ padding: "6px 0", borderBottom: `1px solid ${S.line}`, fontSize: 13 }}>
-                <span className="num" style={{ color: S.sub }}>{fmtDT(l.at)}</span>{" · "}<b>{l.userName || "(bez imena)"}</b>
+                <span className="num" style={{ color: S.sub }}>{fmtDT(l.at)}</span>{" · "}<b>{l.userName || tr("(bez imena)")}</b>
                 <div style={{ fontSize: 11, color: S.sub }}>{l.userAgent}</div>
               </div>
             ))}
@@ -2372,11 +2378,11 @@ function AdminPanels({ data, api, panel, setPanel, onOpenWorker, onOpenProfile }
 
       {panel === "errors" && (
         <Card style={{ marginTop: 8 }}>
-          <div style={{ fontWeight: 700, marginBottom: 8 }}>🐛 Greške aplikacije</div>
-          {(data.errorLog || []).length === 0 ? <div style={{ color: S.sub, fontSize: 13.5 }}>Nema zabilježenih grešaka. 🎉</div>
+          <div style={{ fontWeight: 700, marginBottom: 8 }}>{tr("🐛 Greške aplikacije")}</div>
+          {(data.errorLog || []).length === 0 ? <div style={{ color: S.sub, fontSize: 13.5 }}>{tr("Nema zabilježenih grešaka. 🎉")}</div>
             : (data.errorLog || []).map((e) => (
               <div key={e.id} style={{ padding: "6px 0", borderBottom: `1px solid ${S.line}`, fontSize: 13 }}>
-                <span className="num" style={{ color: S.sub }}>{fmtDT(e.at)}</span>{" · "}<b>{e.userName || "(bez imena)"}</b>
+                <span className="num" style={{ color: S.sub }}>{fmtDT(e.at)}</span>{" · "}<b>{e.userName || tr("(bez imena)")}</b>
                 <div style={{ color: S.red, fontWeight: 600 }}>{e.message}</div>
                 {e.url && <div style={{ fontSize: 11, color: S.sub }}>{e.url}</div>}
               </div>
@@ -2386,15 +2392,15 @@ function AdminPanels({ data, api, panel, setPanel, onOpenWorker, onOpenProfile }
 
       {panel === "trash" && (
         <Card style={{ marginTop: 8 }}>
-          <div style={{ fontWeight: 700, marginBottom: 8 }}>🗑 Obrisano — može se vratiti</div>
-          {data.trash.length === 0 ? <div style={{ color: S.sub, fontSize: 13.5 }}>Koš je prazan.</div>
+          <div style={{ fontWeight: 700, marginBottom: 8 }}>{tr("🗑 Obrisano — može se vratiti")}</div>
+          {data.trash.length === 0 ? <div style={{ color: S.sub, fontSize: 13.5 }}>{tr("Koš je prazan.")}</div>
             : data.trash.map((t) => (
               <div key={t.table + t.row.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 0", borderBottom: `1px solid ${S.line}` }}>
                 <div style={{ flex: 1, fontSize: 13 }}>
                   <div style={{ fontWeight: 600 }}>{t.label}</div>
                   <div className="num" style={{ fontSize: 11.5, color: S.sub }}>{fmtDT(t.row.deleted_at)}</div>
                 </div>
-                <Btn small kind="ghost" onClick={() => api.restore(t)} style={{ color: S.green, fontWeight: 700 }}>↩ Vrati</Btn>
+                <Btn small kind="ghost" onClick={() => api.restore(t)} style={{ color: S.green, fontWeight: 700 }}>{tr("↩ Vrati")}</Btn>
               </div>
             ))}
         </Card>
@@ -2402,68 +2408,68 @@ function AdminPanels({ data, api, panel, setPanel, onOpenWorker, onOpenProfile }
 
       {panel === "firm" && (
         <Card style={{ marginTop: 8 }}>
-          <div style={{ fontWeight: 700, marginBottom: 8 }}>⚙️ Podaci firme (za specifikacije i obračune)</div>
-          <Field label="Naziv firme"><input value={firm.company_name} onChange={(e) => setFirm({ ...firm, company_name: e.target.value })} placeholder="npr. Moja Firma d.o.o." /></Field>
-          <Field label="Adresa"><input value={firm.address} onChange={(e) => setFirm({ ...firm, address: e.target.value })} /></Field>
+          <div style={{ fontWeight: 700, marginBottom: 8 }}>{tr("⚙️ Podaci firme (za specifikacije i obračune)")}</div>
+          <Field label={tr("Naziv firme")}><input value={firm.company_name} onChange={(e) => setFirm({ ...firm, company_name: e.target.value })} placeholder={tr("npr. Moja Firma d.o.o.")} /></Field>
+          <Field label={tr("Adresa")}><input value={firm.address} onChange={(e) => setFirm({ ...firm, address: e.target.value })} /></Field>
           <div style={{ display: "flex", gap: 10 }}>
-            <div style={{ flex: 1 }}><Field label="OIB"><input value={firm.oib} onChange={(e) => setFirm({ ...firm, oib: e.target.value })} /></Field></div>
-            <div style={{ flex: 1.4 }}><Field label="IBAN"><input value={firm.iban} onChange={(e) => setFirm({ ...firm, iban: e.target.value })} /></Field></div>
+            <div style={{ flex: 1 }}><Field label={tr("OIB")}><input value={firm.oib} onChange={(e) => setFirm({ ...firm, oib: e.target.value })} /></Field></div>
+            <div style={{ flex: 1.4 }}><Field label={tr("IBAN")}><input value={firm.iban} onChange={(e) => setFirm({ ...firm, iban: e.target.value })} /></Field></div>
           </div>
-          <Field label="Tečaj 1 € = ? Kč (za izračun iz Mzdy PDF-a i zbrojeve u €)">
-            <input inputMode="decimal" value={firm.czk_rate} onChange={(e) => setFirm({ ...firm, czk_rate: e.target.value, czk_rate_auto: false })} placeholder="npr. 25" />
+          <Field label={tr("Tečaj 1 € = ? Kč (za izračun iz Mzdy PDF-a i zbrojeve u €)")}>
+            <input inputMode="decimal" value={firm.czk_rate} onChange={(e) => setFirm({ ...firm, czk_rate: e.target.value, czk_rate_auto: false })} placeholder={tr("npr. 25")} />
           </Field>
           <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, marginTop: -4, marginBottom: 10, cursor: "pointer" }}>
             <input type="checkbox" checked={!!firm.czk_rate_auto} onChange={(e) => setFirm({ ...firm, czk_rate_auto: e.target.checked })} style={{ width: 17, height: 17 }} />
-            <span>Automatski službeni tečaj ČNB (radnim danima popodne)
-              {data.settings.czk_rate_date && <span style={{ color: S.sub }}> · zadnji: {fmtDate(data.settings.czk_rate_date)}</span>}
+            <span>{tr("Automatski službeni tečaj ČNB (radnim danima popodne)")}
+              {data.settings.czk_rate_date && <span style={{ color: S.sub }}> {tr("· zadnji:")}{" "}{fmtDate(data.settings.czk_rate_date)}</span>}
             </span>
           </label>
           <div style={{ display: "flex", gap: 10 }}>
             <div style={{ flex: 1 }}>
-              <Field label="Dodatak vikendom (%)">
-                <input inputMode="decimal" value={firm.weekend_pct} onChange={(e) => setFirm({ ...firm, weekend_pct: e.target.value })} placeholder="npr. 25" />
+              <Field label={tr("Dodatak vikendom (%)")}>
+                <input inputMode="decimal" value={firm.weekend_pct} onChange={(e) => setFirm({ ...firm, weekend_pct: e.target.value })} placeholder={tr("npr. 25")} />
               </Field>
             </div>
             <div style={{ flex: 1 }}>
-              <Field label="Dodatak praznikom (%)">
-                <input inputMode="decimal" value={firm.holiday_pct} onChange={(e) => setFirm({ ...firm, holiday_pct: e.target.value })} placeholder="npr. 50" />
+              <Field label={tr("Dodatak praznikom (%)")}>
+                <input inputMode="decimal" value={firm.holiday_pct} onChange={(e) => setFirm({ ...firm, holiday_pct: e.target.value })} placeholder={tr("npr. 50")} />
               </Field>
             </div>
           </div>
           <div style={{ fontSize: 12, color: S.sub, margin: "-6px 0 10px" }}>
-            Automatski se dodaje na zaradu radnika za sate upisane vikendom/na praznik (0 = bez dodatka). Ne utječe na naplatu objekta.
+            {tr("Automatski se dodaje na zaradu radnika za sate upisane vikendom/na praznik (0 = bez dodatka). Ne utječe na naplatu objekta.")}
           </div>
-          <Field label="Upozori na istek dokumenata koliko dana unaprijed">
-            <input inputMode="decimal" value={firm.expiry_warn_days} onChange={(e) => setFirm({ ...firm, expiry_warn_days: e.target.value })} placeholder="npr. 30" />
+          <Field label={tr("Upozori na istek dokumenata koliko dana unaprijed")}>
+            <input inputMode="decimal" value={firm.expiry_warn_days} onChange={(e) => setFirm({ ...firm, expiry_warn_days: e.target.value })} placeholder={tr("npr. 30")} />
           </Field>
           <div style={{ display: "flex", gap: 10 }}>
             <div style={{ flex: 1 }}>
-              <Field label="Dan isplate u mjesecu">
-                <input inputMode="decimal" value={firm.payday_day} onChange={(e) => setFirm({ ...firm, payday_day: e.target.value })} placeholder="npr. 5" />
+              <Field label={tr("Dan isplate u mjesecu")}>
+                <input inputMode="decimal" value={firm.payday_day} onChange={(e) => setFirm({ ...firm, payday_day: e.target.value })} placeholder={tr("npr. 5")} />
               </Field>
             </div>
             <div style={{ flex: 1 }}>
-              <Field label="Podsjeti koliko dana prije">
-                <input inputMode="decimal" value={firm.payday_reminder_days} onChange={(e) => setFirm({ ...firm, payday_reminder_days: e.target.value })} placeholder="npr. 3" />
+              <Field label={tr("Podsjeti koliko dana prije")}>
+                <input inputMode="decimal" value={firm.payday_reminder_days} onChange={(e) => setFirm({ ...firm, payday_reminder_days: e.target.value })} placeholder={tr("npr. 3")} />
               </Field>
             </div>
           </div>
           <div style={{ fontSize: 12, color: S.sub, margin: "-6px 0 10px" }}>
-            Ako nekome ostane neodobrena isplata, dobit ćeš obavijest nekoliko dana prije dana isplate.
+            {tr("Ako nekome ostane neodobrena isplata, dobit ćeš obavijest nekoliko dana prije dana isplate.")}
           </div>
-          <Btn small onClick={() => api.saveSettings({ ...firm, czk_rate: parseNum(firm.czk_rate) || 25, czk_rate_auto: !!firm.czk_rate_auto, weekend_pct: parseNum(firm.weekend_pct) || 0, holiday_pct: parseNum(firm.holiday_pct) || 0, expiry_warn_days: parseNum(firm.expiry_warn_days) || 30, payday_day: parseNum(firm.payday_day) || 5, payday_reminder_days: parseNum(firm.payday_reminder_days) || 3 })}>Spremi</Btn>
+          <Btn small onClick={() => api.saveSettings({ ...firm, czk_rate: parseNum(firm.czk_rate) || 25, czk_rate_auto: !!firm.czk_rate_auto, weekend_pct: parseNum(firm.weekend_pct) || 0, holiday_pct: parseNum(firm.holiday_pct) || 0, expiry_warn_days: parseNum(firm.expiry_warn_days) || 30, payday_day: parseNum(firm.payday_day) || 5, payday_reminder_days: parseNum(firm.payday_reminder_days) || 3 })}>{tr("Spremi")}</Btn>
           <div style={{ borderTop: `1px dashed ${S.line}`, marginTop: 14, paddingTop: 12 }}>
-            <div style={{ fontWeight: 700, marginBottom: 6 }}>⬇ Backup</div>
-            <div style={{ fontSize: 12.5, color: S.sub, marginBottom: 8 }}>Sve podatke (radnici, objekti, svi upisani sati, sve isplate, isplaćeni mjeseci) u jednu Excel datoteku, neovisno o odabranom mjesecu.</div>
+            <div style={{ fontWeight: 700, marginBottom: 6 }}>{tr("⬇ Backup")}</div>
+            <div style={{ fontSize: 12.5, color: S.sub, marginBottom: 8 }}>{tr("Sve podatke (radnici, objekti, svi upisani sati, sve isplate, isplaćeni mjeseci) u jednu Excel datoteku, neovisno o odabranom mjesecu.")}</div>
             {(daysSinceBackup === null || daysSinceBackup >= 30) ? (
               <div style={{ fontSize: 12.5, color: S.amber, fontWeight: 600, marginBottom: 8 }}>
-                ⚠️ {daysSinceBackup === null ? "Još nikad nisi izvezla backup na ovom uređaju." : `Zadnji backup prije ${daysSinceBackup} dana.`} Preporuka: barem jednom mjesečno.
+                ⚠️ {daysSinceBackup === null ? tr("Još nikad nisi izvezla backup na ovom uređaju.") : tr("Zadnji backup prije {0} dana.", daysSinceBackup)} {tr("Preporuka: barem jednom mjesečno.")}
               </div>
             ) : (
-              <div style={{ fontSize: 12, color: S.sub, marginBottom: 8 }}>Zadnji backup: {daysSinceBackup === 0 ? "danas" : `prije ${daysSinceBackup} dana`}.</div>
+              <div style={{ fontSize: 12, color: S.sub, marginBottom: 8 }}>{tr("Zadnji backup:")}{" "}{daysSinceBackup === 0 ? tr("danas") : tr("prije {0} dana", daysSinceBackup)}.</div>
             )}
-            <Btn small kind="excel" onClick={doBackup}>📊 Izvezi sve podatke (Excel)</Btn>
-            <div style={{ fontSize: 11, color: S.sub, marginTop: 6 }}>Ovo je podsjetnik na ovom uređaju/pregledniku — pravi automatski backup na Google Drive/e-mail treba dodatnu poslužiteljsku postavku (mogu pripremiti kod, ali postavljanje ide preko tvog Supabase/Google naloga).</div>
+            <Btn small kind="excel" onClick={doBackup}>{tr("📊 Izvezi sve podatke (Excel)")}</Btn>
+            <div style={{ fontSize: 11, color: S.sub, marginTop: 6 }}>{tr("Ovo je podsjetnik na ovom uređaju/pregledniku — pravi automatski backup na Google Drive/e-mail treba dodatnu poslužiteljsku postavku (mogu pripremiti kod, ali postavljanje ide preko tvog Supabase/Google naloga).")}</div>
           </div>
         </Card>
       )}
@@ -2544,7 +2550,7 @@ function TodayTab({ data, api, admin, onOpenWorker, onOpenObject, openAdminPanel
   const addRem = async () => { if (!remText.trim()) return; const ok = await api.addReminder(remText.trim(), remDate); if (ok) { setRemText(""); setRemDate(""); } };
   const today = todayISO();
   const prevMo = prevMonthKey(curMonth());
-  const prevMoLabel = `${MONTHS[Number(prevMo.slice(5, 7)) - 1]} ${prevMo.slice(0, 4)}.`;
+  const prevMoLabel = `${mName(Number(prevMo.slice(5, 7)) - 1)} ${prevMo.slice(0, 4)}.`;
   const wName = (id) => data.workers.find((w) => w.id === id)?.name || "Obrisan radnik";
   const oName = (id) => data.objects.find((o) => o.id === id)?.name || "bez objekta";
   const active = data.workers.filter((w) => !w.archived);
@@ -2847,7 +2853,7 @@ function HoursImport({ data, object, month, onSave, onClose }) {
       setSheetName(sn);
       const r = XLSX.utils.sheet_to_json(book.Sheets[sn], { header: 1, raw: false, defval: "" });
       setLayout(saved && saved.sheetName === sn ? { ...guessLayout(r, active), ...saved.layout } : guessLayout(r, active));
-    } catch (e) { setErr("Ne mogu pročitati datoteku: " + (e.message || e)); }
+    } catch (e) { setErr(tr("Ne mogu pročitati datoteku: ") + (e.message || e)); }
   };
   const changeSheet = (sn) => {
     setSheetName(sn); setOverrides({});
@@ -2902,7 +2908,7 @@ function HoursImport({ data, object, month, onSave, onClose }) {
   return (
     <Card style={{ border: `2px solid ${S.green}` }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-        <div style={{ fontWeight: 800 }}>{tr("📥 Uvoz sati iz Excela ·")}{" "}{MONTHS[Number(month.slice(5, 7)) - 1]} {month.slice(0, 4)}.</div>
+        <div style={{ fontWeight: 800 }}>{tr("📥 Uvoz sati iz Excela ·")}{" "}{mName(Number(month.slice(5, 7)) - 1)} {month.slice(0, 4)}.</div>
         <button onClick={onClose} style={{ background: "none", border: "none", fontWeight: 800, color: S.sub, cursor: "pointer", fontSize: 16 }}>✕</button>
       </div>
       <div style={{ fontSize: 12.5, color: S.sub, marginBottom: 10 }}>
@@ -3023,22 +3029,22 @@ function AddEmployee({ data, api }) {
   return (
     <div style={{ marginTop: 10, borderTop: `1px solid ${S.line}`, paddingTop: 10 }}>
       {!open ? (
-        <Btn small onClick={() => { setOpen(true); setDone(null); }} style={{ width: "100%" }}>➕ Dodaj zaposlenika (koordinatora)</Btn>
+        <Btn small onClick={() => { setOpen(true); setDone(null); }} style={{ width: "100%" }}>{tr("➕ Dodaj zaposlenika (koordinatora)")}</Btn>
       ) : (
         <div>
-          <div style={{ fontWeight: 700, marginBottom: 6 }}>➕ Novi zaposlenik</div>
+          <div style={{ fontWeight: 700, marginBottom: 6 }}>{tr("➕ Novi zaposlenik")}</div>
           <div style={{ fontSize: 12, color: S.sub, marginBottom: 8 }}>
-            Zaposlenik vidi i upisuje samo objekte koje mu dodijeliš. Ne vidi cijene naplate hotelima, fakture, maržu ni tuđe provizije.
+            {tr("Zaposlenik vidi i upisuje samo objekte koje mu dodijeliš. Ne vidi cijene naplate hotelima, fakture, maržu ni tuđe provizije.")}
           </div>
-          <Field label="Ime i prezime"><input value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} placeholder="npr. Maryna Svydenyuk" /></Field>
-          <Field label="E-mail za prijavu"><input type="email" value={f.email} onChange={(e) => setF({ ...f, email: e.target.value })} placeholder="ime@email.com" /></Field>
-          <Field label="Privremena lozinka (barem 8 znakova)">
+          <Field label={tr("Ime i prezime")}><input value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} placeholder={tr("npr. Maryna Svydenyuk")} /></Field>
+          <Field label={tr("E-mail za prijavu")}><input type="email" value={f.email} onChange={(e) => setF({ ...f, email: e.target.value })} placeholder={tr("ime@email.com")} /></Field>
+          <Field label={tr("Privremena lozinka (barem 8 znakova)")}>
             <div style={{ display: "flex", gap: 6 }}>
               <input value={f.password} onChange={(e) => setF({ ...f, password: e.target.value })} />
-              <Btn small kind="ghost" onClick={genPass}>🎲 Izmisli</Btn>
+              <Btn small kind="ghost" onClick={genPass}>{tr("🎲 Izmisli")}</Btn>
             </div>
           </Field>
-          <div style={{ fontSize: 12.5, fontWeight: 600, color: S.sub, marginBottom: 4 }}>Objekti koje vodi</div>
+          <div style={{ fontSize: 12.5, fontWeight: 600, color: S.sub, marginBottom: 4 }}>{tr("Objekti koje vodi")}</div>
           <div style={{ maxHeight: 200, overflowY: "auto", marginBottom: 10 }}>
             {openObjs.map((o) => (
               <label key={o.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 0", fontSize: 13.5, cursor: "pointer" }}>
@@ -3049,16 +3055,16 @@ function AddEmployee({ data, api }) {
             ))}
           </div>
           <div style={{ display: "flex", gap: 8 }}>
-            <Btn small kind="ghost" onClick={() => setOpen(false)} style={{ flex: 1 }}>Odustani</Btn>
-            <Btn small onClick={submit} disabled={!f.name.trim() || !f.email.includes("@") || f.password.length < 8} style={{ flex: 2 }}>✓ Kreiraj račun</Btn>
+            <Btn small kind="ghost" onClick={() => setOpen(false)} style={{ flex: 1 }}>{tr("Odustani")}</Btn>
+            <Btn small onClick={submit} disabled={!f.name.trim() || !f.email.includes("@") || f.password.length < 8} style={{ flex: 2 }}>{tr("✓ Kreiraj račun")}</Btn>
           </div>
         </div>
       )}
       {done && (
         <div style={{ marginTop: 10, background: S.greenSoft, borderRadius: 10, padding: "9px 12px", fontSize: 13 }}>
-          ✓ Račun za <b>{done.name}</b> je kreiran. Pošalji joj/mu podatke za prijavu na evidecija.vercel.app:<br />
-          e-mail <b>{done.email}</b> · lozinka <b style={{ fontFamily: "monospace" }}>{done.password}</b><br />
-          <span style={{ color: S.sub }}>Lozinka se ovdje prikazuje samo sada.</span>
+          {tr("✓ Račun za")}{" "}<b>{done.name}</b> {tr("je kreiran. Pošalji joj/mu podatke za prijavu na evidecija.vercel.app:")}<br />
+          {tr("e-mail")}{" "}<b>{done.email}</b> {tr("· lozinka")}{" "}<b style={{ fontFamily: "monospace" }}>{done.password}</b><br />
+          <span style={{ color: S.sub }}>{tr("Lozinka se ovdje prikazuje samo sada.")}</span>
         </div>
       )}
     </div>
@@ -3103,10 +3109,10 @@ function MonthCloseCard({ data, mo, onStart }) {
   const all = objs.length > 0 && done === objs.length;
   const label = `${MONTHS[Number(mo.slice(5, 7)) - 1]} ${mo.slice(0, 4)}.`;
   return (
-    <TodaySection icon="✅" title={`Zatvaranje mjeseca: ${label}`} tone={all ? "green" : "blue"} count={`${done}/${objs.length}`}
-      action={<Btn small onClick={onStart} style={{ width: "100%" }}>{done === 0 ? "▶ Započni zatvaranje" : all ? "Pregledaj" : "▶ Nastavi"}</Btn>}>
+    <TodaySection icon="✅" title={tr("Zatvaranje mjeseca: {0}", label)} tone={all ? "green" : "blue"} count={`${done}/${objs.length}`}
+      action={<Btn small onClick={onStart} style={{ width: "100%" }}>{done === 0 ? tr("▶ Započni zatvaranje") : all ? tr("Pregledaj") : tr("▶ Nastavi")}</Btn>}>
       <div style={{ fontSize: 12.5, color: S.sub }}>
-        {all ? "Svi objekti su zatvoreni za ovaj mjesec. ✓" : "Vodi te kroz svaki objekt: sati, provjere, faktura, pa na kraju isplate i DPH."}
+        {all ? tr("Svi objekti su zatvoreni za ovaj mjesec. ✓") : tr("Vodi te kroz svaki objekt: sati, provjere, faktura, pa na kraju isplate i DPH.")}
       </div>
     </TodaySection>
   );
@@ -3145,49 +3151,49 @@ function MonthClose({ data, api, initialMonth, onClose, onOpenObject, onOpenWork
       <>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
           <div style={{ fontWeight: 800, fontSize: 16 }}>{FLAG[o.country] || ""} {o.name}</div>
-          <Btn small kind="ghost" onClick={() => onOpenObject(o.id)}>Otvori objekt ›</Btn>
+          <Btn small kind="ghost" onClick={() => onOpenObject(o.id)}>{tr("Otvori objekt ›")}</Btn>
         </div>
 
         <Check ok={hoursOk} warn={st.hours > 0 && !hoursOk}>
-          <b>1. Sati upisani</b> — {fmtH(st.hours)}, {st.withHours.size} radnika
-          {st.hours === 0 && <Sub>Za ovaj mjesec nema sati. Upiši ih ili uvezi Excel hotela u objektu (Mjesečno → 📥 Uvezi sate).</Sub>}
+          <b>{tr("1. Sati upisani")}</b> — {fmtH(st.hours)}, {st.withHours.size} {tr("radnika")}
+          {st.hours === 0 && <Sub>{tr("Za ovaj mjesec nema sati. Upiši ih ili uvezi Excel hotela u objektu (Mjesečno → 📥 Uvezi sate).")}</Sub>}
           {st.assignedNoHours.length > 0 && (
             <Sub>
-              Bez sati ({st.assignedNoHours.length}): {st.assignedNoHours.slice(0, 8).map((w, i) => (
+              {tr("Bez sati (")}{st.assignedNoHours.length}): {st.assignedNoHours.slice(0, 8).map((w, i) => (
                 <span key={w.id}>{i ? ", " : ""}<Link onClick={() => onOpenWorker(w.id)}>{w.name}</Link></span>
               ))}{st.assignedNoHours.length > 8 ? " …" : ""}
               <label style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 4, cursor: "pointer", color: S.ink }}>
                 <input type="checkbox" checked={isDone(o.id, "hours")} onChange={() => toggle(o.id, "hours", o.name)} style={{ width: 16, height: 16 }} />
-                U redu je — ti radnici ovaj mjesec nisu radili ovdje
+                {tr("U redu je — ti radnici ovaj mjesec nisu radili ovdje")}
               </label>
             </Sub>
           )}
         </Check>
 
         <Check ok={checksOk} warn={!checksOk}>
-          <b>2. Provjera unosa</b> — {checksOk ? "nema sumnjivih ni duplih unosa" : `${st.suspicious.length} sumnjivih, ${st.dups} duplih dana`}
+          <b>{tr("2. Provjera unosa")}</b> — {checksOk ? tr("nema sumnjivih ni duplih unosa") : tr("{0} sumnjivih, {1} duplih dana", st.suspicious.length, st.dups)}
           {st.suspicious.slice(0, 5).map((l) => (
-            <Sub key={l.id}><Link onClick={() => onOpenWorker(l.workerId)}>{wName(l.workerId)}</Link>: {fmtH(l.hours)} {l.monthly ? "(mjesečno)" : "u jednom danu"}</Sub>
+            <Sub key={l.id}><Link onClick={() => onOpenWorker(l.workerId)}>{wName(l.workerId)}</Link>: {fmtH(l.hours)} {l.monthly ? tr("(mjesečno)") : tr("u jednom danu")}</Sub>
           ))}
         </Check>
 
         <Check ok={invOk} warn={invOk && st.diffPct !== null && Math.abs(st.diffPct) > 3}>
-          <b>3. Faktura</b> — {invOk ? st.invoices.map((i) => `${i.number} (${money(i.amount, i.currency)})`).join(", ") : "nije uvezena"}
-          {!invOk && <Sub>Napravi fakturu u Vyfakturuju i uvezi PDF: Objekti → 📥 Uvoz faktura.</Sub>}
+          <b>{tr("3. Faktura")}</b> — {invOk ? st.invoices.map((i) => `${i.number} (${money(i.amount, i.currency)})`).join(", ") : tr("nije uvezena")}
+          {!invOk && <Sub>{tr("Napravi fakturu u Vyfakturuju i uvezi PDF: Objekti → 📥 Uvoz faktura.")}</Sub>}
           {st.expectedCzk > 0 && (
             <Sub>
-              Po satima × cijeni očekivano bez DPH: <b>{czk(st.expectedCzk)}</b>
-              {invOk && <> · na fakturi bez DPH: <b>{czk(st.invNetCzk)}</b>
+              {tr("Po satima × cijeni očekivano bez DPH:")}{" "}<b>{czk(st.expectedCzk)}</b>
+              {invOk && <> {tr("· na fakturi bez DPH:")}{" "}<b>{czk(st.invNetCzk)}</b>
                 {st.diffPct !== null && <span style={{ color: Math.abs(st.diffPct) > 3 ? S.amber : S.green, fontWeight: 700 }}> ({st.diffPct > 0 ? "+" : ""}{st.diffPct} %)</span>}</>}
             </Sub>
           )}
-          {st.expectedCzk === 0 && st.hours > 0 && <Sub>Objekt nema upisanu cijenu naplate, pa ne mogu usporediti s fakturom.</Sub>}
-          {invOk && <Sub>Plaćeno: {st.paid > 0 ? czk(st.paid) : "još nije upisano"}</Sub>}
+          {st.expectedCzk === 0 && st.hours > 0 && <Sub>{tr("Objekt nema upisanu cijenu naplate, pa ne mogu usporediti s fakturom.")}</Sub>}
+          {invOk && <Sub>{tr("Plaćeno:")}{" "}{st.paid > 0 ? czk(st.paid) : tr("još nije upisano")}</Sub>}
         </Check>
 
         <div style={{ marginTop: 10 }}>
           <Btn onClick={() => { toggle(o.id, "done", o.name); if (!done) setIdx(idx + 1); }} kind={done ? "ghost" : "primary"} style={{ width: "100%" }}>
-            {done ? "↺ Ponovno otvori ovaj objekt" : hoursOk && checksOk && invOk ? "✓ Objekt zatvoren — dalje" : "✓ Zatvori svejedno — dalje"}
+            {done ? tr("↺ Ponovno otvori ovaj objekt") : hoursOk && checksOk && invOk ? tr("✓ Objekt zatvoren — dalje") : tr("✓ Zatvori svejedno — dalje")}
           </Btn>
         </div>
       </>
@@ -3199,16 +3205,16 @@ function MonthClose({ data, api, initialMonth, onClose, onOpenObject, onOpenWork
     const ok = withHours.length > 0 && notProposed.length === 0 && notApproved.length === 0;
     body = (
       <>
-        <div style={{ fontWeight: 800, fontSize: 16, marginBottom: 6 }}>💶 Isplate radnicima</div>
+        <div style={{ fontWeight: 800, fontSize: 16, marginBottom: 6 }}>{tr("💶 Isplate radnicima")}</div>
         <Check ok={notProposed.length === 0 && withHours.length > 0} warn={notProposed.length > 0}>
-          <b>Predložene isplate</b> — {withHours.length - notProposed.length}/{withHours.length} radnika
-          {notProposed.length > 0 && <Sub>Bez prijedloga: {notProposed.slice(0, 10).map(wName).join(", ")}{notProposed.length > 10 ? " …" : ""} · <Link onClick={() => goTab("obracun")}>otvori Obračun ›</Link></Sub>}
+          <b>{tr("Predložene isplate")}</b> — {withHours.length - notProposed.length}/{withHours.length} {tr("radnika")}
+          {notProposed.length > 0 && <Sub>{tr("Bez prijedloga:")}{" "}{notProposed.slice(0, 10).map(wName).join(", ")}{notProposed.length > 10 ? " …" : ""} · <Link onClick={() => goTab("obracun")}>{tr("otvori Obračun ›")}</Link></Sub>}
         </Check>
         <Check ok={notApproved.length === 0 && withHours.length > 0} warn={notApproved.length > 0}>
-          <b>Odobrene isplate</b> — {notApproved.length ? `${notApproved.length} čeka odobrenje` : "sve odobreno"}
-          {notApproved.length > 0 && <Sub><Link onClick={() => openAdminPanel("approvals")}>Otvori odobravanje ›</Link></Sub>}
+          <b>{tr("Odobrene isplate")}</b> — {notApproved.length ? tr("{0} čeka odobrenje", notApproved.length) : tr("sve odobreno")}
+          {notApproved.length > 0 && <Sub><Link onClick={() => openAdminPanel("approvals")}>{tr("Otvori odobravanje ›")}</Link></Sub>}
         </Check>
-        <Btn onClick={() => setIdx(idx + 1)} style={{ width: "100%", marginTop: 10 }}>{ok ? "✓ Dalje" : "Dalje"}</Btn>
+        <Btn onClick={() => setIdx(idx + 1)} style={{ width: "100%", marginTop: 10 }}>{ok ? tr("✓ Dalje") : tr("Dalje")}</Btn>
       </>
     );
   } else if (cur.kind === "vat") {
@@ -3216,48 +3222,48 @@ function MonthClose({ data, api, initialMonth, onClose, onOpenObject, onOpenWork
     const dd = daysUntil(v.due);
     body = (
       <>
-        <div style={{ fontWeight: 800, fontSize: 16, marginBottom: 6 }}>🧾 DPH za {label}</div>
+        <div style={{ fontWeight: 800, fontSize: 16, marginBottom: 6 }}>{tr("🧾 DPH za")}{" "}{label}</div>
         <Check ok={v.out.length > 0}>
-          <b>Izdane fakture</b> — {v.out.length}, DPH {czk(v.outVat)}
+          <b>{tr("Izdane fakture")}</b> — {v.out.length}{tr(", DPH")}{" "}{czk(v.outVat)}
         </Check>
         <Check ok={isDone(null, "purchases")}>
-          <b>Primljene fakture (odbitak)</b> — {v.inn.length}, DPH {czk(v.inVat)}
-          <Sub>Jesi li upisao sve primljene fakture s DPH-om za ovaj mjesec? <Link onClick={() => openAdminPanel("vat")}>Upiši ›</Link></Sub>
+          <b>{tr("Primljene fakture (odbitak)")}</b> — {v.inn.length}{tr(", DPH")}{" "}{czk(v.inVat)}
+          <Sub>{tr("Jesi li upisao sve primljene fakture s DPH-om za ovaj mjesec?")}{" "}<Link onClick={() => openAdminPanel("vat")}>{tr("Upiši ›")}</Link></Sub>
           <label style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 4, fontSize: 12.5, cursor: "pointer" }}>
             <input type="checkbox" checked={isDone(null, "purchases")} onChange={() => toggle(null, "purchases", "primljene fakture")} style={{ width: 16, height: 16 }} />
-            Da, sve su upisane
+            {tr("Da, sve su upisane")}
           </label>
         </Check>
         <div style={{ background: v.payable > 0 ? S.amberSoft : S.greenSoft, borderRadius: 10, padding: "9px 12px", marginTop: 8, fontSize: 14 }}>
-          {v.payable >= 0 ? "Za platiti" : "Vraća se vama"}: <b className="num">{czk(Math.abs(v.payable))}</b><br />
-          Rok: <b>{fmtDate(v.due)}</b> <span style={{ color: dd < 0 ? S.red : S.sub }}>({dd >= 0 ? `za ${dd} dana` : `kasni ${-dd} dana`})</span>
+          {v.payable >= 0 ? tr("Za platiti") : tr("Vraća se vama")}: <b className="num">{czk(Math.abs(v.payable))}</b><br />
+          {tr("Rok:")}{" "}<b>{fmtDate(v.due)}</b> <span style={{ color: dd < 0 ? S.red : S.sub }}>({dd >= 0 ? tr("za {0} dana", dd) : tr("kasni {0} dana", -dd)})</span>
         </div>
         <label style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 8, fontSize: 13.5, cursor: "pointer" }}>
           <input type="checkbox" checked={isDone(null, "vat_paid")} onChange={() => toggle(null, "vat_paid", "DPH plaćen")} style={{ width: 17, height: 17 }} />
-          DPH prijavljen i plaćen
+          {tr("DPH prijavljen i plaćen")}
         </label>
-        <Btn onClick={() => setIdx(idx + 1)} style={{ width: "100%", marginTop: 10 }}>Dalje</Btn>
+        <Btn onClick={() => setIdx(idx + 1)} style={{ width: "100%", marginTop: 10 }}>{tr("Dalje")}</Btn>
       </>
     );
   } else {
     const doneObjs = objs.filter((o) => isDone(o.id, "done"));
     body = (
       <>
-        <div style={{ fontWeight: 800, fontSize: 16, marginBottom: 6 }}>📋 Pregled — {label}</div>
+        <div style={{ fontWeight: 800, fontSize: 16, marginBottom: 6 }}>{tr("📋 Pregled —")}{" "}{label}</div>
         {objs.map((o, i) => {
           const st = objectCloseState(data, o, mo);
           return (
             <div key={o.id} onClick={() => setIdx(i)} style={{ display: "flex", justifyContent: "space-between", padding: "7px 0", borderTop: `1px solid ${S.line}`, fontSize: 13.5, cursor: "pointer" }}>
               <span>{isDone(o.id, "done") ? "✅" : "⬜"} {o.name}</span>
-              <span className="num" style={{ color: S.sub, fontSize: 12.5 }}>{fmtH(st.hours)} · {st.invoices.length ? czk(st.invNetCzk) : "bez fakture"}</span>
+              <span className="num" style={{ color: S.sub, fontSize: 12.5 }}>{fmtH(st.hours)} · {st.invoices.length ? czk(st.invNetCzk) : tr("bez fakture")}</span>
             </div>
           );
         })}
-        <div style={{ borderTop: `1px solid ${S.line}`, padding: "7px 0", fontSize: 13.5 }}>{isDone(null, "vat_paid") ? "✅" : "⬜"} DPH prijavljen i plaćen</div>
+        <div style={{ borderTop: `1px solid ${S.line}`, padding: "7px 0", fontSize: 13.5 }}>{isDone(null, "vat_paid") ? "✅" : "⬜"} {tr("DPH prijavljen i plaćen")}</div>
         <div style={{ marginTop: 8, fontWeight: 700, color: doneObjs.length === objs.length ? S.green : S.amber }}>
-          {doneObjs.length === objs.length ? "Mjesec je zatvoren za sve objekte. 🎉" : `Zatvoreno ${doneObjs.length} od ${objs.length} objekata — klikni na objekt da nastaviš.`}
+          {doneObjs.length === objs.length ? tr("Mjesec je zatvoren za sve objekte. 🎉") : tr("Zatvoreno {0} od {1} objekata — klikni na objekt da nastaviš.", doneObjs.length, objs.length)}
         </div>
-        <Btn kind="ghost" onClick={onClose} style={{ width: "100%", marginTop: 10 }}>Natrag na Danas</Btn>
+        <Btn kind="ghost" onClick={onClose} style={{ width: "100%", marginTop: 10 }}>{tr("Natrag na Danas")}</Btn>
       </>
     );
   }
@@ -3268,7 +3274,7 @@ function MonthClose({ data, api, initialMonth, onClose, onOpenObject, onOpenWork
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
           <Btn small kind="ghost" onClick={onClose}>✕</Btn>
           <div style={{ textAlign: "center" }}>
-            <div style={{ fontWeight: 800 }}>✅ Zatvaranje mjeseca</div>
+            <div style={{ fontWeight: 800 }}>{tr("✅ Zatvaranje mjeseca")}</div>
             <div style={{ display: "flex", alignItems: "center", gap: 6, justifyContent: "center", fontSize: 13 }}>
               <button onClick={() => shiftMo(-1)} style={{ background: "none", border: "none", cursor: "pointer", fontWeight: 800 }}>‹</button>
               {label}
@@ -3287,8 +3293,8 @@ function MonthClose({ data, api, initialMonth, onClose, onOpenObject, onOpenWork
       </Card>
       <Card>{body}</Card>
       <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
-        <Btn kind="ghost" onClick={() => setIdx(Math.max(0, idx - 1))} disabled={idx === 0} style={{ flex: 1 }}>◀ Natrag</Btn>
-        <Btn kind="ghost" onClick={() => setIdx(Math.min(steps.length - 1, idx + 1))} disabled={idx >= steps.length - 1} style={{ flex: 1 }}>Preskoči ▶</Btn>
+        <Btn kind="ghost" onClick={() => setIdx(Math.max(0, idx - 1))} disabled={idx === 0} style={{ flex: 1 }}>{tr("◀ Natrag")}</Btn>
+        <Btn kind="ghost" onClick={() => setIdx(Math.min(steps.length - 1, idx + 1))} disabled={idx >= steps.length - 1} style={{ flex: 1 }}>{tr("Preskoči ▶")}</Btn>
       </div>
     </div>
   );
@@ -3804,8 +3810,8 @@ function ObjectsTab({ data, api, onOpenObject }) {
         if (!pages.some((p) => p.length > 0)) {
           // nema teksta u PDF-u (vjerojatno skenirano/fotografirano) — pokušaj OCR (čitanje sa slike)
           usedOcr = true;
-          setInvOcrStatus(`🔍 OCR čita: ${file.name}…`);
-          pages = await ocrPdfPages(file, (p, total) => setInvOcrStatus(`🔍 OCR čita: ${file.name} (stranica ${p}/${total})…`));
+          setInvOcrStatus(tr("🔍 OCR čita: {0}…", file.name));
+          pages = await ocrPdfPages(file, (p, total) => setInvOcrStatus(tr("🔍 OCR čita: {0} (stranica {1}/{2})…", file.name, p, total)));
           setInvOcrStatus("");
         }
         const invoiceChunks = splitPdfInvoices(pages);
@@ -4109,7 +4115,7 @@ function DirectoryTab({ data, api, onOpen }) {
 /* ================================================================== */
 function ProfileDetail({ profile, data, api, onBack }) {
   const [payForm, setPayForm] = useState({ amount: "", cur: "EUR", date: todayISO(), note: "" });
-  const monthLabel = (mk) => `${MONTHS[Number(mk.slice(5, 7)) - 1]} ${mk.slice(0, 4)}.`;
+  const monthLabel = (mk) => `${mName(Number(mk.slice(5, 7)) - 1)} ${mk.slice(0, 4)}.`;
   const myObjIds = [...new Set((data.objectMembers || []).filter((m) => m.user_id === profile.id).map((m) => m.object_id))];
   const myObjects = myObjIds.map((oid) => data.objects.find((o) => o.id === oid)).filter(Boolean).sort((a, b) => a.name.localeCompare(b.name, "hr"));
   const rateFor = (objId) => {
@@ -4151,28 +4157,28 @@ function ProfileDetail({ profile, data, api, onBack }) {
 
   return (
     <>
-      <button onClick={onBack} style={{ background: "none", border: "none", color: S.green, fontWeight: 700, fontSize: 14.5, padding: "2px 0 12px", cursor: "pointer" }}>← Natrag</button>
+      <button onClick={onBack} style={{ background: "none", border: "none", color: S.green, fontWeight: 700, fontSize: 14.5, padding: "2px 0 12px", cursor: "pointer" }}>{tr("← Natrag")}</button>
 
       <Card>
-        <div style={{ fontSize: 19, fontWeight: 800 }}>{profile.role === "admin" ? "👑 " : ""}{profile.name || "(bez imena)"}</div>
+        <div style={{ fontSize: 19, fontWeight: 800 }}>{profile.role === "admin" ? "👑 " : ""}{profile.name || tr("(bez imena)")}</div>
         <div style={{ color: S.sub, fontSize: 13.5, marginTop: 3 }}>
-          {profile.role === "admin" ? "Admin" : "Zaposlenik"}{myObjects.length > 0 ? " · " + myObjects.map((o) => o.name).join(", ") : " · nema dodijeljenih objekata"}
+          {profile.role === "admin" ? tr("Admin") : tr("Zaposlenik")}{myObjects.length > 0 ? " · " + myObjects.map((o) => o.name).join(", ") : tr(" · nema dodijeljenih objekata")}
         </div>
         {Object.keys(grandTotals).length > 0 && (
           <div style={{ marginTop: 10, fontSize: 14, fontWeight: 700, color: S.green }}>
-            Ukupno zarađeno (sva vidljiva povijest): {Object.entries(grandTotals).map(([c, v]) => money(v, c)).join(" + ")}
+            {tr("Ukupno zarađeno (sva vidljiva povijest):")}{" "}{Object.entries(grandTotals).map(([c, v]) => money(v, c)).join(" + ")}
           </div>
         )}
         {Object.keys(paidTotals).length > 0 && (
           <div style={{ marginTop: 4, fontSize: 13, color: S.sub }}>
-            Ukupno mu isplaćeno: {Object.entries(paidTotals).map(([c, v]) => money(v, c)).join(" + ")}
+            {tr("Ukupno mu isplaćeno:")}{" "}{Object.entries(paidTotals).map(([c, v]) => money(v, c)).join(" + ")}
           </div>
         )}
         {Object.values(owedTotals).some((v) => Math.abs(v) > 0.004) && (
           <div style={{ marginTop: 8, padding: "8px 10px", borderRadius: 10, background: Object.values(owedTotals).some((v) => v > 0) ? S.redSoft : S.greenSoft }}>
             {Object.entries(owedTotals).filter(([, v]) => Math.abs(v) > 0.004).map(([c, v]) => (
               <div key={c} style={{ fontWeight: 800, fontSize: 14, color: v > 0 ? S.red : S.green }}>
-                {v > 0 ? `Dugujem mu: ${money(v, c)}` : `Preplaćeno: ${money(-v, c)}`}
+                {v > 0 ? tr("Dugujem mu: {0}", money(v, c)) : tr("Preplaćeno: {0}", money(-v, c))}
               </div>
             ))}
           </div>
@@ -4181,15 +4187,15 @@ function ProfileDetail({ profile, data, api, onBack }) {
 
       {profile.role !== "admin" && (
         <Card style={{ marginTop: 10 }}>
-          <div style={{ fontWeight: 700, marginBottom: 8 }}>💸 Upiši isplatu (koliko sam mu dao)</div>
+          <div style={{ fontWeight: 700, marginBottom: 8 }}>{tr("💸 Upiši isplatu (koliko sam mu dao)")}</div>
           <div style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 6 }}>
             <input inputMode="decimal" value={payForm.amount} onChange={(e) => setPayForm((f) => ({ ...f, amount: e.target.value }))}
-              placeholder="Iznos" style={{ flex: 1 }} />
+              placeholder={tr("Iznos")} style={{ flex: 1 }} />
             <CurChips small value={payForm.cur} onChange={(v) => setPayForm((f) => ({ ...f, cur: v }))} />
           </div>
           <input type="date" value={payForm.date} onChange={(e) => setPayForm((f) => ({ ...f, date: e.target.value }))} style={{ marginBottom: 6 }} />
-          <input value={payForm.note} onChange={(e) => setPayForm((f) => ({ ...f, note: e.target.value }))} placeholder="Napomena (opcionalno)" style={{ marginBottom: 8 }} />
-          <Btn small onClick={savePayout} style={{ width: "100%" }}>Spremi isplatu</Btn>
+          <input value={payForm.note} onChange={(e) => setPayForm((f) => ({ ...f, note: e.target.value }))} placeholder={tr("Napomena (opcionalno)")} style={{ marginBottom: 8 }} />
+          <Btn small onClick={savePayout} style={{ width: "100%" }}>{tr("Spremi isplatu")}</Btn>
 
           {myPayouts.length > 0 && (
             <div style={{ marginTop: 10, borderTop: `1px solid ${S.line}`, paddingTop: 6 }}>
@@ -4199,7 +4205,7 @@ function ProfileDetail({ profile, data, api, onBack }) {
                     {fmtDate(c.payDate)}{c.note ? " · " + c.note : ""}
                   </span>
                   <span className="num" style={{ fontWeight: 700 }}>{money(c.amount, c.currency)}</span>
-                  <button onClick={() => api.delCommissionPayout(c, profile.name)} title="Obriši" style={{ background: "none", border: "none", color: S.red, fontSize: 15, cursor: "pointer", padding: 2 }}>✕</button>
+                  <button onClick={() => api.delCommissionPayout(c, profile.name)} title={tr("Obriši")} style={{ background: "none", border: "none", color: S.red, fontSize: 15, cursor: "pointer", padding: 2 }}>✕</button>
                 </div>
               ))}
             </div>
@@ -4209,11 +4215,11 @@ function ProfileDetail({ profile, data, api, onBack }) {
 
       {profile.role === "admin" ? (
         <Card style={{ marginTop: 10 }}>
-          <div style={{ color: S.sub, fontSize: 13.5 }}>Admin nema proviziju po satu.</div>
+          <div style={{ color: S.sub, fontSize: 13.5 }}>{tr("Admin nema proviziju po satu.")}</div>
         </Card>
       ) : monthRows.length === 0 ? (
         <Card style={{ marginTop: 10 }}>
-          <Empty text="Još nema odrađenih sati na dodijeljenim objektima." />
+          <Empty text={tr("Još nema odrađenih sati na dodijeljenim objektima.")} />
         </Card>
       ) : (
         monthRows.map((m) => (
@@ -4267,7 +4273,7 @@ function WorkerDetail({ worker, data, api, onBack }) {
     const files = Array.from(e.target.files || []);
     setDocErr("");
     for (const f of files) {
-      if (f.size > 10 * 1024 * 1024) { setDocErr(`"${f.name}" je veća od 10 MB.`); continue; }
+      if (f.size > 10 * 1024 * 1024) { setDocErr(tr("\"{0}\" je veća od 10 MB.", f.name)); continue; }
       const { error } = await supabase.storage.from("docs").upload(`${worker.id}/${Date.now()}_${f.name}`, f);
       if (error) setDocErr(error.message);
     }
@@ -4281,7 +4287,7 @@ function WorkerDetail({ worker, data, api, onBack }) {
   };
   const delDoc = async (f) => {
     const { error } = await supabase.storage.from("docs").remove([`${worker.id}/${f.name}`]);
-    if (error) { setDocErr("Brisanje dokumenata može samo admin."); return; }
+    if (error) { setDocErr(tr("Brisanje dokumenata može samo admin.")); return; }
     await api.logDoc(`Obrisao dokument radnika ${worker.name}`);
     setViewer(null);
     await loadDocs();
@@ -4577,7 +4583,7 @@ function ObjectDetail({ object, data, api, onBack, onOpenWorker }) {
     const files = Array.from(e.target.files || []);
     setInvErr("");
     for (const f of files) {
-      if (f.size > 15 * 1024 * 1024) { setInvErr(`"${f.name}" je veća od 15 MB.`); continue; }
+      if (f.size > 15 * 1024 * 1024) { setInvErr(tr("\"{0}\" je veća od 15 MB.", f.name)); continue; }
       const { error } = await supabase.storage.from("invoices").upload(`${object.id}/${Date.now()}_${f.name}`, f);
       if (error) setInvErr(error.message);
     }
@@ -4865,7 +4871,7 @@ function ObjectDetail({ object, data, api, onBack, onOpenWorker }) {
         <Card style={{ background: S.blueSoft, borderColor: "#CBDCEA", padding: "10px 14px" }}>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
             <Btn small kind="ghost" onClick={prevM}>←</Btn>
-            <div style={{ fontWeight: 800 }}>{MONTHS[mm - 1]} {my}.</div>
+            <div style={{ fontWeight: 800 }}>{mName(mm - 1)} {my}.</div>
             <Btn small kind="ghost" onClick={nextM}>→</Btn>
           </div>
         </Card>
@@ -4893,7 +4899,7 @@ function ObjectDetail({ object, data, api, onBack, onOpenWorker }) {
           <>
           {section === "pregled" && (
           <Card style={{ background: S.amberSoft, borderColor: "#EBD9B4" }}>
-            <div style={{ fontWeight: 800, fontSize: 15, marginBottom: 10 }}>{tr("💶 Naplata i dobit —")}{" "}{MONTHS[mm - 1]} {my}.</div>
+            <div style={{ fontWeight: 800, fontSize: 15, marginBottom: 10 }}>{tr("💶 Naplata i dobit —")}{" "}{mName(mm - 1)} {my}.</div>
             {(() => {
               const revE = rv.revenue, revK = rv.revenueKc;
               const profitE = round2(revE - costE - extraCost - brigadeCostE);
@@ -5128,7 +5134,7 @@ function ObjectDetail({ object, data, api, onBack, onOpenWorker }) {
         const tot = round2(rows2.reduce((s, r) => s + r.h, 0));
         return (
           <Card>
-            <div style={{ fontWeight: 800, fontSize: 15, marginBottom: 6 }}>{tr("👷 Radnici i sati —")}{" "}{MONTHS[mm - 1]} {my}.</div>
+            <div style={{ fontWeight: 800, fontSize: 15, marginBottom: 6 }}>{tr("👷 Radnici i sati —")}{" "}{mName(mm - 1)} {my}.</div>
             {rows2.map((r) => (
               <div key={r.w.id} className="num" style={{ display: "flex", justifyContent: "space-between", padding: "5px 0", borderBottom: `1px solid ${S.line}`, fontSize: 13.5 }}>
                 <span onClick={() => onOpenWorker && onOpenWorker(r.w.id)} style={{ fontWeight: 600, cursor: onOpenWorker ? "pointer" : "default", color: onOpenWorker ? S.blue : "inherit" }}>
@@ -5269,7 +5275,7 @@ function ObjectDetail({ object, data, api, onBack, onOpenWorker }) {
               </div>
               <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
                 <Btn small kind="ghost" onClick={() => setVolnoMonth(prevMonthKey(volnoMonth))}>←</Btn>
-                <div style={{ fontWeight: 700, fontSize: 13.5, minWidth: 104, textAlign: "center" }}>{MONTHS[Number(volnoMonth.slice(5)) - 1]} {volnoMonth.slice(0, 4)}.</div>
+                <div style={{ fontWeight: 700, fontSize: 13.5, minWidth: 104, textAlign: "center" }}>{mName(Number(volnoMonth.slice(5)) - 1)} {volnoMonth.slice(0, 4)}.</div>
                 <Btn small kind="ghost" onClick={() => { const [yy, m2] = volnoMonth.split("-").map(Number); setVolnoMonth(m2 === 12 ? `${yy + 1}-01` : `${yy}-${String(m2 + 1).padStart(2, "0")}`); }}>→</Btn>
               </div>
               <Btn small kind="excel" onClick={exportNeplaceneVolno}>{tr("⬇ Excel")}</Btn>
@@ -5299,7 +5305,7 @@ function ObjectDetail({ object, data, api, onBack, onOpenWorker }) {
           <Card style={{ background: S.blueSoft, borderColor: "#CBDCEA", padding: "10px 14px" }}>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
               <Btn small kind="ghost" onClick={prevM}>←</Btn>
-              <div style={{ fontWeight: 800 }}>{MONTHS[mm - 1]} {my}.</div>
+              <div style={{ fontWeight: 800 }}>{mName(mm - 1)} {my}.</div>
               <Btn small kind="ghost" onClick={nextM}>→</Btn>
             </div>
           </Card>
@@ -5417,7 +5423,7 @@ function ObjectDetail({ object, data, api, onBack, onOpenWorker }) {
 
       {entries.length > 0 && (
         <Card>
-          <div style={{ fontWeight: 700, marginBottom: 8 }}>{tr("Upisi —")}{" "}{mode === "day" ? fmtDate(date) : `${MONTHS[mm - 1]} ${my}.`}</div>
+          <div style={{ fontWeight: 700, marginBottom: 8 }}>{tr("Upisi —")}{" "}{mode === "day" ? fmtDate(date) : `${mName(mm - 1)} ${my}.`}</div>
           {entries.map((l) => (
             <div key={l.id} style={{ borderBottom: `1px solid ${S.line}` }}>
               <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 0" }}>
@@ -5816,7 +5822,7 @@ function PaymentsTab({ data, api, onOpenWorker }) {
             const t = tagStyle(p);
             return (
               <div key={p.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 0", borderBottom: `1px solid ${S.line}` }}>
-                <Tag color={t.color} bg={t.bg}>{TYPE_LABEL[p.type] || p.type}</Tag>
+                <Tag color={t.color} bg={t.bg}>{tr(TYPE_LABEL[p.type] || p.type)}</Tag>
                 <div style={{ flex: 1 }}>
                   <div onClick={() => p.workerId && onOpenWorker && onOpenWorker(p.workerId)}
                     style={{ fontWeight: 600, fontSize: 14, cursor: p.workerId && onOpenWorker ? "pointer" : "default", color: p.workerId && onOpenWorker ? S.blue : "inherit" }}>
@@ -5983,7 +5989,7 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
           docs.push(`${f.name}: ${list.length} pásky${/oprav/i.test(f.name) ? " (oprava)" : ""}`);
         }
       }
-      if (!people.size) { setMzdyErr("Nisam našao nijednu výplatní pásku. Učitaj PDF s páskama (i opravu ako postoji)."); setMzdyBusy(false); return; }
+      if (!people.size) { setMzdyErr(tr("Nisam našao nijednu výplatní pásku. Učitaj PDF s páskama (i opravu ako postoji).")); setMzdyBusy(false); return; }
       const monthCounts = {};
       people.forEach((p) => { monthCounts[p.month] = (monthCounts[p.month] || 0) + 1; });
       const mo = Object.entries(monthCounts).sort((a, b) => b[1] - a[1])[0][0];
@@ -6011,7 +6017,7 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
       }).sort((a, b) => (a.workerId ? 0 : 1) - (b.workerId ? 0 : 1) || a.rawName.localeCompare(b.rawName, "hr"));
       setMzdyReview({ month: mo, rows, prikazy, docs, addReminders: prikazy.length > 0 });
     } catch (err) {
-      setMzdyErr("Ne mogu pročitati datoteku: " + (err.message || err));
+      setMzdyErr(tr("Ne mogu pročitati datoteku: ") + (err.message || err));
     }
     setMzdyBusy(false);
   };
@@ -6021,7 +6027,7 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
     const lastDay = `${mo}-${String(new Date(yy, mm, 0).getDate()).padStart(2, "0")}`;
     const nextMonth20 = (() => { const d = new Date(yy, mm, 20); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-20`; })();
     const rows = mzdyReview.rows.filter((r) => r.include && r.workerId && !r.locked);
-    if (!rows.length && !(mzdyReview.addReminders && mzdyReview.prikazy.length)) { setMzdyErr("Ništa nije odabrano za spremanje."); return; }
+    if (!rows.length && !(mzdyReview.addReminders && mzdyReview.prikazy.length)) { setMzdyErr(tr("Ništa nije odabrano za spremanje.")); return; }
     setMzdyBusy(true); setMzdyErr("");
     const uid = api.uid();
     const tag = `Dobírka (Mzdy PDF ${String(mm).padStart(2, "0")}/${yy})`;
@@ -6068,6 +6074,7 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
   const periodLogs = data.logs.filter((l) => (view === "month" ? inMonth : inYear)(l.date) && (objFilters.size === 0 || objFilters.has(l.objectId)));
   const periodBrigade = (data.brigadeCosts || []).filter((bg) => (view === "month" ? inMonth : inYear)(bg.date) && (objFilters.size === 0 || objFilters.has(bg.objectId)));
   const periodLabel = view === "month" ? `${MONTHS[m - 1]} ${y}.` : `${y}. godina`;
+  const periodLabelUi = view === "month" ? `${mName(m - 1)} ${y}.` : tr("{0}. godina", y);
 
   const totals = rows.reduce((t, r) => ({
     hours: round2(t.hours + r.hours), gross: round2(t.gross + r.gross),
@@ -6143,7 +6150,7 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
       profit = round2(revE - costE2 - extraOf("EUR"));
       profitKc = round2(revK - costK2 - extraOf("CZK"));
     }
-    last6.push({ label: MONTHS_SHORT[d.getMonth()], hours: hrs, profit, profitKc });
+    last6.push({ label: mShort(d.getMonth()), hours: hrs, profit, profitKc });
   }
 
   /* PDF obračun za radnika */
@@ -6171,7 +6178,7 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
     const iznos = [r.net !== 0 || r.czk.net === 0 ? eur(r.net) : "", r.czk.net !== 0 ? czk(r.czk.net) : ""].filter(Boolean).join(" i ");
     const text = `Obračun — ${r.w.name}\n${periodLabel}\nSati: ${fmtH(r.hours)}\nZa isplatu: ${iznos}`;
     if (navigator.share) { try { await navigator.share({ title: `Obračun ${r.w.name}`, text }); } catch {} }
-    else if (navigator.clipboard) { try { await navigator.clipboard.writeText(text); alert("Dijeljenje nije podržano u ovom pregledniku — sažetak je kopiran u međuspremnik."); } catch { alert(text); } }
+    else if (navigator.clipboard) { try { await navigator.clipboard.writeText(text); alert(tr("Dijeljenje nije podržano u ovom pregledniku — sažetak je kopiran u međuspremnik.")); } catch { alert(text); } }
     else alert(text);
   };
   const printAllPayslips = () => {
@@ -6351,14 +6358,14 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
       </div>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
         <Btn small kind="ghost" onClick={view === "month" ? prev : () => setMonth(`${y - 1}-${String(m).padStart(2, "0")}`)}>←</Btn>
-        <div style={{ fontWeight: 800, fontSize: 16.5 }}>{periodLabel}</div>
+        <div style={{ fontWeight: 800, fontSize: 16.5 }}>{periodLabelUi}</div>
         <Btn small kind="ghost" onClick={view === "month" ? next : () => setMonth(`${y + 1}-${String(m).padStart(2, "0")}`)}>→</Btn>
       </div>
 
       {admin && (
         <Card style={{ marginBottom: 12 }}>
           <div onClick={() => setShowPayoutCal(!showPayoutCal)} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", cursor: "pointer" }}>
-            <div style={{ fontWeight: 700 }}>📅 Pregled isplata (zadnjih 6 mjeseci)</div>
+            <div style={{ fontWeight: 700 }}>{tr("📅 Pregled isplata (zadnjih 6 mjeseci)")}</div>
             <span style={{ fontWeight: 700, color: S.sub }}>{showPayoutCal ? "▲" : "▼"}</span>
           </div>
           {showPayoutCal && (() => {
@@ -6367,14 +6374,14 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
             const relevantIds = new Set(data.logs.filter((l) => months.includes(monthKey(l.date))).map((l) => l.workerId));
             const ws = sortedWorkers(data.workers.filter((w) => relevantIds.has(w.id)));
             return ws.length === 0 ? (
-              <div style={{ fontSize: 12.5, color: S.sub, marginTop: 8 }}>Nema radnika sa satima u zadnjih 6 mjeseci.</div>
+              <div style={{ fontSize: 12.5, color: S.sub, marginTop: 8 }}>{tr("Nema radnika sa satima u zadnjih 6 mjeseci.")}</div>
             ) : (
               <div style={{ overflowX: "auto", marginTop: 10 }}>
                 <table className="num" style={{ borderCollapse: "collapse", width: "100%", fontSize: 12 }}>
                   <thead>
                     <tr>
-                      <th style={{ textAlign: "left", padding: "3px 6px", position: "sticky", left: 0, background: S.card }}>Radnik</th>
-                      {months.map((mo) => <th key={mo} style={{ padding: "3px 4px", fontWeight: 700 }}>{MONTHS_SHORT[Number(mo.slice(5, 7)) - 1]}</th>)}
+                      <th style={{ textAlign: "left", padding: "3px 6px", position: "sticky", left: 0, background: S.card }}>{tr("Radnik")}</th>
+                      {months.map((mo) => <th key={mo} style={{ padding: "3px 4px", fontWeight: 700 }}>{mShort(Number(mo.slice(5, 7)) - 1)}</th>)}
                     </tr>
                   </thead>
                   <tbody>
@@ -6400,7 +6407,7 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
                     ))}
                   </tbody>
                 </table>
-                <div style={{ fontSize: 11.5, color: S.sub, marginTop: 8 }}>✓ zeleno = odobreno i zaključano · ⏳ žuto = predloženo, čeka odobrenje · ✕ crveno = ima sati, ništa predloženo · prazno = nema sati taj mjesec</div>
+                <div style={{ fontSize: 11.5, color: S.sub, marginTop: 8 }}>{tr("✓ zeleno = odobreno i zaključano · ⏳ žuto = predloženo, čeka odobrenje · ✕ crveno = ima sati, ništa predloženo · prazno = nema sati taj mjesec")}</div>
               </div>
             );
           })()}
@@ -6443,7 +6450,7 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
       {admin && view === "month" && (
         <div style={{ marginBottom: 12 }}>
           <Btn small kind="ghost" onClick={() => mzdyFileRef.current?.click()} disabled={mzdyBusy}>
-            {mzdyBusy ? "Čitam datoteke…" : "📄 Učitaj Mzdy (PDF-ovi od knjigovođe)"}
+            {mzdyBusy ? tr("Čitam datoteke…") : tr("📄 Učitaj Mzdy (PDF-ovi od knjigovođe)")}
           </Btn>
           <input ref={mzdyFileRef} type="file" accept="application/pdf" multiple onChange={handleMzdyFile} style={{ display: "none" }} />
           {mzdyErr && <div style={{ color: S.red, fontSize: 12.5, marginTop: 6 }}>{mzdyErr}</div>}
@@ -6457,14 +6464,14 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
         return (
         <div style={{ position: "fixed", inset: 0, background: "rgba(10,14,12,.92)", zIndex: 60, overflowY: "auto", padding: "20px 12px 40px" }}>
           <div style={{ maxWidth: 560, margin: "0 auto", background: "#fff", borderRadius: 14, padding: 18 }}>
-            <div style={{ fontWeight: 800, fontSize: 17, marginBottom: 4 }}>📄 Mzdy — provjera prije spremanja</div>
+            <div style={{ fontWeight: 800, fontSize: 17, marginBottom: 4 }}>{tr("📄 Mzdy — provjera prije spremanja")}</div>
             <div style={{ fontSize: 12.5, color: S.sub, marginBottom: 10 }}>
-              Na kovertu se oduzima <b>soc.-zdr.</b> (puno radno vrijeme {czk(SOCZDR_FULL)}, pola {czk(SOCZDR_HALF)}, DPČ 0) i <b>na račun</b> (Dobírka iz pásky). Svaki iznos možeš ispraviti.
+              {tr("Na kovertu se oduzima")}{" "}<b>{tr("soc.-zdr.")}</b> {tr("(puno radno vrijeme")}{" "}{czk(SOCZDR_FULL)}{tr(", pola")}{" "}{czk(SOCZDR_HALF)}{tr(", DPČ 0) i")}{" "}<b>{tr("na račun")}</b> {tr("(Dobírka iz pásky). Svaki iznos možeš ispraviti.")}
             </div>
             <div style={{ background: S.bg, borderRadius: 10, padding: "8px 10px", fontSize: 12, color: S.sub, marginBottom: 12 }}>
               {mzdyReview.docs.map((d, i) => <div key={i}>✓ {d}</div>)}
             </div>
-            <Field label="Mjesec">
+            <Field label={tr("Mjesec")}>
               <input type="month" value={mzdyReview.month} onChange={(e) => setMzdyReview({ ...mzdyReview, month: e.target.value })} />
             </Field>
             {mzdyReview.rows.map((row, i) => (
@@ -6472,45 +6479,45 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
                 <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
                   <input type="checkbox" checked={row.include} disabled={row.locked || !row.workerId} onChange={(e) => setRow(i, { include: e.target.checked })} style={{ width: 18, height: 18 }} />
                   <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontWeight: 700, fontSize: 14.5 }}>{row.rawName} {row.corrected && <Tag color={S.blue} bg={S.blueSoft}>oprava</Tag>}</div>
+                    <div style={{ fontWeight: 700, fontSize: 14.5 }}>{row.rawName} {row.corrected && <Tag color={S.blue} bg={S.blueSoft}>{tr("oprava")}</Tag>}</div>
                     <div className="num" style={{ fontSize: 12, color: S.sub }}>
-                      {row.kat}{row.tarif ? ` · tarif ${czk(row.tarif)} (${row.tarif >= FULL_TARIF ? "puno" : "pola"} radno vrijeme)` : ""}
+                      {row.kat}{row.tarif ? tr(" · tarif {0} ({1} radno vrijeme)", czk(row.tarif), row.tarif >= FULL_TARIF ? tr("puno") : tr("pola")) : ""}
                     </div>
                   </div>
                 </div>
-                <Field label="Radnik u aplikaciji">
+                <Field label={tr("Radnik u aplikaciji")}>
                   <select value={row.workerId} onChange={(e) => {
                     const wk = data.workers.find((x) => x.id === e.target.value);
                     const cur = wk ? wCur(wk) : "CZK";
                     const toCur = (v) => String(cur === row.currency ? v : cur === "CZK" ? round2((parseNum(v) || 0) * czkRate) : round2((parseNum(v) || 0) / czkRate));
                     setRow(i, { workerId: e.target.value, currency: cur, socZdr: toCur(row.socZdr), bank: toCur(row.bank), include: !!e.target.value && !row.locked });
                   }}>
-                    <option value="">— nije prepoznat, odaberi ručno —</option>
-                    {sortedWorkers(data.workers).map((w) => <option key={w.id} value={w.id}>{w.name}{w.archived ? " (bivši)" : ""}</option>)}
+                    <option value="">{tr("— nije prepoznat, odaberi ručno —")}</option>
+                    {sortedWorkers(data.workers).map((w) => <option key={w.id} value={w.id}>{w.name}{w.archived ? tr(" (bivši)") : ""}</option>)}
                   </select>
                 </Field>
                 <div style={{ display: "flex", gap: 8 }}>
                   <div style={{ flex: 1 }}>
-                    <Field label={`soc.-zdr. (${row.currency === "CZK" ? "Kč" : "€"})`}>
+                    <Field label={tr("soc.-zdr. ({0})", row.currency === "CZK" ? "Kč" : "€")}>
                       <input inputMode="decimal" value={row.socZdr} onChange={(e) => setRow(i, { socZdr: e.target.value })} />
                     </Field>
                   </div>
                   <div style={{ flex: 1 }}>
-                    <Field label={`Na račun (${row.currency === "CZK" ? "Kč" : "€"})`}>
+                    <Field label={tr("Na račun ({0})", row.currency === "CZK" ? "Kč" : "€")}>
                       <input inputMode="decimal" value={row.bank} disabled={!row.addBank} onChange={(e) => setRow(i, { bank: e.target.value })} />
                     </Field>
                   </div>
                 </div>
                 <label style={{ display: "flex", alignItems: "center", gap: 7, fontSize: 12.5, cursor: "pointer" }}>
                   <input type="checkbox" checked={row.addBank} onChange={(e) => setRow(i, { addBank: e.target.checked })} style={{ width: 16, height: 16 }} />
-                  Upiši "na račun" iz pásky
+                  {tr("Upiši \"na račun\" iz pásky")}
                 </label>
                 {row.warn.map((w, k) => <div key={k} style={{ fontSize: 12, color: S.amber, marginTop: 4 }}>⚠️ {w}</div>)}
               </div>
             ))}
             {mzdyReview.prikazy.length > 0 && (
               <div style={{ border: `1px solid ${S.line}`, borderRadius: 12, padding: "10px 12px", marginBottom: 10 }}>
-                <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 6 }}>🏦 Příkazy k úhradě</div>
+                <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 6 }}>{tr("🏦 Příkazy k úhradě")}</div>
                 {mzdyReview.prikazy.map((p, k) => (
                   <div key={k} className="num" style={{ display: "flex", justifyContent: "space-between", fontSize: 13, padding: "3px 0" }}>
                     <span>{p.to} · {p.label}</span><b>{czk(p.amount)}</b>
@@ -6518,26 +6525,26 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
                 ))}
                 <label style={{ display: "flex", alignItems: "center", gap: 7, fontSize: 12.5, cursor: "pointer", marginTop: 6 }}>
                   <input type="checkbox" checked={mzdyReview.addReminders} onChange={(e) => setMzdyReview({ ...mzdyReview, addReminders: e.target.checked })} style={{ width: 16, height: 16 }} />
-                  Dodaj podsjetnike za plaćanje (rok 20. idućeg mjeseca)
+                  {tr("Dodaj podsjetnike za plaćanje (rok 20. idućeg mjeseca)")}
                 </label>
               </div>
             )}
             <div className="num" style={{ background: S.greenSoft, borderRadius: 10, padding: "8px 12px", fontSize: 13, marginBottom: 10 }}>
-              Spremit će se za <b>{chosen.length}</b> radnika: soc.-zdr. <b>{czk(sumBy("socZdr"))}</b> · na račun <b>{czk(chosen.filter((r) => r.addBank).reduce((s, r) => s + (r.currency === "CZK" ? (parseNum(r.bank) || 0) : 0), 0))}</b>
+              {tr("Spremit će se za")}{" "}<b>{chosen.length}</b> {tr("radnika: soc.-zdr.")}{" "}<b>{czk(sumBy("socZdr"))}</b> {tr("· na račun")}{" "}<b>{czk(chosen.filter((r) => r.addBank).reduce((s, r) => s + (r.currency === "CZK" ? (parseNum(r.bank) || 0) : 0), 0))}</b>
             </div>
             {mzdyErr && (
               <div style={{ background: S.redSoft, color: S.red, borderRadius: 8, padding: "8px 10px", fontSize: 12.5, fontWeight: 600, marginBottom: 8 }}>{mzdyErr}</div>
             )}
             <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
-              <Btn onClick={saveMzdyReview} disabled={mzdyBusy} style={{ flex: 1 }}>{mzdyBusy ? "Spremam…" : "💾 Spremi"}</Btn>
-              <Btn kind="ghost" onClick={() => { setMzdyReview(null); setMzdyErr(""); }}>Odustani</Btn>
+              <Btn onClick={saveMzdyReview} disabled={mzdyBusy} style={{ flex: 1 }}>{mzdyBusy ? tr("Spremam…") : tr("💾 Spremi")}</Btn>
+              <Btn kind="ghost" onClick={() => { setMzdyReview(null); setMzdyErr(""); }}>{tr("Odustani")}</Btn>
             </div>
           </div>
         </div>
         );
       })()}
 
-      {rows.length === 0 ? <Empty text={objFilters.size > 0 ? `Za ${objFilterName} u ovom razdoblju nema upisanih sati.` : "Za ovo razdoblje nema upisanih sati ni isplata."} /> : (
+      {rows.length === 0 ? <Empty text={objFilters.size > 0 ? tr("Za {0} u ovom razdoblju nema upisanih sati.", objFilterName) : tr("Za ovo razdoblje nema upisanih sati ni isplata.")} /> : (
         <>
           {view === "month" && (
             <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
@@ -6550,20 +6557,20 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
           <div style={{ display: "flex", gap: 8, marginBottom: 4, flexWrap: "wrap" }}>
             <Btn kind="excel" onClick={exportExcel} style={{ flex: 1 }}>📊 {api.t("excelBtn")}{objFilterName ? " — " + objFilterName : ""}{exportScopeLabel ? " — " + exportScopeLabel : ""}</Btn>
             <Btn kind="ghost" onClick={() => printEnvelopes(exportTargetRows)} style={{ flex: 1, fontWeight: 700 }}>🖨 {api.t("envelopesBtn")}{objFilterName ? " — " + objFilterName : ""}{exportScopeLabel ? " — " + exportScopeLabel : ""}</Btn>
-            <Btn kind="ghost" onClick={printAllPayslips} style={{ flex: 1, fontWeight: 700 }}>🖨 Svi PDF obračuni{objFilterName ? " — " + objFilterName : ""}{exportScopeLabel ? " — " + exportScopeLabel : ""}</Btn>
+            <Btn kind="ghost" onClick={printAllPayslips} style={{ flex: 1, fontWeight: 700 }}>{tr("🖨 Svi PDF obračuni")}{objFilterName ? " — " + objFilterName : ""}{exportScopeLabel ? " — " + exportScopeLabel : ""}</Btn>
           </div>
           <div style={{ fontSize: 11.5, color: S.sub, marginBottom: 12 }}>
             {selected.size > 0
-              ? `Excel/koverte/PDF iznad odnose se samo na ${selected.size} označenih radnika ispod.`
+              ? tr("Excel/koverte/PDF iznad odnose se samo na {0} označenih radnika ispod.", selected.size)
               : payStatusFilter !== "all"
-                ? `Excel/koverte/PDF iznad odnose se samo na filter "${PAY_STATUS_LABEL[payStatusFilter]}" — promijeni filter iznad (Svi/Isplaćeno/Predloženo/Bez isplate) ili označi radnike kvačicom ispod za drugačiji odabir.`
-                : "Označi radnike kvačicom ispod da Excel/koverte/PDF budu samo za njih — inače idu za sve prikazane."}
+                ? tr("Excel/koverte/PDF iznad odnose se samo na filter \"{0}\" — promijeni filter iznad (Svi/Isplaćeno/Predloženo/Bez isplate) ili označi radnike kvačicom ispod za drugačiji odabir.", PAY_STATUS_LABEL[payStatusFilter])
+                : tr("Označi radnike kvačicom ispod da Excel/koverte/PDF budu samo za njih — inače idu za sve prikazane.")}
           </div>
 
           {(totals.grossKc !== 0 || totals.netKc !== 0 || totals.firmKc !== 0) && (
             <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: S.sub, cursor: "pointer", justifyContent: "flex-end", margin: "0 2px 6px" }}>
               <input type="checkbox" checked={showCombinedEur} onChange={(e) => setShowCombinedEur(e.target.checked)} style={{ width: 15, height: 15 }} />
-              Prikaži i zbroj u € (tečaj {czkRate})
+              {tr("Prikaži i zbroj u € (tečaj")}{" "}{czkRate})
             </label>
           )}
           <Card style={{ background: S.ink, color: "#fff", border: "none" }}>
@@ -6572,32 +6579,32 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
               <div><div style={{ color: "#9DB3A8" }}>{api.t("earningsBonus")}</div>
                 <div className="num" style={{ fontSize: 18, fontWeight: 800 }}>{eur(round2(totals.gross + totals.bonus))}</div>
                 {round2(totals.grossKc + totals.bonusKc) !== 0 && <div className="num" style={{ fontSize: 13.5, fontWeight: 700 }}>{czk(round2(totals.grossKc + totals.bonusKc))}</div>}
-                {showCombinedEur && round2(totals.grossKc + totals.bonusKc) !== 0 && <div className="num" style={{ fontSize: 11.5, color: "#9DB3A8" }}>≈ {eur(round2(totals.gross + totals.bonus + (totals.grossKc + totals.bonusKc) / czkRate))} ukupno</div>}
+                {showCombinedEur && round2(totals.grossKc + totals.bonusKc) !== 0 && <div className="num" style={{ fontSize: 11.5, color: "#9DB3A8" }}>≈ {eur(round2(totals.gross + totals.bonus + (totals.grossKc + totals.bonusKc) / czkRate))} {tr("ukupno")}</div>}
               </div>
               <div><div style={{ color: "#9DB3A8" }}>{api.t("toPay")}</div>
                 <div className="num" style={{ fontSize: 18, fontWeight: 800, color: "#7FD6B4" }}>{eur(totals.net)}</div>
-                {totals.netKc !== 0 && <div className="num" style={{ fontSize: 13.5, fontWeight: 700, color: "#7FD6B4" }}>{totals.netKc > 0 ? "" : "−"}{czk(Math.abs(totals.netKc))} u Kč</div>}
-                {showCombinedEur && totals.netKc !== 0 && <div className="num" style={{ fontSize: 11.5, color: "#9DB3A8" }}>≈ {eur(round2(totals.net + totals.netKc / czkRate))} ukupno</div>}
+                {totals.netKc !== 0 && <div className="num" style={{ fontSize: 13.5, fontWeight: 700, color: "#7FD6B4" }}>{totals.netKc > 0 ? "" : "−"}{czk(Math.abs(totals.netKc))} {tr("u Kč")}</div>}
+                {showCombinedEur && totals.netKc !== 0 && <div className="num" style={{ fontSize: 11.5, color: "#9DB3A8" }}>≈ {eur(round2(totals.net + totals.netKc / czkRate))} {tr("ukupno")}</div>}
               </div>
               <div><div style={{ color: "#9DB3A8" }}>{api.t("firmCosts")}</div>
                 <div className="num" style={{ fontSize: 18, fontWeight: 800 }}>{eur(round2(totals.firm + objCostsTotal))}</div>
                 {round2(totals.firmKc + objCostsTotalKc) !== 0 && <div className="num" style={{ fontSize: 13.5, fontWeight: 700 }}>{czk(round2(totals.firmKc + objCostsTotalKc))}</div>}
-                {showCombinedEur && round2(totals.firmKc + objCostsTotalKc) !== 0 && <div className="num" style={{ fontSize: 11.5, color: "#9DB3A8" }}>≈ {eur(round2(totals.firm + objCostsTotal + (totals.firmKc + objCostsTotalKc) / czkRate))} ukupno</div>}
+                {showCombinedEur && round2(totals.firmKc + objCostsTotalKc) !== 0 && <div className="num" style={{ fontSize: 11.5, color: "#9DB3A8" }}>≈ {eur(round2(totals.firm + objCostsTotal + (totals.firmKc + objCostsTotalKc) / czkRate))} {tr("ukupno")}</div>}
               </div>
             </div>
           </Card>
 
           {/* grafovi */}
           <Card>
-            <div style={{ fontWeight: 700, marginBottom: 4 }}>📈 Sati — zadnjih 6 mjeseci</div>
+            <div style={{ fontWeight: 700, marginBottom: 4 }}>{tr("📈 Sati — zadnjih 6 mjeseci")}</div>
             <MiniBars items={last6.map((x) => ({ label: x.label, value: x.hours }))} fmt={(v) => Math.round(v)} color={S.blue} />
             {admin && (
               <>
-                <div style={{ fontWeight: 700, margin: "12px 0 4px", color: S.amber }}>👑 Dobit u € — zadnjih 6 mjeseci</div>
+                <div style={{ fontWeight: 700, margin: "12px 0 4px", color: S.amber }}>{tr("👑 Dobit u € — zadnjih 6 mjeseci")}</div>
                 <MiniBars items={last6.map((x) => ({ label: x.label, value: x.profit }))} fmt={(v) => Math.round(v) + "€"} color={S.green} />
                 {last6.some((x) => x.profitKc !== 0) && (
                   <>
-                    <div style={{ fontWeight: 700, margin: "12px 0 4px", color: S.amber }}>👑 Dobit u Kč — zadnjih 6 mjeseci</div>
+                    <div style={{ fontWeight: 700, margin: "12px 0 4px", color: S.amber }}>{tr("👑 Dobit u Kč — zadnjih 6 mjeseci")}</div>
                     <MiniBars items={last6.map((x) => ({ label: x.label, value: x.profitKc }))} fmt={(v) => Math.round(v) + " Kč"} color={S.green} />
                   </>
                 )}
@@ -6607,17 +6614,17 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
 
           {admin && (
             <Card style={{ background: S.amberSoft, borderColor: "#EBD9B4" }}>
-              <div style={{ fontWeight: 700, color: S.amber, marginBottom: 8 }}>👑 Admin — dobit ({periodLabel})</div>
+              <div style={{ fontWeight: 700, color: S.amber, marginBottom: 8 }}>{tr("👑 Admin — dobit ({0})", periodLabelUi)}</div>
               <div className="num" style={{ fontSize: 14 }}>
-                <div style={{ display: "flex", justifyContent: "space-between", padding: "3px 0" }}><span>Naplata od objekata</span><b>{eur(totalRevenue)}{totalRevenueKc !== 0 ? " + " + czk(totalRevenueKc) : ""}</b></div>
-                <div style={{ display: "flex", justifyContent: "space-between", padding: "3px 0" }}><span>Plaće + bonusi + svi troškovi</span><b>−{eur(totalCost)}{totalCostKc !== 0 ? " − " + czk(totalCostKc) : ""}</b></div>
+                <div style={{ display: "flex", justifyContent: "space-between", padding: "3px 0" }}><span>{tr("Naplata od objekata")}</span><b>{eur(totalRevenue)}{totalRevenueKc !== 0 ? " + " + czk(totalRevenueKc) : ""}</b></div>
+                <div style={{ display: "flex", justifyContent: "space-between", padding: "3px 0" }}><span>{tr("Plaće + bonusi + svi troškovi")}</span><b>−{eur(totalCost)}{totalCostKc !== 0 ? " − " + czk(totalCostKc) : ""}</b></div>
                 <div style={{ borderTop: `1px dashed #EBD9B4`, paddingTop: 6 }}>
                   <div style={{ display: "flex", justifyContent: "space-between", fontWeight: 800, fontSize: 15.5 }}>
-                    <span>DOBIT (€)</span><span style={{ color: totalProfit >= 0 ? S.green : S.red }}>{eur(totalProfit)}</span>
+                    <span>{tr("DOBIT (€)")}</span><span style={{ color: totalProfit >= 0 ? S.green : S.red }}>{eur(totalProfit)}</span>
                   </div>
                   {(totalRevenueKc !== 0 || totalCostKc !== 0) && (
                     <div style={{ display: "flex", justifyContent: "space-between", fontWeight: 800, fontSize: 15.5 }}>
-                      <span>DOBIT (Kč)</span><span style={{ color: totalProfitKc >= 0 ? S.green : S.red }}>{czk(totalProfitKc)}</span>
+                      <span>{tr("DOBIT (Kč)")}</span><span style={{ color: totalProfitKc >= 0 ? S.green : S.red }}>{czk(totalProfitKc)}</span>
                     </div>
                   )}
                 </div>
@@ -6638,7 +6645,7 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
             if (!ranked.length) return null;
             return (
               <Card>
-                <div style={{ fontWeight: 700, marginBottom: 8 }}>🏆 Rang objekata po dobiti</div>
+                <div style={{ fontWeight: 700, marginBottom: 8 }}>{tr("🏆 Rang objekata po dobiti")}</div>
                 {ranked.map((r, i) => (
                   <div key={r.key} className="num" style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 0", borderBottom: `1px solid ${S.line}`, fontSize: 13.5 }}>
                     <span style={{ color: S.sub, width: 18 }}>{i + 1}.</span>
@@ -6649,7 +6656,7 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
                     </span>
                   </div>
                 ))}
-                <div style={{ fontSize: 11, color: S.sub, marginTop: 6 }}>Poredano po zbroju u €+Kč (po tečaju iz postavki, samo za rang — knjiži se odvojeno).</div>
+                <div style={{ fontSize: 11, color: S.sub, marginTop: 6 }}>{tr("Poredano po zbroju u €+Kč (po tečaju iz postavki, samo za rang — knjiži se odvojeno).")}</div>
               </Card>
             );
           })()}
@@ -6657,7 +6664,7 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
           {/* po objektima + naplata od hotela */}
           {byObject.size > 0 && (
             <Card style={{ background: S.blueSoft, borderColor: "#CBDCEA" }}>
-              <div style={{ fontWeight: 700, color: S.blue, marginBottom: 8 }}>🏨 Po objektima</div>
+              <div style={{ fontWeight: 700, color: S.blue, marginBottom: 8 }}>{tr("🏨 Po objektima")}</div>
               {["HR", "CZ", "__none__"].map((cGroup) => {
                 const entries = [...byObject.entries()].filter(([key]) => {
                   if (cGroup === "__none__") return key === "__none__";
@@ -6677,7 +6684,7 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
                     {cGroup !== "__none__" && (
                       <div className="num" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 0 3px", fontWeight: 800, fontSize: 13.5, color: S.blue }}>
                         <span>{FLAG[cGroup]} {COUNTRY_NAME[cGroup]}</span>
-                        <span>{fmtH(sub.hours)}{admin ? <> · dobit {[sub.revenue || sub.gross || sub.costs ? eur(subProfitE) : "", sub.revenueKc || sub.grossKc || sub.costsKc ? czk(subProfitK) : ""].filter(Boolean).join(" · ") || eur(0)}</> : null}</span>
+                        <span>{fmtH(sub.hours)}{admin ? <> {tr("· dobit")}{" "}{[sub.revenue || sub.gross || sub.costs ? eur(subProfitE) : "", sub.revenueKc || sub.grossKc || sub.costsKc ? czk(subProfitK) : ""].filter(Boolean).join(" · ") || eur(0)}</> : null}</span>
                       </div>
                     )}
                     {entries.map(([key, v]) => {
@@ -6688,14 +6695,14 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
                 return (
                   <div key={key} style={{ padding: "7px 0", borderBottom: `1px solid #CBDCEA` }}>
                     <div className="num" style={{ display: "flex", justifyContent: "space-between", fontSize: 14 }}>
-                      <span style={{ fontWeight: 600 }}>{key === "__none__" ? "Bez objekta" : objName(key)}</span>
-                      <span>{fmtH(v.hours)} · <b>{[v.gross ? eur(v.gross) : "", v.grossKc ? czk(v.grossKc) : ""].filter(Boolean).join(" + ") || eur(0)}</b>{(v.costs > 0 || v.costsKc > 0) ? <span style={{ color: S.red }}> · troškovi {[v.costs ? eur(v.costs) : "", v.costsKc ? czk(v.costsKc) : ""].filter(Boolean).join(" + ")}</span> : null}</span>
+                      <span style={{ fontWeight: 600 }}>{key === "__none__" ? tr("Bez objekta") : objName(key)}</span>
+                      <span>{fmtH(v.hours)} · <b>{[v.gross ? eur(v.gross) : "", v.grossKc ? czk(v.grossKc) : ""].filter(Boolean).join(" + ") || eur(0)}</b>{(v.costs > 0 || v.costsKc > 0) ? <span style={{ color: S.red }}> {tr("· troškovi")}{" "}{[v.costs ? eur(v.costs) : "", v.costsKc ? czk(v.costsKc) : ""].filter(Boolean).join(" + ")}</span> : null}</span>
                     </div>
                     {admin && key !== "__none__" && (
                       <>
                         <div className="num" style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, color: S.amber, fontWeight: 700 }}>
-                          <span>naplata {[v.revenue ? eur(v.revenue) : "", v.revenueKc ? czk(v.revenueKc) : ""].filter(Boolean).join(" + ") || eur(0)}</span>
-                          <span>dobit {[
+                          <span>{tr("naplata")}{" "}{[v.revenue ? eur(v.revenue) : "", v.revenueKc ? czk(v.revenueKc) : ""].filter(Boolean).join(" + ") || eur(0)}</span>
+                          <span>{tr("dobit")}{" "}{[
                             (v.revenue || v.gross || v.costs) ? eur(round2(v.revenue - v.gross - (v.costs || 0))) : "",
                             (v.revenueKc || v.grossKc || v.costsKc) ? czk(round2((v.revenueKc || 0) - (v.grossKc || 0) - (v.costsKc || 0))) : "",
                           ].filter(Boolean).join(" · ") || eur(0)}</span>
@@ -6703,23 +6710,23 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
                         {view === "month" && (
                           <div style={{ marginTop: 6 }}>
                             <div className="num" style={{ fontSize: 12.5, display: "flex", justifyContent: "space-between" }}>
-                              <span>uplaćeno: <b style={{ color: S.green }}>{money(paid, bcKey)}</b></span>
-                              <span>ostaje: <b style={{ color: due > 0 ? S.red : S.green }}>{money(Math.max(due, 0), bcKey)}</b></span>
+                              <span>{tr("uplaćeno:")}{" "}<b style={{ color: S.green }}>{money(paid, bcKey)}</b></span>
+                              <span>{tr("ostaje:")}{" "}<b style={{ color: due > 0 ? S.red : S.green }}>{money(Math.max(due, 0), bcKey)}</b></span>
                             </div>
                             {ups.map((p) => (
                               <div key={p.id} className="num" style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: S.sub, padding: "2px 0" }}>
-                                <span>{fmtDate(p.date)} · uplata {money(p.amount, bcKey)}</span>
+                                <span>{fmtDate(p.date)} {tr("· uplata")}{" "}{money(p.amount, bcKey)}</span>
                                 <button onClick={() => api.delInvoicePayment(p, objName(key))} style={{ background: "none", border: "none", color: S.red, cursor: "pointer" }}>✕</button>
                               </div>
                             ))}
                             <div style={{ display: "flex", gap: 6, marginTop: 4 }}>
-                              <input inputMode="decimal" placeholder={bcKey === "CZK" ? "iznos uplate Kč" : "iznos uplate €"} value={uplata[key] || ""}
+                              <input inputMode="decimal" placeholder={bcKey === "CZK" ? tr("iznos uplate Kč") : tr("iznos uplate €")} value={uplata[key] || ""}
                                 onChange={(e) => setUplata({ ...uplata, [key]: e.target.value })} style={{ padding: "7px 9px", fontSize: 13 }} />
                               <Btn small kind="ghost" onClick={() => {
                                 const a = parseNum(uplata[key]);
                                 if (a) { api.addInvoicePayment(data.objects.find((o) => o.id === key), month, round2(a)); setUplata({ ...uplata, [key]: "" }); }
-                              }}>+ Uplata</Btn>
-                              <Btn small kind="ghost" onClick={() => printInvoiceSpec(key, v)}>🧾 PDF</Btn>
+                              }}>{tr("+ Uplata")}</Btn>
+                              <Btn small kind="ghost" onClick={() => printInvoiceSpec(key, v)}>{tr("🧾 PDF")}</Btn>
                             </div>
                           </div>
                         )}
@@ -6742,44 +6749,44 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
               {unpaidRows.length > 0 && (
                 <label style={{ display: "flex", alignItems: "center", gap: 7, fontSize: 13, cursor: "pointer" }}>
                   <input type="checkbox" checked={allSelected} onChange={toggleSelectAll} style={{ width: 18, height: 18 }} />
-                  Odaberi sve neisplaćene ({unpaidRows.length})
+                  {tr("Odaberi sve neisplaćene (")}{unpaidRows.length})
                 </label>
               )}
               {pendingRows.length > 0 && (
                 <label style={{ display: "flex", alignItems: "center", gap: 7, fontSize: 13, cursor: "pointer" }}>
                   <input type="checkbox" checked={allPendingSelected} onChange={toggleSelectAllPending} style={{ width: 18, height: 18 }} />
-                  Odaberi sve predložene ({pendingRows.length})
+                  {tr("Odaberi sve predložene (")}{pendingRows.length})
                 </label>
               )}
               <div style={{ display: "flex", gap: 8, marginLeft: "auto", flexWrap: "wrap" }}>
                 {selectedUnpaid.length > 0 && (
                   <>
                     <Btn small kind="ghost" onClick={() => payMany(selectedUnpaid)} disabled={bulkBusy}>
-                      ✓ Predloži odabrane ({selectedUnpaid.length})
+                      {tr("✓ Predloži odabrane (")}{selectedUnpaid.length})
                     </Btn>
                     <Btn small onClick={() => payAndPrintMany(selectedUnpaid)} disabled={bulkBusy}>
-                      🖨✓ Predloži i ispiši ({selectedUnpaid.length})
+                      {tr("🖨✓ Predloži i ispiši (")}{selectedUnpaid.length})
                     </Btn>
                   </>
                 )}
                 {unpaidRows.length > 0 && (
                   <>
                     <Btn small kind="ghost" onClick={() => payMany(unpaidRows)} disabled={bulkBusy}>
-                      ✓✓ Predloži sve ({unpaidRows.length})
+                      {tr("✓✓ Predloži sve (")}{unpaidRows.length})
                     </Btn>
                     <Btn small kind={selectedUnpaid.length > 0 ? "ghost" : "primary"} onClick={() => payAndPrintMany(unpaidRows)} disabled={bulkBusy}>
-                      {bulkBusy ? "Spremam…" : `🖨✓✓ Predloži i ispiši sve (${unpaidRows.length})`}
+                      {bulkBusy ? tr("Spremam…") : tr("🖨✓✓ Predloži i ispiši sve ({0})", unpaidRows.length)}
                     </Btn>
                   </>
                 )}
                 {admin && selectedPending.length > 0 && (
                   <Btn small onClick={() => approveMany(selectedPending)} disabled={bulkBusy}>
-                    ✓ Odobri odabrane ({selectedPending.length})
+                    {tr("✓ Odobri odabrane (")}{selectedPending.length})
                   </Btn>
                 )}
                 {admin && pendingRows.length > 0 && (
                   <Btn small kind={selectedPending.length > 0 ? "ghost" : "primary"} onClick={() => approveMany(pendingRows)} disabled={bulkBusy}>
-                    {bulkBusy ? "Spremam…" : `✓✓ Odobri sve predložene (${pendingRows.length})`}
+                    {bulkBusy ? tr("Spremam…") : tr("✓✓ Odobri sve predložene ({0})", pendingRows.length)}
                   </Btn>
                 )}
               </div>
@@ -6787,7 +6794,7 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
             );
           })()}
 
-          {displayRows.length === 0 && <Empty text="Nitko ne odgovara ovom filteru." />}
+          {displayRows.length === 0 && <Empty text={tr("Nitko ne odgovara ovom filteru.")} />}
           {displayRows.map((r) => {
             const paid = view === "month" ? paidFor(data, r.w.id, month) : null;
             return (
@@ -6795,11 +6802,11 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
                 <div onClick={() => setOpen(open === r.w.id ? null : r.w.id)} style={{ cursor: "pointer" }}>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                     <div style={{ fontWeight: 700, fontSize: 15.5, display: "flex", alignItems: "center", gap: 8 }}>
-                      <input type="checkbox" checked={selected.has(r.w.id)} onChange={(e) => toggleSelect(r.w.id, e)} onClick={(e) => e.stopPropagation()} style={{ width: 18, height: 18 }} title="Označi za Excel/koverte/PDF ili grupnu radnju" />
+                      <input type="checkbox" checked={selected.has(r.w.id)} onChange={(e) => toggleSelect(r.w.id, e)} onClick={(e) => e.stopPropagation()} style={{ width: 18, height: 18 }} title={tr("Označi za Excel/koverte/PDF ili grupnu radnju")} />
                       <span onClick={(e) => { if (onOpenWorker) { e.stopPropagation(); onOpenWorker(r.w.id); } }} style={{ color: onOpenWorker ? S.blue : "inherit" }}>{r.w.name}</span>
                       {paid && (paid.approved
-                        ? <Tag color={S.green} bg={S.greenSoft}>✓ Isplaćeno</Tag>
-                        : <Tag color={S.amber} bg={S.amberSoft}>⏳ Predloženo</Tag>)}
+                        ? <Tag color={S.green} bg={S.greenSoft}>{tr("✓ Isplaćeno")}</Tag>
+                        : <Tag color={S.amber} bg={S.amberSoft}>{tr("⏳ Predloženo")}</Tag>)}
                     </div>
                     <div className="num" style={{ textAlign: "right" }}>
                       <div style={{ fontWeight: 800, color: r.net >= 0 ? S.green : S.red, fontSize: 16 }}>{eur(r.net)}</div>
@@ -6807,18 +6814,18 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
                     </div>
                   </div>
                   <div className="num" style={{ fontSize: 13, color: S.sub, marginTop: 3 }}>
-                    {view === "month" && isHoursSuspicious(r.hours) && <span title={`Više od ${MONTH_HOURS_WARN}h u mjesecu — provjeri unos`} style={{ color: S.red }}>⚠️ </span>}
-                    {fmtH(r.hours)}{r.rateSet.length === 1 ? <> × {money(r.rateSet[0], wCur(r.w))}</> : r.rateSet.length > 1 ? <> (više satnica)</> : null} = {wCur(r.w) === "CZK" ? czk(r.grossKc) : eur(r.gross)}
-                    {r.extraPay > 0 && <> · vikend/praznik +{eur(r.extraPay)}</>}
-                    {r.bonuses > 0 && <> · bonus +{eur(r.bonuses)}</>}
-                    {r.advances > 0 && <> · avans −{eur(r.advances)}</>}
-                    {r.deductions > 0 && <> · odbici −{eur(r.deductions)}</>}
-                    {r.bank > 0 && <> · na račun −{eur(r.bank)}</>}
-                    {r.czk.advances > 0 && <> · avans −{czk(r.czk.advances)}</>}
-                    {r.czk.bonuses > 0 && <> · bonus +{czk(r.czk.bonuses)}</>}
-                    {r.extraPayKc > 0 && <> · vikend/praznik +{czk(r.extraPayKc)}</>}
-                    {r.czk.deductions > 0 && <> · odbici −{czk(r.czk.deductions)}</>}
-                    {r.czk.bank > 0 && <> · na račun −{czk(r.czk.bank)}</>}
+                    {view === "month" && isHoursSuspicious(r.hours) && <span title={tr("Više od {0}h u mjesecu — provjeri unos", MONTH_HOURS_WARN)} style={{ color: S.red }}>⚠️ </span>}
+                    {fmtH(r.hours)}{r.rateSet.length === 1 ? <> × {money(r.rateSet[0], wCur(r.w))}</> : r.rateSet.length > 1 ? <> {tr("(više satnica)")}</> : null} = {wCur(r.w) === "CZK" ? czk(r.grossKc) : eur(r.gross)}
+                    {r.extraPay > 0 && <> {tr("· vikend/praznik +")}{eur(r.extraPay)}</>}
+                    {r.bonuses > 0 && <> {tr("· bonus +")}{eur(r.bonuses)}</>}
+                    {r.advances > 0 && <> {tr("· avans −")}{eur(r.advances)}</>}
+                    {r.deductions > 0 && <> {tr("· odbici −")}{eur(r.deductions)}</>}
+                    {r.bank > 0 && <> {tr("· na račun −")}{eur(r.bank)}</>}
+                    {r.czk.advances > 0 && <> {tr("· avans −")}{czk(r.czk.advances)}</>}
+                    {r.czk.bonuses > 0 && <> {tr("· bonus +")}{czk(r.czk.bonuses)}</>}
+                    {r.extraPayKc > 0 && <> {tr("· vikend/praznik +")}{czk(r.extraPayKc)}</>}
+                    {r.czk.deductions > 0 && <> {tr("· odbici −")}{czk(r.czk.deductions)}</>}
+                    {r.czk.bank > 0 && <> {tr("· na račun −")}{czk(r.czk.bank)}</>}
                   </div>
                 </div>
                 {open === r.w.id && (
@@ -6828,7 +6835,7 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
                         <span style={{ flex: 1 }}>{fmtDate(l.date)} · <LogSpanLabel l={l} />{objName(l.objectId) ? " · " + objName(l.objectId) : ""}</span>
                         <span style={{ fontWeight: 600 }}>{fmtH(l.hours)}</span>
                         {(admin || l.createdBy === api.uid()) && (
-                          <button onClick={(e) => { e.stopPropagation(); api.delLog(l, r.w.name); }} title="Obriši"
+                          <button onClick={(e) => { e.stopPropagation(); api.delLog(l, r.w.name); }} title={tr("Obriši")}
                             style={{ background: "none", border: "none", color: S.red, fontSize: 15, cursor: "pointer", padding: "0 2px" }}>✕</button>
                         )}
                       </div>
@@ -6836,9 +6843,9 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
                     {r.pays.map((p) => (
                       <div key={p.id} className="num" style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13.5, padding: "4px 0",
                         color: p.type === "bonus" ? S.green : p.type === "racun" ? S.blue : p.deduct ? S.amber : S.sub }}>
-                        <span style={{ flex: 1 }}>{fmtDate(p.date)} · {TYPE_LABEL[p.type] || p.type}{p.note ? " · " + p.note : ""}</span>
+                        <span style={{ flex: 1 }}>{fmtDate(p.date)} · {tr(TYPE_LABEL[p.type] || p.type)}{p.note ? " · " + p.note : ""}</span>
                         <span style={{ fontWeight: 600 }}>{p.type === "bonus" ? "+" : p.deduct ? "−" : ""}{money(p.amount, p.currency)}</span>
-                        <button onClick={(e) => { e.stopPropagation(); api.delPayment(p, r.w.name); }} title="Obriši"
+                        <button onClick={(e) => { e.stopPropagation(); api.delPayment(p, r.w.name); }} title={tr("Obriši")}
                           style={{ background: "none", border: "none", color: S.red, fontSize: 15, cursor: "pointer", padding: "0 2px" }}>✕</button>
                       </div>
                     ))}
@@ -6848,7 +6855,7 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
                       const noteLabel = note.note || MZDY_NOTE_LABEL;
                       return (
                         <div className="num" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 13.5, padding: "4px 0", color: S.blue }}>
-                          <span>📄 {noteLabel} (pola zbroja, {czk(note.sourceCzk)})</span>
+                          <span>📄 {noteLabel} {tr("(pola zbroja,")}{" "}{czk(note.sourceCzk)})</span>
                           <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
                             <span style={{ fontWeight: 600 }}>−{money(note.amount, note.currency)}</span>
                             <button onClick={() => api.delPayrollNote(note, r.w.name)} style={{ background: "none", border: "none", color: S.red, fontSize: 15, cursor: "pointer", padding: 2 }}>✕</button>
@@ -6862,7 +6869,7 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
                       const netK = round2(r.czk.net - (note && note.currency === "CZK" ? note.amount : 0));
                       return (
                         <div style={{ borderTop: `1px dashed ${S.line}`, marginTop: 8, paddingTop: 8, display: "flex", justifyContent: "space-between", fontWeight: 800 }}>
-                          <span>Za isplatu</span>
+                          <span>{tr("Za isplatu")}</span>
                           <span className="num" style={{ color: netE >= 0 ? S.green : S.red, textAlign: "right" }}>
                             {eur(netE)}{netK !== 0 ? <span style={{ display: "block", fontSize: 13 }}>{netK > 0 ? "+" : "−"}{czk(Math.abs(netK))}</span> : null}
                           </span>
@@ -6870,45 +6877,45 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
                       );
                     })()}
                     <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
-                      <Btn small kind="ghost" onClick={() => printPayslip(r)}>📄 PDF obračun</Btn>
-                      <Btn small kind="ghost" onClick={() => shareSummary(r)}>📤 Podijeli sažetak</Btn>
+                      <Btn small kind="ghost" onClick={() => printPayslip(r)}>{tr("📄 PDF obračun")}</Btn>
+                      <Btn small kind="ghost" onClick={() => shareSummary(r)}>{tr("📤 Podijeli sažetak")}</Btn>
                       <Btn small kind="ghost" onClick={() => setSigTarget({ id: r.w.id, name: r.w.name })} style={signatures[r.w.id] ? { color: S.green, borderColor: "#C5DED2" } : undefined}>
-                        {signatures[r.w.id] ? "✓ Potpisano (promijeni)" : "✍️ Potpis"}
+                        {signatures[r.w.id] ? tr("✓ Potpisano (promijeni)") : tr("✍️ Potpis")}
                       </Btn>
                       {view === "month" && !paid && (
-                        <Btn small onClick={() => api.markPaid(r.w, month, r.net, r.czk.net)}>✓ Predloži isplatu</Btn>
+                        <Btn small onClick={() => api.markPaid(r.w, month, r.net, r.czk.net)}>{tr("✓ Predloži isplatu")}</Btn>
                       )}
                       {view === "month" && paid && !paid.approved && (
                         <>
                           <span className="num" style={{ fontSize: 12.5, color: S.amber, alignSelf: "center", fontWeight: 700 }}>
-                            ⏳ Predloženo {fmtDate(paid.paidAt)} · {[paid.amount ? eur(paid.amount) : "", paid.amountKc ? czk(paid.amountKc) : ""].filter(Boolean).join(" + ") || eur(0)}
+                            {tr("⏳ Predloženo")}{" "}{fmtDate(paid.paidAt)} · {[paid.amount ? eur(paid.amount) : "", paid.amountKc ? czk(paid.amountKc) : ""].filter(Boolean).join(" + ") || eur(0)}
                           </span>
-                          {admin && <Btn small onClick={() => api.approvePayout(paid, r.w.name)}>✓ Odobri</Btn>}
-                          <Btn small kind="danger" onClick={() => api.unmarkPaid(paid, r.w.name)}>Odbaci</Btn>
+                          {admin && <Btn small onClick={() => api.approvePayout(paid, r.w.name)}>{tr("✓ Odobri")}</Btn>}
+                          <Btn small kind="danger" onClick={() => api.unmarkPaid(paid, r.w.name)}>{tr("Odbaci")}</Btn>
                         </>
                       )}
                       {view === "month" && paid && !paid.approved && (round2(paid.amount || 0) !== round2(r.net || 0) || round2(paid.amountKc || 0) !== round2(r.czk.net || 0)) && (
                         <div style={{ width: "100%", display: "flex", alignItems: "center", gap: 8, background: S.redSoft, borderRadius: 8, padding: "6px 10px" }}>
                           <span style={{ fontSize: 12, color: S.red, fontWeight: 700, flex: 1 }}>
-                            ⚠️ Sati/isplate su se promijenili nakon prijedloga — sad bi iznos bio {[r.net ? eur(r.net) : "", r.czk.net ? czk(r.czk.net) : ""].filter(Boolean).join(" + ") || eur(0)}
+                            {tr("⚠️ Sati/isplate su se promijenili nakon prijedloga — sad bi iznos bio")}{" "}{[r.net ? eur(r.net) : "", r.czk.net ? czk(r.czk.net) : ""].filter(Boolean).join(" + ") || eur(0)}
                           </span>
-                          <Btn small onClick={() => api.refreshPayout(paid, r.net, r.czk.net, r.w.name)}>🔄 Osvježi</Btn>
+                          <Btn small onClick={() => api.refreshPayout(paid, r.net, r.czk.net, r.w.name)}>{tr("🔄 Osvježi")}</Btn>
                         </div>
                       )}
                       {view === "month" && paid && paid.approved && (
                         <>
                           <span className="num" style={{ fontSize: 12.5, color: S.green, alignSelf: "center", fontWeight: 700 }}>
-                            ✓ Odobreno {fmtDate(paid.approvedAt || paid.paidAt)} · {[paid.amount ? eur(paid.amount) : "", paid.amountKc ? czk(paid.amountKc) : ""].filter(Boolean).join(" + ") || eur(0)}
+                            {tr("✓ Odobreno")}{" "}{fmtDate(paid.approvedAt || paid.paidAt)} · {[paid.amount ? eur(paid.amount) : "", paid.amountKc ? czk(paid.amountKc) : ""].filter(Boolean).join(" + ") || eur(0)}
                           </span>
-                          {admin && <Btn small kind="danger" onClick={() => api.unmarkPaid(paid, r.w.name)}>Otključaj</Btn>}
+                          {admin && <Btn small kind="danger" onClick={() => api.unmarkPaid(paid, r.w.name)}>{tr("Otključaj")}</Btn>}
                         </>
                       )}
                     </div>
                     {view === "month" && paid && !paid.approved && (
-                      <div style={{ fontSize: 11.5, color: S.sub, marginTop: 6 }}>Isplata je predložena, ali još nije odobrena — sati se mogu ispraviti do odobrenja.</div>
+                      <div style={{ fontSize: 11.5, color: S.sub, marginTop: 6 }}>{tr("Isplata je predložena, ali još nije odobrena — sati se mogu ispraviti do odobrenja.")}</div>
                     )}
                     {view === "month" && paid && paid.approved && (
-                      <div style={{ fontSize: 11.5, color: S.sub, marginTop: 6 }}>Mjesec je odobren i zaključan — sati i isplate se više ne mogu mijenjati{admin ? "" : " (otključava admin)"}.</div>
+                      <div style={{ fontSize: 11.5, color: S.sub, marginTop: 6 }}>{tr("Mjesec je odobren i zaključan — sati i isplate se više ne mogu mijenjati")}{admin ? "" : tr(" (otključava admin)")}.</div>
                     )}
                   </div>
                 )}
@@ -6919,7 +6926,7 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
       )}
 
       {sigTarget && (
-        <SignaturePad title={`Potpis — ${sigTarget.name}`}
+        <SignaturePad title={tr("Potpis — {0}", sigTarget.name)}
           onSave={(dataUrl) => { setSignatures((p) => ({ ...p, [sigTarget.id]: dataUrl })); setSigTarget(null); }}
           onClose={() => setSigTarget(null)} />
       )}
