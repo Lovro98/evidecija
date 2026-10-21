@@ -4682,6 +4682,11 @@ function ObjectDetail({ object, data, api, onBack, onOpenWorker }) {
       });
       ranges.forEach((r, i) => rows.push({ ...base, hours: i === 0 ? base.hours : "", acc: i === 0 ? base.acc : "", from: r.from, to: r.to, n: r.n, note: "" }));
     });
+    for (let k = 0; k < 8; k++) rows.push({ sur: "", first: "", pos: "", from: "", to: "", n: "", hours: "", acc: "", note: "" });
+    // svátky cijele godine → list "Svátky" za formulu NETWORKDAYS
+    const yearDays = []; for (let d = new Date(Date.UTC(my, 0, 1)); d.getUTCFullYear() === my; d.setUTCDate(d.getUTCDate() + 1)) yearDays.push(d.toISOString().slice(0, 10));
+    const holidays = yearDays.filter((d) => !isWeekend(d) && isHol(d));
+    const holRef = `'Svátky'!$A$5:$A$${4 + Math.max(holidays.length, 1)}`;
     const period = `${CZ_MONTHS[mm - 1]} ${my}`;
     downloadStyledXlsx({
       fileName: `Neplacene_volno_${object.name.normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[^\w]+/g, "_")}_${month}.xlsx`,
@@ -4701,7 +4706,22 @@ function ObjectDetail({ object, data, api, onBack, onOpenWorker }) {
         ],
         rows,
         emptyText: "V tomto objektu nejsou v tomto měsíci žádní zaměstnanci.",
-        note: "Neplacené volno = pracovní dny (po–pá, bez svátků) bez záznamu docházky v aplikaci. Řádky s červenou poznámkou je potřeba doplnit ručně. Prosím zkontrolujte před odesláním účetní.",
+        note: "Neplacené volno = pracovní dny (po–pá, bez svátků) bez záznamu docházky. Stačí vyplnit datum „od“ a „do“ (např. 15.9.2026) – počet pracovních dní se spočítá sám. Volné řádky dole jsou pro doplnění. Prosím zkontrolujte před odesláním účetní.",
+        after: (ws, { first }) => {
+          const last = first + rows.length - 1;
+          for (let r = first; r <= last; r++) {
+            const row = rows[r - first];
+            ws.getCell(`F${r}`).value = { formula: `IF(AND(ISNUMBER(D${r}),ISNUMBER(E${r})),NETWORKDAYS(D${r},E${r},${holRef}),"")`, result: typeof row.n === "number" && row.from ? row.n : "" };
+            ws.getCell(`F${r}`).alignment = { horizontal: "center", vertical: "middle" };
+            ["D", "E"].forEach((c) => { ws.getCell(`${c}${r}`).numFmt = "dd.mm.yyyy"; ws.getCell(`${c}${r}`).alignment = { horizontal: "center", vertical: "middle" }; });
+          }
+          ws.dataValidations.add(`D${first}:E${last}`, { type: "date", operator: "greaterThan", allowBlank: true, formulae: [new Date(Date.UTC(2000, 0, 1))],
+            showErrorMessage: true, errorTitle: "Datum", error: "Zadejte datum, např. 15.9.2026", showInputMessage: true, promptTitle: "Datum", prompt: "např. 15.9.2026" });
+        },
+      }, {
+        name: "Svátky", title: `Státní svátky ${my}`, subtitle: "Nepočítají se do pracovních dní", tabColor: XC.sub,
+        columns: [{ key: "d", header: "Datum", width: 14, type: "date" }, { key: "n", header: "Den", width: 14 }],
+        rows: holidays.map((d) => ({ d, n: ["neděle", "pondělí", "úterý", "středa", "čtvrtek", "pátek", "sobota"][new Date(d + "T12:00:00").getDay()] })),
       }],
     }).catch((e) => alert("Izvoz nije uspio: " + (e.message || e)));
   };
