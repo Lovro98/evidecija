@@ -5207,7 +5207,7 @@ function ObjectDetail({ object, data, api, onBack, onOpenWorker }) {
               <Btn small kind="ghost" onClick={nextM}>→</Btn>
             </div>
           </Card>
-          {api.admin && (
+          {(
             <Card style={{ padding: "10px 14px", display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
               <div style={{ flex: 1, minWidth: 180 }}>
                 <div style={{ fontWeight: 700, fontSize: 14 }}>📄 Neplacené volno za knjigovođu</div>
