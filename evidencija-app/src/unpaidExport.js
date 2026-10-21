@@ -191,8 +191,8 @@ export async function exportUnpaidXlsx({ rows, pays, scope, fileName }) {
       const list = sorted.filter((r) => r.objectName === o);
       const openW = new Set(list.filter((r) => r.remaining > 0.004).map((r) => r.worker_name)).size;
       const row = wsP.addRow([o, openW,
-        { formula: `SUMIFS(${K("E")},${K("A")},$A${n})`, result: list.reduce((s, r) => s + r.amount, 0) },
-        { formula: `SUMIFS(${K("F")},${K("A")},$A${n})`, result: list.reduce((s, r) => s + r.paid, 0) },
+        { formula: `SUMPRODUCT((${K("A")}=$A${n})*${K("E")})`, result: list.reduce((s, r) => s + r.amount, 0) },
+        { formula: `SUMPRODUCT((${K("A")}=$A${n})*${K("F")})`, result: list.reduce((s, r) => s + r.paid, 0) },
         { formula: `C${n}-D${n}`, result: list.reduce((s, r) => s + r.remaining, 0) }]);
       styleBody(row, i, [3, 4, 5]);
       row.getCell(2).alignment = { horizontal: "center", vertical: "middle" };
@@ -204,8 +204,34 @@ export async function exportUnpaidXlsx({ rows, pays, scope, fileName }) {
     wsP.addRow([]);
   }
 
+  const pairs0 = new Set(sorted.map((r) => r.objectName + "|" + r.worker_name)).size;
+  // po mjesecima
+  const monthsList = [...new Set(sorted.map((r) => r.month))].sort();
+  if (monthsList.length > 1) {
+    section("Po mjesecima");
+    const hm = wsP.addRow(["Mjesec", "Osoba s dugom", "Na kovertama", "Isplaćeno", "Ostaje"]); styleHeader(hm);
+    const mFirst = hm.number + 1;
+    monthsList.forEach((mo, i) => {
+      const n = mFirst + i;
+      const list = sorted.filter((r) => r.month === mo);
+      const openW = new Set(list.filter((r) => r.remaining > 0.004).map((r) => r.worker_name)).size;
+      const row = wsP.addRow([monthLabel(mo), openW,
+        { formula: `SUMPRODUCT((${K("C")}=$A${n})*${K("E")})`, result: list.reduce((s, r) => s + r.amount, 0) },
+        { formula: `SUMPRODUCT((${K("C")}=$A${n})*${K("F")})`, result: list.reduce((s, r) => s + r.paid, 0) },
+        { formula: `C${n}-D${n}`, result: list.reduce((s, r) => s + r.remaining, 0) }]);
+      styleBody(row, i, [3, 4, 5]);
+      row.getCell(1).alignment = { horizontal: "center", vertical: "middle" };
+      row.getCell(2).alignment = { horizontal: "center", vertical: "middle" };
+      row.getCell(5).font = { name: FONT, size: 10, bold: true, color: { argb: C.amber } };
+    });
+    const mLast = mFirst + monthsList.length - 1;
+    const tm = wsP.addRow(["UKUPNO", "", { formula: `SUM(C${mFirst}:C${mLast})`, result: totAmt }, { formula: `SUM(D${mFirst}:D${mLast})`, result: totPaid }, { formula: `SUM(E${mFirst}:E${mLast})`, result: totAmt - totPaid }]);
+    styleTotal(tm, [3, 4, 5]);
+    wsP.addRow([]);
+  }
+
   // po radnicima
-  section("Po radnicima");
+  section(pairs0 > 1 ? "Po osobama" : "Osoba");
   const h2 = wsP.addRow(["Objekt", "Radnik", "Na kovertama", "Isplaćeno", "Ostaje"]); styleHeader(h2);
   const wFirst = h2.number + 1;
   const pairs = [];
@@ -214,8 +240,8 @@ export async function exportUnpaidXlsx({ rows, pays, scope, fileName }) {
     const n = wFirst + i;
     const list = sorted.filter((r) => r.objectName === p.o && r.worker_name === p.w);
     const row = wsP.addRow([p.o, p.w,
-      { formula: `SUMIFS(${K("E")},${K("A")},$A${n},${K("B")},$B${n})`, result: list.reduce((s, r) => s + r.amount, 0) },
-      { formula: `SUMIFS(${K("F")},${K("A")},$A${n},${K("B")},$B${n})`, result: list.reduce((s, r) => s + r.paid, 0) },
+      { formula: `SUMPRODUCT((${K("A")}=$A${n})*(${K("B")}=$B${n})*${K("E")})`, result: list.reduce((s, r) => s + r.amount, 0) },
+      { formula: `SUMPRODUCT((${K("A")}=$A${n})*(${K("B")}=$B${n})*${K("F")})`, result: list.reduce((s, r) => s + r.paid, 0) },
       { formula: `C${n}-D${n}`, result: list.reduce((s, r) => s + r.remaining, 0) }]);
     styleBody(row, i, [3, 4, 5]);
     const rem = list.reduce((s, r) => s + r.remaining, 0);

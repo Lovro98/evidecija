@@ -1574,12 +1574,16 @@ const adminBadge = (data, id) => id === "approvals" ? (data.payouts || []).filte
 /*  Tablice: unpaid_wages (koverta = radnik + mjesec), unpaid_wage_payments */
 /* ================================================================== */
 const monthLabel = (mo) => { if (!mo) return ""; const [y, m] = mo.split("-").map(Number); return `${String(m).padStart(2, "0")}/${y}`; };
+const monthLong = (mo) => { if (!mo) return ""; const [y, m] = mo.split("-").map(Number); return `${MONTHS[m - 1]} ${y}.`; };
+const plural = (n, one, few, many) => { const m10 = n % 10, m100 = n % 100; return `${n} ${m10 === 1 && m100 !== 11 ? one : m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14) ? few : many}`; };
 function UnpaidPanel({ data, api, onOpenWorker }) {
   const [rows, setRows] = useState(null);      // koverte sa stanjem (view unpaid_wages_balance)
   const [pays, setPays] = useState([]);        // pojedinačne isplate
   const [loadErr, setLoadErr] = useState("");
   const [obj, setObj] = useState(null);        // null = popis objekata, inače object_id ("none" = bez objekta)
-  const [open, setOpen] = useState(() => new Set());
+  const [view, setView] = useState("mjeseci"); // mjeseci | osobe | ukupno
+  const [selMonth, setSelMonth] = useState(null);
+  const [selPerson, setSelPerson] = useState(null);
   const [showClosed, setShowClosed] = useState(false);
   const [payForm, setPayForm] = useState(null); // { key, wageId, amount, date, note }
   const [exporting, setExporting] = useState(false);
@@ -1602,47 +1606,49 @@ function UnpaidPanel({ data, api, onOpenWorker }) {
   if (!rows) return <Card style={{ marginTop: 8, color: S.sub }}>Učitavam…</Card>;
 
   const OPEN = 0.004;
+  const isOpen = (x) => x.remaining > OPEN;
   const objKey = (r) => r.object_id || "none";
   const objName = (k) => k === "none" ? "Bez objekta" : (data.objects.find((o) => o.id === k)?.name || rows.find((r) => r.object_id === k)?.object_name || "—");
   const sum = (list, f) => list.reduce((s, x) => s + x[f], 0);
-
-  // pregled po objektima
-  const objStats = {};
-  rows.forEach((r) => {
-    const k = objKey(r);
-    (objStats[k] ||= { key: k, name: objName(k), amount: 0, paid: 0, remaining: 0, workers: new Set(), openWorkers: new Set() });
-    const o = objStats[k];
-    o.amount += r.amount; o.paid += r.paid; o.remaining += r.remaining;
-    o.workers.add(r.worker_id || r.worker_name);
-    if (r.remaining > OPEN) o.openWorkers.add(r.worker_id || r.worker_name);
-  });
-  const objList = Object.values(objStats).sort((a, b) => b.remaining - a.remaining || a.name.localeCompare(b.name, "hr"));
-  const objVisible = showClosed ? objList : objList.filter((o) => o.remaining > OPEN);
-
-  // radnici unutar odabranog objekta
-  const fr = obj ? rows.filter((r) => objKey(r) === obj) : rows;
-  const keyOf = (r) => (r.worker_id || "name:" + r.worker_name) + "|" + objKey(r);
-  const groups = {};
-  fr.forEach((r) => {
-    const k = keyOf(r);
-    (groups[k] ||= { key: k, workerId: r.worker_id, name: r.worker_name, objectId: r.object_id, list: [], amount: 0, paid: 0, remaining: 0 });
-    const g = groups[k];
-    g.list.push(r); g.amount += r.amount; g.paid += r.paid; g.remaining += r.remaining;
-  });
-  const all = Object.values(groups).sort((a, b) => b.remaining - a.remaining || a.name.localeCompare(b.name, "hr"));
-  const visible = showClosed ? all : all.filter((g) => g.remaining > OPEN);
-  const totalOwed = sum(all, "remaining");
-  const totalPaid = sum(all, "paid");
+  const personKey = (r) => r.worker_id || "name:" + r.worker_name;
+  const keyOf = (r) => personKey(r) + "|" + objKey(r);
   const paysOf = (wageId) => pays.filter((p) => p.unpaid_wage_id === wageId);
-  const toggle = (k) => setOpen((prev) => { const n = new Set(prev); n.has(k) ? n.delete(k) : n.add(k); return n; });
-  const goObj = (k) => { setObj(k); setOpen(new Set()); setPayForm(null); window.scrollTo({ top: 0, behavior: "smooth" }); };
+  const visibleRows = (list) => showClosed ? list : list.filter(isOpen);
+  const totals = (list) => ({ amount: sum(list, "amount"), paid: sum(list, "paid"), remaining: sum(list, "remaining"), count: list.length });
+
+  // grupiranje po ključu
+  const groupBy = (list, keyFn, mk) => {
+    const m = {};
+    list.forEach((r) => { const k = keyFn(r); (m[k] ||= { key: k, ...mk(r), list: [] }).list.push(r); });
+    return Object.values(m).map((g) => ({ ...g, ...totals(g.list) }));
+  };
+
+  const objList = groupBy(rows, objKey, (r) => ({ name: objName(objKey(r)) }))
+    .map((o) => ({ ...o, people: new Set(o.list.filter(isOpen).map(personKey)).size }))
+    .sort((a, b) => b.remaining - a.remaining || a.name.localeCompare(b.name, "hr"));
+  const fr = obj ? rows.filter((r) => objKey(r) === obj) : rows;           // koverte objekta
+  const months = groupBy(fr, (r) => r.month, (r) => ({ month: r.month }))
+    .map((m) => ({ ...m, people: new Set(m.list.filter(isOpen).map(personKey)).size }))
+    .sort((a, b) => a.month.localeCompare(b.month));
+  const people = groupBy(fr, keyOf, (r) => ({ workerId: r.worker_id, name: r.worker_name, objectId: r.object_id }))
+    .sort((a, b) => b.remaining - a.remaining || a.name.localeCompare(b.name, "hr"));
+  const groups = Object.fromEntries(people.map((g) => [g.key, g]));
+  const objT = totals(fr);
+
+  // trenutni izbor (za naslov i Excel)
+  const scopeRows = selMonth ? fr.filter((r) => r.month === selMonth) : selPerson ? fr.filter((r) => keyOf(r) === selPerson) : fr;
+  const scopeLabel = !obj ? null : [objName(obj), selMonth ? monthLong(selMonth) : null, selPerson ? groups[selPerson]?.name : null].filter(Boolean).join(" · ");
+
+  const goObj = (k) => { setObj(k); setView("mjeseci"); setSelMonth(null); setSelPerson(null); setPayForm(null); window.scrollTo({ top: 0, behavior: "smooth" }); };
+  const goView = (v) => { setView(v); setSelMonth(null); setSelPerson(null); setPayForm(null); };
+  const openMonth = (m) => { setView("mjeseci"); setSelPerson(null); setSelMonth(m); setPayForm(null); window.scrollTo({ top: 0, behavior: "smooth" }); };
+  const openPerson = (k) => { setView("osobe"); setSelMonth(null); setSelPerson(k); setPayForm(null); window.scrollTo({ top: 0, behavior: "smooth" }); };
 
   // isplata: ako je odabrana koverta ide na nju, inače se raspoređuje od najstarijeg mjeseca
   const savePayment = async () => {
     const g = groups[payForm.key];
     const amount = parseNum(payForm.amount);
     if (!(amount > 0)) { alert("Upiši iznos isplate."); return; }
-    const openList = g.list.filter((r) => r.remaining > OPEN).sort((a, b) => a.month.localeCompare(b.month));
     let parts = [];
     if (payForm.wageId) {
       const r = g.list.find((x) => x.id === payForm.wageId);
@@ -1651,7 +1657,9 @@ function UnpaidPanel({ data, api, onOpenWorker }) {
     } else {
       if (amount > g.remaining + OPEN) { alert(`Iznos je veći od ukupnog duga (${czk(g.remaining)}).`); return; }
       let left = amount;
-      for (const r of openList) { if (left <= 0) break; const a = Math.min(left, r.remaining); parts.push({ id: r.id, amount: round2(a) }); left = round2(left - a); }
+      for (const r of g.list.filter(isOpen).sort((a, b) => a.month.localeCompare(b.month))) {
+        if (left <= 0) break; const a = Math.min(left, r.remaining); parts.push({ id: r.id, amount: round2(a) }); left = round2(left - a);
+      }
     }
     const ok = await api.run(async () => {
       const { error } = await supabase.from("unpaid_wage_payments").insert(parts.map((x) => ({
@@ -1677,10 +1685,7 @@ function UnpaidPanel({ data, api, onOpenWorker }) {
     }, `Neisplaćeno: obrisao kovertu ${r.worker_name} ${r.month}`);
     if (ok) load();
   };
-  const openNew = () => {
-    setNf({ ...nf, objectId: obj && obj !== "none" ? obj : nf.objectId });
-    setNewOpen(!newOpen);
-  };
+  const openNew = () => { setNf({ ...nf, objectId: obj && obj !== "none" ? obj : nf.objectId, month: selMonth || nf.month }); setNewOpen(!newOpen); };
   const addWage = async () => {
     const w = data.workers.find((x) => x.id === nf.workerId);
     const amount = parseNum(nf.amount);
@@ -1697,16 +1702,130 @@ function UnpaidPanel({ data, api, onOpenWorker }) {
   };
 
   const exportXlsx = async () => {
-    if (!fr.length) { alert("Nema koverti za izvoz."); return; }
-    const suffix = obj ? "_" + objName(obj).normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^\w]+/g, "") : "";
+    if (!scopeRows.length) { alert("Nema koverti za izvoz."); return; }
+    const clean = (t) => t.normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[^\w]+/g, "_").replace(/^_|_$/g, "");
+    const suffix = scopeLabel ? "_" + clean(scopeLabel) : "";
     setExporting(true);
     try {
       await exportUnpaidXlsx({
-        rows: fr.map((r) => ({ ...r, objectName: objName(objKey(r)) })),
-        pays, scope: obj ? objName(obj) : null, fileName: `Neisplaceno${suffix}_${todayISO()}.xlsx`,
+        rows: scopeRows.map((r) => ({ ...r, objectName: objName(objKey(r)) })),
+        pays, scope: scopeLabel, fileName: `Neisplaceno${suffix}_${todayISO()}.xlsx`,
       });
     } catch (e) { alert("Izvoz nije uspio: " + (e.message || e)); }
     finally { setExporting(false); }
+  };
+
+  /* ---------------- sitni dijelovi sučelja ---------------- */
+  const bar = (paid, amount) => (
+    <div style={{ height: 5, background: S.line, borderRadius: 99, marginTop: 9 }}>
+      <div style={{ width: (amount ? Math.min(100, (paid / amount) * 100) : 0) + "%", height: "100%", background: S.green, borderRadius: 99 }} />
+    </div>
+  );
+  const amountEl = (t, big) => (
+    <div style={{ textAlign: "right", flexShrink: 0 }}>
+      <div className="num" style={{ fontWeight: 800, fontSize: big ? 17 : 15.5, color: t.remaining > OPEN ? S.amber : S.green }}>{t.remaining > OPEN ? czk(t.remaining) : "✓ isplaćeno"}</div>
+      <div className="num" style={{ fontSize: 11.5, color: S.sub }}>od {czk(t.amount)}</div>
+    </div>
+  );
+  const rowCard = ({ key, title, sub, t, onClick }) => (
+    <Card key={key} onClick={onClick} style={{ cursor: onClick ? "pointer" : "default", padding: "12px 14px" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
+        <div style={{ minWidth: 0 }}>
+          <div style={{ fontWeight: 800, fontSize: 15.5, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{title}</div>
+          {sub && <div style={{ fontSize: 12.5, color: S.sub, marginTop: 1 }}>{sub}</div>}
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>{amountEl(t)}{onClick && <span style={{ color: S.sub, fontSize: 18 }}>›</span>}</div>
+      </div>
+      {bar(t.paid, t.amount)}
+    </Card>
+  );
+  const summary = ({ label, t, sub }) => (
+    <Card style={{ background: S.amberSoft, borderColor: "#EBD9AE" }}>
+      <div style={{ fontSize: 12, fontWeight: 700, color: S.amber, textTransform: "uppercase", letterSpacing: 0.6 }}>{label}</div>
+      <div className="num" style={{ fontSize: 30, fontWeight: 800, color: S.ink, margin: "2px 0 6px" }}>{czk(t.remaining)}</div>
+      <div style={{ display: "flex", gap: 14, flexWrap: "wrap", fontSize: 12.5, color: S.sub }} className="num">
+        <span>Na kovertama <b style={{ color: S.ink }}>{czk(t.amount)}</b></span>
+        <span>Isplaćeno <b style={{ color: S.green }}>{czk(t.paid)}</b></span>
+        {sub && <span>{sub}</span>}
+      </div>
+      {bar(t.paid, t.amount)}
+      <div style={{ display: "flex", gap: 8, marginTop: 12, flexWrap: "wrap" }}>
+        <Btn small kind="excel" onClick={exportXlsx} disabled={exporting}>{exporting ? "Pripremam…" : "⬇ Excel"}</Btn>
+        <Btn small kind="ghost" onClick={openNew}>＋ Nova koverta</Btn>
+        <Btn small kind="ghost" onClick={() => setShowClosed(!showClosed)}>{showClosed ? "Sakrij isplaćene" : "Prikaži isplaćene"}</Btn>
+      </div>
+    </Card>
+  );
+  const crumbs = (items) => (
+    <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", marginBottom: 10, fontSize: 13.5 }}>
+      {items.map(([label, fn], i) => (
+        <span key={i} style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          {i > 0 && <span style={{ color: S.sub }}>›</span>}
+          {fn ? <button onClick={fn} style={{ background: "none", border: "none", padding: 0, color: S.blue, fontWeight: 600, cursor: "pointer", fontSize: 13.5 }}>{label}</button>
+            : <b>{label}</b>}
+        </span>
+      ))}
+    </div>
+  );
+  const tabs = () => (
+    <div style={{ display: "flex", background: "#E9ECE6", borderRadius: 12, padding: 3, marginBottom: 12 }}>
+      {[["mjeseci", "Po mjesecima"], ["osobe", "Po osobama"], ["ukupno", "Ukupno"]].map(([id, label]) => {
+        const on = view === id && !selMonth && !selPerson;
+        const active = view === id;
+        return (
+          <button key={id} onClick={() => goView(id)} style={{ flex: 1, border: "none", borderRadius: 10, padding: "9px 6px", cursor: "pointer", fontSize: 13.5,
+            fontWeight: active ? 700 : 500, background: active ? "#fff" : "transparent", color: active ? S.green : S.sub,
+            boxShadow: active ? "0 1px 3px rgba(0,0,0,.08)" : "none", opacity: on || active ? 1 : 0.9 }}>{label}</button>
+        );
+      })}
+    </div>
+  );
+  const payFormEl = (g) => (
+    <div style={{ marginTop: 10, background: "#fff", border: `1px solid ${S.line}`, borderRadius: 12, padding: 12 }}>
+      <div style={{ fontWeight: 700, marginBottom: 8 }}>💶 Isplata — {g.name}</div>
+      <Field label="Za koji mjesec">
+        <select value={payForm.wageId} onChange={(e) => setPayForm({ ...payForm, wageId: e.target.value })}>
+          <option value="">Automatski — od najstarijeg mjeseca</option>
+          {g.list.filter(isOpen).sort((a, b) => a.month.localeCompare(b.month)).map((r) => (
+            <option key={r.id} value={r.id}>{monthLabel(r.month)} — ostaje {czk(r.remaining)}</option>
+          ))}
+        </select>
+      </Field>
+      <div style={{ display: "flex", gap: 10 }}>
+        <div style={{ flex: 1 }}><Field label="Iznos (Kč)"><input inputMode="decimal" autoFocus value={payForm.amount} onChange={(e) => setPayForm({ ...payForm, amount: e.target.value })} /></Field></div>
+        <div style={{ flex: 1 }}><Field label="Datum"><input type="date" value={payForm.date} onChange={(e) => setPayForm({ ...payForm, date: e.target.value })} /></Field></div>
+      </div>
+      <Field label="Napomena (nije obavezno)"><input value={payForm.note} onChange={(e) => setPayForm({ ...payForm, note: e.target.value })} placeholder="npr. gotovina, banka" /></Field>
+      <div style={{ display: "flex", gap: 8 }}><Btn small onClick={savePayment}>Spremi isplatu</Btn><Btn small kind="ghost" onClick={() => setPayForm(null)}>Odustani</Btn></div>
+    </div>
+  );
+  // jedna koverta s isplatama i gumbima; label = mjesec ili ime osobe
+  const envelope = (r, label) => {
+    const g = groups[keyOf(r)];
+    return (
+      <div key={r.id} style={{ padding: "11px 0", borderBottom: `1px solid ${S.line}` }}>
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "baseline" }}>
+          <div style={{ fontWeight: 700, fontSize: 14.5, minWidth: 0 }}>{label} {r.section && <span style={{ fontWeight: 500, color: S.sub, fontSize: 12.5 }}>· {r.section}</span>}</div>
+          <div className="num" style={{ fontSize: 13.5, whiteSpace: "nowrap" }}>
+            <span style={{ color: S.sub }}>{czk(r.amount)}</span>{" → "}
+            <b style={{ color: isOpen(r) ? S.amber : S.green }}>{isOpen(r) ? czk(r.remaining) : "✓"}</b>
+          </div>
+        </div>
+        {r.calc_note && <div style={{ fontSize: 11.5, color: S.sub, marginTop: 2 }}>{r.calc_note}</div>}
+        {r.note && <div style={{ fontSize: 11.5, color: S.amber, marginTop: 2 }}>ⓘ {r.note}</div>}
+        {paysOf(r.id).map((p) => (
+          <div key={p.id} className="num" style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12.5, marginTop: 4, color: S.green }}>
+            <span style={{ flex: 1 }}>− {czk(p.amount)} · {p.pay_date ? fmtDate(p.pay_date) : "bez datuma"}{p.note ? " · " + p.note : ""}</span>
+            <button onClick={() => delPayment(p, r.worker_name)} title="Obriši isplatu" style={{ background: "none", border: "none", color: S.red, cursor: "pointer", fontSize: 14 }}>✕</button>
+          </div>
+        ))}
+        <div style={{ display: "flex", gap: 6, marginTop: 7, flexWrap: "wrap" }}>
+          {isOpen(r) && <Btn small kind="ghost" onClick={() => setPayForm({ key: keyOf(r), wageId: r.id, amount: String(r.remaining), date: todayISO(), note: "", at: r.id })}>💶 Isplati</Btn>}
+          <Btn small kind="danger" onClick={() => delWage(r)}>Obriši</Btn>
+        </div>
+        {payForm && payForm.at === r.id && g && payFormEl(g)}
+      </div>
+    );
   };
 
   const workerOptions = sortedWorkers(data.workers);
@@ -1735,129 +1854,111 @@ function UnpaidPanel({ data, api, onOpenWorker }) {
       <div style={{ display: "flex", gap: 8 }}><Btn small onClick={addWage}>Spremi kovertu</Btn><Btn small kind="ghost" onClick={() => setNewOpen(false)}>Odustani</Btn></div>
     </Card>
   );
-  const summary = (label, owed, sub) => (
-    <Card style={{ background: S.amberSoft, borderColor: "#EBD9AE" }}>
-      <div style={{ fontSize: 12.5, fontWeight: 700, color: S.amber, textTransform: "uppercase", letterSpacing: 0.6 }}>{label}</div>
-      <div className="num" style={{ fontSize: 30, fontWeight: 800, color: S.ink, margin: "2px 0 4px" }}>{czk(owed)}</div>
-      <div className="num" style={{ fontSize: 13, color: S.sub }}>{sub}</div>
-      <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
-        <Btn small kind="excel" onClick={exportXlsx} disabled={exporting}>{exporting ? "Pripremam…" : "⬇ Preuzmi tablicu"}</Btn>
-        <Btn small kind="ghost" onClick={openNew}>＋ Nova koverta</Btn>
-        <Btn small kind="ghost" onClick={() => setShowClosed(!showClosed)}>{showClosed ? "Sakrij isplaćene" : "Prikaži i isplaćene"}</Btn>
-      </div>
-    </Card>
-  );
-  const bar = (paid, amount) => (
-    <div style={{ height: 5, background: S.line, borderRadius: 99, marginTop: 9 }}>
-      <div style={{ width: (amount ? Math.min(100, (paid / amount) * 100) : 0) + "%", height: "100%", background: S.green, borderRadius: 99 }} />
-    </div>
-  );
 
-  // ---------- 1) popis objekata ----------
+  /* ---------------- 1) popis objekata ---------------- */
   if (!obj) {
+    const allT = totals(rows);
+    const shown = showClosed ? objList : objList.filter(isOpen);
     return (
       <div style={{ marginTop: 8 }}>
-        {summary("Ukupno dugujem — svi objekti", sum(objList, "remaining"),
-          `${objList.filter((o) => o.remaining > OPEN).length} objekata · ${rows.filter((r) => r.remaining > OPEN).length} otvorenih koverti · već isplaćeno ${czk(sum(objList, "paid"))}`)}
+        {summary({ label: "Ukupno dugujem — svi objekti", t: allT, sub: `${objList.filter(isOpen).length} objekata` })}
         {newForm}
-        {objVisible.length === 0 && <Empty text="Nema neisplaćenih koverti. 🎉" />}
-        {objVisible.map((o) => (
-          <Card key={o.key} onClick={() => goObj(o.key)} style={{ cursor: "pointer" }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 10 }}>
-              <div style={{ minWidth: 0 }}>
-                <div style={{ fontWeight: 800, fontSize: 16 }}>🏨 {o.name}</div>
-                <div style={{ fontSize: 12.5, color: S.sub }}>{o.openWorkers.size} {o.openWorkers.size === 1 ? "radnik" : "radnika"} s dugom</div>
-              </div>
-              <div style={{ textAlign: "right" }}>
-                <div className="num" style={{ fontWeight: 800, fontSize: 17, color: o.remaining > OPEN ? S.amber : S.green }}>{czk(o.remaining)} ›</div>
-                <div className="num" style={{ fontSize: 11.5, color: S.sub }}>od {czk(o.amount)}</div>
-              </div>
-            </div>
-            {bar(o.paid, o.amount)}
-          </Card>
-        ))}
+        <div style={{ fontSize: 12.5, fontWeight: 700, color: S.sub, textTransform: "uppercase", letterSpacing: 0.6, margin: "4px 2px 8px" }}>Odaberi objekt</div>
+        {shown.length === 0 && <Empty text="Nema neisplaćenih koverti. 🎉" />}
+        {shown.map((o) => rowCard({ key: o.key, title: `🏨 ${o.name}`, sub: `${plural(o.people, "osoba", "osobe", "osoba")} s dugom · ${plural(o.list.filter(isOpen).length, "koverta", "koverte", "koverti")}`, t: o, onClick: () => goObj(o.key) }))}
       </div>
     );
   }
 
-  // ---------- 2) radnici jednog objekta ----------
+  const crumbsBase = [["Svi objekti", () => goObj(null)]];
+
+  /* ---------------- 2a) jedan mjesec ---------------- */
+  if (selMonth) {
+    const m = months.find((x) => x.month === selMonth);
+    const list = visibleRows(m ? m.list : []).sort((a, b) => b.remaining - a.remaining || a.worker_name.localeCompare(b.worker_name, "hr"));
+    const t = totals(m ? m.list : []);
+    return (
+      <div style={{ marginTop: 8 }}>
+        {crumbs([...crumbsBase, [objName(obj), () => goView("mjeseci")], [monthLong(selMonth)]])}
+        {summary({ label: `${objName(obj)} — ${monthLong(selMonth)}`, t, sub: plural(new Set((m?.list || []).filter(isOpen).map(personKey)).size, "osoba", "osobe", "osoba") })}
+        {newForm}
+        <Card style={{ padding: "2px 14px 6px" }}>
+          {list.length === 0 && <Empty text="U ovom mjesecu sve je isplaćeno. 🎉" />}
+          {list.map((r) => envelope(r,
+            <button onClick={() => openPerson(keyOf(r))} style={{ background: "none", border: "none", padding: 0, fontWeight: 700, fontSize: 14.5, color: S.blue, cursor: "pointer", textAlign: "left" }}>{r.worker_name}</button>))}
+        </Card>
+      </div>
+    );
+  }
+
+  /* ---------------- 2b) jedna osoba ---------------- */
+  const pg = selPerson ? groups[selPerson] : null;
+  if (pg) {
+    const g = pg;
+    const list = visibleRows(g.list).sort((a, b) => a.month.localeCompare(b.month));
+    return (
+      <div style={{ marginTop: 8 }}>
+        {crumbs([...crumbsBase, [objName(obj), () => goView("osobe")], [g.name]])}
+        {summary({ label: g.name, t: g, sub: plural(g.list.filter(isOpen).length, "otvoren mjesec", "otvorena mjeseca", "otvorenih mjeseci") })}
+        {newForm}
+        <div style={{ display: "flex", gap: 8, marginBottom: 10, flexWrap: "wrap" }}>
+          {isOpen(g) && <Btn small onClick={() => setPayForm({ key: g.key, wageId: "", amount: "", date: todayISO(), note: "", at: "person" })}>💶 Dodaj isplatu</Btn>}
+          {g.workerId && onOpenWorker && <Btn small kind="ghost" onClick={() => onOpenWorker(g.workerId)}>Otvori radnika</Btn>}
+        </div>
+        {payForm && payForm.at === "person" && payFormEl(g)}
+        <Card style={{ padding: "2px 14px 6px", marginTop: 10 }}>
+          {list.length === 0 && <Empty text="Sve je isplaćeno. 🎉" />}
+          {list.map((r) => envelope(r, monthLong(r.month)))}
+        </Card>
+      </div>
+    );
+  }
+
+  /* ---------------- 2c) objekt: kartice ---------------- */
+  const shownMonths = showClosed ? months : months.filter(isOpen);
+  const shownPeople = showClosed ? people : people.filter(isOpen);
   return (
     <div style={{ marginTop: 8 }}>
-      <div style={{ marginBottom: 10 }}><Btn small kind="ghost" onClick={() => goObj(null)}>← Svi objekti</Btn></div>
-      {summary(`Dugujem — ${objName(obj)}`, totalOwed,
-        `${all.filter((g) => g.remaining > OPEN).length} radnika · ${fr.filter((r) => r.remaining > OPEN).length} otvorenih koverti · već isplaćeno ${czk(totalPaid)}`)}
+      {crumbs([...crumbsBase, [objName(obj)]])}
+      {tabs()}
+      {summary({ label: `Dugujem — ${objName(obj)}`, t: objT, sub: `${plural(people.filter(isOpen).length, "osoba", "osobe", "osoba")} · ${plural(months.filter(isOpen).length, "mjesec", "mjeseca", "mjeseci")}` })}
       {newForm}
-      {visible.length === 0 && <Empty text="Ovdje nema neisplaćenih koverti. 🎉" />}
-      {visible.map((g) => {
-        const isOpen = open.has(g.key);
-        const list = [...g.list].sort((a, b) => a.month.localeCompare(b.month)).filter((r) => showClosed || r.remaining > OPEN);
-        return (
-          <Card key={g.key} style={{ padding: 0, overflow: "hidden" }}>
-            <div onClick={() => toggle(g.key)} style={{ padding: 14, cursor: "pointer" }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 10 }}>
-                <div style={{ minWidth: 0 }}>
-                  <div style={{ fontWeight: 800, fontSize: 15.5 }}>{g.name}</div>
-                  <div style={{ fontSize: 12.5, color: S.sub }}>{g.list.filter((r) => r.remaining > OPEN).map((r) => monthLabel(r.month)).join(", ") || "sve isplaćeno"}</div>
-                </div>
-                <div style={{ textAlign: "right" }}>
-                  <div className="num" style={{ fontWeight: 800, fontSize: 16, color: g.remaining > OPEN ? S.amber : S.green }}>{czk(g.remaining)}</div>
-                  <div className="num" style={{ fontSize: 11.5, color: S.sub }}>od {czk(g.amount)}</div>
-                </div>
+
+      {view === "mjeseci" && (
+        <>
+          {shownMonths.length === 0 && <Empty text="Nema neisplaćenih mjeseci. 🎉" />}
+          {shownMonths.map((m) => rowCard({ key: m.month, title: monthLong(m.month), sub: `${plural(m.people, "osoba", "osobe", "osoba")} · ${plural(m.list.filter(isOpen).length, "koverta", "koverte", "koverti")}`, t: m, onClick: () => openMonth(m.month) }))}
+        </>
+      )}
+
+      {view === "osobe" && (
+        <>
+          {shownPeople.length === 0 && <Empty text="Nema neisplaćenih osoba. 🎉" />}
+          {shownPeople.map((g) => rowCard({ key: g.key, title: g.name, sub: g.list.filter(isOpen).sort((a, b) => a.month.localeCompare(b.month)).map((r) => monthLabel(r.month)).join(", ") || "sve isplaćeno", t: g, onClick: () => openPerson(g.key) }))}
+        </>
+      )}
+
+      {view === "ukupno" && (
+        <Card style={{ padding: 0, overflow: "hidden" }}>
+          {[["Po mjesecima", shownMonths.map((m) => ({ k: m.month, label: monthLong(m.month), t: m, go: () => openMonth(m.month) }))],
+            ["Po osobama", shownPeople.map((g) => ({ k: g.key, label: g.name, t: g, go: () => openPerson(g.key) }))]].map(([title, items]) => (
+            <div key={title}>
+              <div style={{ display: "flex", justifyContent: "space-between", padding: "10px 14px", background: S.greenSoft, fontSize: 12, fontWeight: 700, color: S.green, textTransform: "uppercase", letterSpacing: 0.5 }}>
+                <span>{title}</span><span>Ostaje</span>
               </div>
-              {bar(g.paid, g.amount)}
+              {items.map((x) => (
+                <div key={x.k} onClick={x.go} style={{ display: "flex", justifyContent: "space-between", gap: 10, padding: "9px 14px", borderBottom: `1px solid ${S.line}`, cursor: "pointer", fontSize: 14 }}>
+                  <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{x.label}</span>
+                  <span className="num" style={{ fontWeight: 700, color: isOpen(x.t) ? S.amber : S.green, whiteSpace: "nowrap" }}>{czk(x.t.remaining)}</span>
+                </div>
+              ))}
+              <div style={{ display: "flex", justifyContent: "space-between", padding: "10px 14px", fontWeight: 800, fontSize: 14, borderBottom: `1px solid ${S.line}` }} className="num">
+                <span>Ukupno</span><span>{czk(objT.remaining)}</span>
+              </div>
             </div>
-            {isOpen && (
-              <div style={{ borderTop: `1px solid ${S.line}`, padding: "6px 14px 14px", background: "#FAFBF8" }}>
-                {list.map((r) => (
-                  <div key={r.id} style={{ padding: "9px 0", borderBottom: `1px solid ${S.line}` }}>
-                    <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "baseline" }}>
-                      <div style={{ fontWeight: 700, fontSize: 14 }}>{monthLabel(r.month)} <span style={{ fontWeight: 500, color: S.sub, fontSize: 12.5 }}>{r.section}</span></div>
-                      <div className="num" style={{ fontSize: 13.5 }}>
-                        <span style={{ color: S.sub }}>{czk(r.amount)}</span>
-                        {" → "}<b style={{ color: r.remaining > OPEN ? S.amber : S.green }}>{r.remaining > OPEN ? "ostaje " + czk(r.remaining) : "✓ isplaćeno"}</b>
-                      </div>
-                    </div>
-                    {r.calc_note && <div style={{ fontSize: 11.5, color: S.sub, marginTop: 2 }}>{r.calc_note}</div>}
-                    {paysOf(r.id).map((p) => (
-                      <div key={p.id} className="num" style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12.5, marginTop: 4, color: S.green }}>
-                        <span style={{ flex: 1 }}>− {czk(p.amount)} · {p.pay_date ? fmtDate(p.pay_date) : "bez datuma"}{p.note ? " · " + p.note : ""}</span>
-                        <button onClick={() => delPayment(p, g.name)} title="Obriši isplatu" style={{ background: "none", border: "none", color: S.red, cursor: "pointer", fontSize: 14 }}>✕</button>
-                      </div>
-                    ))}
-                    <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
-                      {r.remaining > OPEN && <Btn small kind="ghost" onClick={() => setPayForm({ key: g.key, wageId: r.id, amount: String(r.remaining), date: todayISO(), note: "" })}>💶 Isplati ovaj mjesec</Btn>}
-                      <Btn small kind="danger" onClick={() => delWage(r)}>Obriši</Btn>
-                    </div>
-                  </div>
-                ))}
-                <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
-                  {g.remaining > OPEN && <Btn small onClick={() => setPayForm({ key: g.key, wageId: "", amount: "", date: todayISO(), note: "" })}>💶 Dodaj isplatu</Btn>}
-                  {g.workerId && onOpenWorker && <Btn small kind="ghost" onClick={() => onOpenWorker(g.workerId)}>Otvori radnika</Btn>}
-                </div>
-                {payForm && payForm.key === g.key && (
-                  <div style={{ marginTop: 10, background: "#fff", border: `1px solid ${S.line}`, borderRadius: 12, padding: 12 }}>
-                    <div style={{ fontWeight: 700, marginBottom: 8 }}>💶 Isplata — {g.name}</div>
-                    <Field label="Za koji mjesec">
-                      <select value={payForm.wageId} onChange={(e) => setPayForm({ ...payForm, wageId: e.target.value })}>
-                        <option value="">Automatski — od najstarijeg mjeseca</option>
-                        {g.list.filter((r) => r.remaining > OPEN).sort((a, b) => a.month.localeCompare(b.month)).map((r) => (
-                          <option key={r.id} value={r.id}>{monthLabel(r.month)} — ostaje {czk(r.remaining)}</option>
-                        ))}
-                      </select>
-                    </Field>
-                    <div style={{ display: "flex", gap: 10 }}>
-                      <div style={{ flex: 1 }}><Field label="Iznos (Kč)"><input inputMode="decimal" autoFocus value={payForm.amount} onChange={(e) => setPayForm({ ...payForm, amount: e.target.value })} /></Field></div>
-                      <div style={{ flex: 1 }}><Field label="Datum"><input type="date" value={payForm.date} onChange={(e) => setPayForm({ ...payForm, date: e.target.value })} /></Field></div>
-                    </div>
-                    <Field label="Napomena (nije obavezno)"><input value={payForm.note} onChange={(e) => setPayForm({ ...payForm, note: e.target.value })} placeholder="npr. gotovina, banka" /></Field>
-                    <div style={{ display: "flex", gap: 8 }}><Btn small onClick={savePayment}>Spremi isplatu</Btn><Btn small kind="ghost" onClick={() => setPayForm(null)}>Odustani</Btn></div>
-                  </div>
-                )}
-              </div>
-            )}
-          </Card>
-        );
-      })}
+          ))}
+        </Card>
+      )}
     </div>
   );
 }
@@ -4957,7 +5058,7 @@ function ObjectDetail({ object, data, api, onBack, onOpenWorker }) {
                     onChange={(e) => setTransferSel((p) => { const n = new Set(p); e.target.checked ? n.add(w.id) : n.delete(w.id); return n; })}
                     style={{ width: 17, height: 17 }} />
                   <span style={{ flex: 1 }}>{w.name}</span>
-                  <span style={{ fontSize: 12, color: S.sub }}>{objName(w.objectId) || "bez objekta"}</span>
+                  <span style={{ fontSize: 12, color: S.sub }}>{data.objects.find((o) => o.id === w.objectId)?.name || "bez objekta"}</span>
                 </label>
               ))}
               {allActiveWorkers.filter((w) => w.objectId !== object.id).length === 0 && (
