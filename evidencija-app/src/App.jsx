@@ -4,6 +4,7 @@ import * as pdfjsLib from "pdfjs-dist/build/pdf.mjs";
 import pdfjsWorkerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import { supabase } from "./supabase.js";
 import { exportUnpaidXlsx } from "./unpaidExport.js";
+import { downloadStyledXlsx, XC } from "./xlsxStyled.js";
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorkerUrl;
 
@@ -1522,41 +1523,67 @@ function ObjectSelect({ data, api, value, onChange }) {
 function exportAllData(data) {
   const objName = (id) => data.objects.find((o) => o.id === id)?.name || "";
   const wName = (id) => data.workers.find((w) => w.id === id)?.name || "";
-  const sheet = (rows, placeholder) => XLSX.utils.json_to_sheet(rows.length ? rows : [{ [placeholder]: "" }]);
-  const wb = XLSX.utils.book_new();
-
-  XLSX.utils.book_append_sheet(wb, sheet(data.workers.map((w) => ({
-    "Ime": w.name, "Telefon": w.phone, "Objekt": objName(w.objectId), "Pozicija": w.position,
-    "Satnica": w.rate, "Valuta": w.rateCurrency, "Arhiviran": w.archived ? "DA" : "",
-    "Istek dozvole": w.permitExpiry ? fmtDate(w.permitExpiry) : "", "Istek ugovora": w.contractExpiry ? fmtDate(w.contractExpiry) : "",
-    "Napomena": w.note,
-  })), "Radnik"), "Radnici");
-
-  XLSX.utils.book_append_sheet(wb, sheet(data.objects.map((o) => ({
-    "Naziv": o.name, "Država": o.country, "Naplata/h": o.billRate, "Valuta naplate": o.billCur,
-  })), "Naziv"), "Objekti");
-
-  XLSX.utils.book_append_sheet(wb, sheet(data.logs.map((l) => ({
-    "Datum": fmtDate(l.date), "Radnik": wName(l.workerId), "Objekt": objName(l.objectId), "Od": l.from, "Do": l.to,
-    "Sati": l.hours, "Mjesečni zbroj": l.monthly ? "DA" : "", "Napomena": l.note,
-  })), "Datum"), "Sati");
-
-  XLSX.utils.book_append_sheet(wb, sheet(data.payments.map((p) => ({
-    "Datum": fmtDate(p.date), "Radnik": p.workerId ? wName(p.workerId) : "", "Objekt": p.objectId ? objName(p.objectId) : "",
-    "Vrsta": TYPE_LABEL[p.type] || p.type, "Iznos": p.amount, "Valuta": p.currency, "Odbija se": p.deduct ? "DA" : "", "Napomena": p.note,
-  })), "Datum"), "Isplate");
-
-  XLSX.utils.book_append_sheet(wb, sheet((data.payouts || []).map((p) => ({
-    "Radnik": wName(p.workerId), "Mjesec": p.month, "Iznos (€)": p.amount, "Iznos (Kč)": p.amountKc,
-    "Datum isplate": p.paidAt ? fmtDate(p.paidAt) : "",
-  })), "Radnik"), "Isplaćeni mjeseci");
-
-  XLSX.utils.book_append_sheet(wb, sheet((data.positionBilling || []).map((pb) => ({
-    "Objekt": objName(pb.objectId), "Pozicija": pb.position, "Način": pb.mode === "markup" ? "satnica radnika + dodatak" : "fiksna cijena",
-    "Iznos": pb.mode === "markup" ? pb.markup : pb.rate, "Valuta": pb.currency,
-  })), "Objekt"), "Cijene po poziciji");
-
-  XLSX.writeFile(wb, `Backup_${todayISO()}.xlsx`);
+  const cur = (c) => (c === "CZK" ? "Kč" : "€");
+  const byDate = (a, b) => (a.date || "").localeCompare(b.date || "");
+  const statusColor = (v) => (v === "DA" ? XC.amber : null);
+  return downloadStyledXlsx({
+    fileName: `Backup_${todayISO()}.xlsx`,
+    sheets: [
+      { name: "Radnici", title: "Radnici", subtitle: "Kopija svih podataka · Evidencija rada", landscape: true, freezeCols: 1,
+        columns: [
+          { key: "name", header: "Prezime i ime", width: 26, bold: true }, { key: "phone", header: "Telefon", width: 16 },
+          { key: "obj", header: "Objekt", width: 20 }, { key: "pos", header: "Pozicija", width: 18 },
+          { key: "rate", header: "Satnica", width: 10, type: "money" }, { key: "cur", header: "Valuta", width: 8, type: "center" },
+          { key: "arch", header: "Bivši radnik", width: 11, type: "center", color: statusColor },
+          { key: "permit", header: "Istek dozvole", width: 13, type: "date" }, { key: "contract", header: "Istek ugovora", width: 13, type: "date" },
+          { key: "note", header: "Napomena", width: 34, wrap: true },
+        ],
+        rows: sortedWorkers(data.workers).map((w) => ({ name: w.name, phone: w.phone || "", obj: objName(w.objectId), pos: w.position || "",
+          rate: w.rate || "", cur: cur(w.rateCurrency), arch: w.archived ? "DA" : "", permit: w.permitExpiry, contract: w.contractExpiry, note: w.note || "" })) },
+      { name: "Objekti", title: "Objekti", subtitle: "Kopija svih podataka · Evidencija rada",
+        columns: [
+          { key: "name", header: "Naziv", width: 26, bold: true }, { key: "country", header: "Država", width: 9, type: "center" },
+          { key: "rate", header: "Naplata po satu", width: 15, type: "money" }, { key: "cur", header: "Valuta", width: 9, type: "center" },
+          { key: "arch", header: "Arhiviran", width: 10, type: "center", color: statusColor },
+        ],
+        rows: sortedObjects(data.objects).map((o) => ({ name: o.name, country: o.country, rate: o.billRate || "", cur: cur(o.billCur), arch: o.archived ? "DA" : "" })) },
+      { name: "Sati", title: "Upisani sati", subtitle: "Kopija svih podataka · Evidencija rada", landscape: true, total: { keys: ["hours"] },
+        columns: [
+          { key: "date", header: "Datum", width: 12, type: "date" }, { key: "w", header: "Radnik", width: 26, bold: true },
+          { key: "obj", header: "Objekt", width: 20 }, { key: "from", header: "Od", width: 8, type: "center" }, { key: "to", header: "Do", width: 8, type: "center" },
+          { key: "hours", header: "Sati", width: 9, type: "hours" }, { key: "monthly", header: "Mjesečni zbroj", width: 11, type: "center" },
+          { key: "note", header: "Napomena", width: 34, wrap: true },
+        ],
+        rows: [...data.logs].sort(byDate).map((l) => ({ date: l.date, w: wName(l.workerId), obj: objName(l.objectId), from: l.from || "", to: l.to || "",
+          hours: l.hours, monthly: l.monthly ? "DA" : "", note: l.note || "" })) },
+      { name: "Isplate", title: "Isplate i troškovi", subtitle: "Kopija svih podataka · Evidencija rada", landscape: true,
+        columns: [
+          { key: "date", header: "Datum", width: 12, type: "date" }, { key: "w", header: "Radnik", width: 26, bold: true },
+          { key: "obj", header: "Objekt", width: 20 }, { key: "type", header: "Vrsta", width: 14 },
+          { key: "amount", header: "Iznos", width: 12, type: "money" }, { key: "cur", header: "Valuta", width: 8, type: "center" },
+          { key: "deduct", header: "Odbija se", width: 10, type: "center" }, { key: "note", header: "Napomena", width: 34, wrap: true },
+        ],
+        rows: [...data.payments].sort(byDate).map((p) => ({ date: p.date, w: p.workerId ? wName(p.workerId) : "", obj: p.objectId ? objName(p.objectId) : "",
+          type: TYPE_LABEL[p.type] || p.type, amount: p.amount, cur: cur(p.currency), deduct: p.deduct ? "DA" : "", note: p.note || "" })) },
+      { name: "Isplaćeni mjeseci", title: "Isplaćeni mjeseci", subtitle: "Kopija svih podataka · Evidencija rada", total: { keys: ["eur", "czk"] },
+        columns: [
+          { key: "w", header: "Radnik", width: 26, bold: true }, { key: "month", header: "Mjesec", width: 10, type: "center" },
+          { key: "eur", header: "Iznos (€)", width: 13, type: "eur" }, { key: "czk", header: "Iznos (Kč)", width: 13, type: "czk" },
+          { key: "date", header: "Datum isplate", width: 13, type: "date" },
+          { key: "status", header: "Status", width: 13, type: "center", color: (v) => (v === "Odobreno" ? XC.green : XC.amber) },
+        ],
+        rows: [...(data.payouts || [])].sort((a, b) => a.month.localeCompare(b.month) || wName(a.workerId).localeCompare(wName(b.workerId), "hr")).map((p) => ({
+          w: wName(p.workerId), month: p.month, eur: p.amount || 0, czk: p.amountKc || 0, date: p.paidAt, status: p.approved ? "Odobreno" : "Predloženo" })) },
+      { name: "Cijene po poziciji", title: "Cijene po poziciji", subtitle: "Kopija svih podataka · Evidencija rada",
+        columns: [
+          { key: "obj", header: "Objekt", width: 22, bold: true }, { key: "pos", header: "Pozicija", width: 22 },
+          { key: "mode", header: "Način", width: 26 }, { key: "amount", header: "Iznos", width: 12, type: "money" },
+          { key: "cur", header: "Valuta", width: 8, type: "center" },
+        ],
+        rows: (data.positionBilling || []).map((pb) => ({ obj: objName(pb.objectId), pos: pb.position,
+          mode: pb.mode === "markup" ? "satnica radnika + dodatak" : "fiksna cijena", amount: pb.mode === "markup" ? pb.markup : pb.rate, cur: cur(pb.currency) })) },
+    ],
+  }).catch((e) => alert("Izvoz nije uspio: " + (e.message || e)));
 }
 
 /* ================================================================== */
@@ -3227,15 +3254,43 @@ function WorkersTab({ data, api, onOpen, onOpenObject }) {
   };
 
   const downloadWorkerTemplate = () => {
-    const wb = XLSX.utils.book_new();
-    const sample = [{
-      "Prezime": "Horvat", "Ime": "Ivan", "Telefon": "091 234 5678", "Satnica": 7.5, "Valuta satnice": "EUR",
-      "Glavni objekt": data.objects[0]?.name || "", "Pozicija": "HSK", "Istek radne dozvole": "", "Istek ugovora": "", "Napomena": "",
-    }];
-    const ws = XLSX.utils.json_to_sheet(sample);
-    ws["!cols"] = [{ wch: 16 }, { wch: 16 }, { wch: 15 }, { wch: 9 }, { wch: 13 }, { wch: 18 }, { wch: 14 }, { wch: 17 }, { wch: 14 }, { wch: 22 }];
-    XLSX.utils.book_append_sheet(wb, ws, "Radnici");
-    XLSX.writeFile(wb, "Predlozak_radnici.xlsx");
+    const objects = sortedObjects(data.objects.filter((o) => !o.archived));
+    downloadStyledXlsx({
+      fileName: "Predlozak_radnici.xlsx",
+      sheets: [
+        { name: "Radnici", noTitle: true, headerColor: XC.green,
+          columns: [
+            { key: "ln", header: "Prezime", width: 18, bold: true }, { key: "fn", header: "Ime", width: 16, bold: true },
+            { key: "phone", header: "Telefon", width: 16 }, { key: "rate", header: "Satnica", width: 10, type: "money" },
+            { key: "cur", header: "Valuta satnice", width: 13, type: "center" }, { key: "obj", header: "Glavni objekt", width: 22 },
+            { key: "pos", header: "Pozicija", width: 16 }, { key: "permit", header: "Istek radne dozvole", width: 18, type: "center" },
+            { key: "contract", header: "Istek ugovora", width: 15, type: "center" }, { key: "note", header: "Napomena", width: 28 },
+          ],
+          rows: [{ ln: "Horvat", fn: "Ivan", phone: "091 234 5678", rate: 7.5, cur: "EUR", obj: objects[0]?.name || "", pos: "HSK", permit: "", contract: "", note: "" }],
+          after: (ws) => {
+            ws.autoFilter = undefined;
+            ws.dataValidations.add("E2:E500", { type: "list", allowBlank: true, formulae: ['"EUR,CZK"'], showErrorMessage: true, errorTitle: "Valuta", error: "Odaberi EUR ili CZK." });
+            if (objects.length) ws.dataValidations.add("F2:F500", { type: "list", allowBlank: true, formulae: [`'Objekti'!$A$5:$A$${4 + objects.length}`] });
+            ws.getRow(2).eachCell((c) => { c.font = { ...c.font, italic: true, color: { argb: XC.muted } }; });
+          } },
+        { name: "Upute", title: "Kako popuniti predložak", subtitle: "Uvoz radnika u Evidenciju rada", tabColor: XC.amber,
+          columns: [{ key: "a", header: "Stupac", width: 22, bold: true }, { key: "b", header: "Što upisati", width: 70, wrap: true }],
+          rows: [
+            { a: "Red 2 (sivo)", b: "Primjer. Prepiši ga svojim podacima ili ga obriši prije uvoza." },
+            { a: "Prezime, Ime", b: "Obavezno. Jedan radnik u svakom retku." },
+            { a: "Telefon", b: "Po želji, npr. +420 777 123 456." },
+            { a: "Satnica", b: "Broj, npr. 150 ili 7,5." },
+            { a: "Valuta satnice", b: "Odaberi s popisa: EUR ili CZK." },
+            { a: "Glavni objekt", b: "Odaberi s popisa. Naziv mora biti isti kao u aplikaciji (popis je na listu „Objekti”)." },
+            { a: "Pozicija", b: "Po želji, npr. pokojská, kuchyň, HSK." },
+            { a: "Istek dozvole / ugovora", b: "Datum, npr. 31.12.2026. Ostavi prazno ako ne znaš." },
+            { a: "Uvoz", b: "U aplikaciji: Radnici → 📥 Uvezi iz Excela, pa provjeri popis prije potvrde." },
+          ] },
+        { name: "Objekti", title: "Objekti u aplikaciji", subtitle: "Za stupac „Glavni objekt”", tabColor: XC.sub,
+          columns: [{ key: "n", header: "Objekt", width: 30, bold: true }, { key: "c", header: "Država", width: 10, type: "center" }],
+          rows: objects.map((o) => ({ n: o.name, c: o.country })) },
+      ],
+    }).catch((e) => alert("Izvoz nije uspio: " + (e.message || e)));
   };
   const handleImportFile = async (e) => {
     const file = e.target.files?.[0];
@@ -3906,18 +3961,31 @@ function DirectoryTab({ data, api, onOpen }) {
   const former = data.workers.length - active;
   const objName = (id) => data.objects.find((o) => o.id === id)?.name || "";
   const exportDirectory = () => {
-    const wb = XLSX.utils.book_new();
-    const rows = [...data.workers].sort((a, b) => a.name.localeCompare(b.name, "hr")).map((w) => ({
-      "Prezime i ime": w.name, "Telefon": w.phone || "", "Objekt": objName(w.objectId), "Pozicija": w.position || "",
-      "Satnica": rateNow(data, w) || "", "Valuta satnice": wCur(w) === "CZK" ? "Kč" : "€",
-      "Istek radne dozvole": w.permitExpiry ? fmtDate(w.permitExpiry) : "", "Istek ugovora": w.contractExpiry ? fmtDate(w.contractExpiry) : "",
-      "Status": w.archived ? "Bivši" + (w.archivedDate ? " (" + fmtDate(w.archivedDate) + ")" : "") : "Aktivan",
-      "Napomena": w.note || "",
-    }));
-    const ws = XLSX.utils.json_to_sheet(rows);
-    ws["!cols"] = [{ wch: 22 }, { wch: 15 }, { wch: 18 }, { wch: 14 }, { wch: 9 }, { wch: 10 }, { wch: 16 }, { wch: 14 }, { wch: 16 }, { wch: 22 }];
-    XLSX.utils.book_append_sheet(wb, ws, "Imenik");
-    XLSX.writeFile(wb, "Imenik_radnika.xlsx");
+    const list = [...data.workers].sort((a, b) => (a.archived - b.archived) || a.name.localeCompare(b.name, "hr"));
+    const soon = (iso) => { if (!iso) return false; const d = (new Date(iso) - new Date()) / 86400000; return d < (Number(api.settings.expiry_warn_days) || 30); };
+    downloadStyledXlsx({
+      fileName: `Imenik_radnika_${todayISO()}.xlsx`,
+      sheets: [{
+        name: "Imenik", title: "Imenik radnika", subtitle: `${active} aktivnih · ${former} bivših`, landscape: true, freezeCols: 1,
+        columns: [
+          { key: "name", header: "Prezime i ime", width: 26, bold: true }, { key: "phone", header: "Telefon", width: 16 },
+          { key: "obj", header: "Objekt", width: 20 }, { key: "pos", header: "Pozicija", width: 18 },
+          { key: "rate", header: "Satnica", width: 10, type: "money" }, { key: "cur", header: "Valuta", width: 8, type: "center" },
+          { key: "permit", header: "Istek radne dozvole", width: 14, type: "date", color: (v, r) => (r.permitSoon ? XC.red : null), fill: (v, r) => (r.permitSoon ? XC.redSoft : null) },
+          { key: "contract", header: "Istek ugovora", width: 14, type: "date", color: (v, r) => (r.contractSoon ? XC.red : null), fill: (v, r) => (r.contractSoon ? XC.redSoft : null) },
+          { key: "status", header: "Status", width: 18, type: "center", color: (v) => (v === "Aktivan" ? XC.green : XC.muted) },
+          { key: "note", header: "Napomena", width: 32, wrap: true },
+        ],
+        rows: list.map((w) => ({
+          name: w.name, phone: w.phone || "", obj: objName(w.objectId), pos: w.position || "",
+          rate: rateNow(data, w) || "", cur: wCur(w) === "CZK" ? "Kč" : "€",
+          permit: w.permitExpiry, contract: w.contractExpiry,
+          permitSoon: !w.archived && soon(w.permitExpiry), contractSoon: !w.archived && soon(w.contractExpiry),
+          status: w.archived ? "Bivši" + (w.archivedDate ? " (" + fmtDate(w.archivedDate) + ")" : "") : "Aktivan", note: w.note || "",
+        })),
+        note: "Crveno označeni datumi ističu uskoro ili su već istekli.",
+      }],
+    }).catch((e) => alert("Izvoz nije uspio: " + (e.message || e)));
   };
   const groups = [];
   let last = "";
@@ -5916,61 +5984,87 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
   };
 
   const exportExcel = () => {
-    const wb = XLSX.utils.book_new();
     const targetIds = new Set(exportTargetRows.map((r) => r.w.id));
     const scoped = selected.size > 0;
-    const obrRows = exportTargetRows.map((r) => ({
-      "Radnik": r.w.name, "Objekt": objName(r.w.objectId) || "", "Sati": r.hours,
-      "Satnica": r.rateSet.length === 1 ? r.rateSet[0] : r.rateSet.length === 0 ? rateNow(data, r.w) : "razne",
-      "Valuta satnice": wCur(r.w) === "CZK" ? "Kč" : "€",
-      "Zarada (€)": r.gross, "Zarada (Kč)": r.grossKc, "Vikend/praznik (€)": r.extraPay, "Vikend/praznik (Kč)": r.extraPayKc,
-      "Bonus (€)": r.bonuses, "Avans (€)": r.advances, "Odbici (€)": r.deductions,
-      "Na račun (€)": r.bank, "Na račun (Kč)": r.czk.bank,
-      "ZA ISPLATU KOVERTOM (€)": r.net, "ZA ISPLATU KOVERTOM (Kč)": r.czk.net, "Trošak firme (€)": r.firmCosts, "Trošak firme (Kč)": r.czk.firmCosts,
-      "Način isplate": paymentMethodLabel(r).replace(/[💶🏦+]/g, "").trim(),
-      "Isplaćeno": view === "month" ? (() => { const p = paidFor(data, r.w.id, month); return p ? (p.approved ? "ODOBRENO" : "PREDLOŽENO") : "NE"; })() : "",
-    }));
-    const totalsScoped = exportTargetRows.reduce((t, r) => ({
-      hours: round2(t.hours + r.hours), gross: round2(t.gross + r.gross), bonus: round2(t.bonus + r.bonuses),
-      net: round2(t.net + r.net), netKc: round2(t.netKc + r.czk.net), firm: round2(t.firm + r.firmCosts), firmKc: round2(t.firmKc + r.czk.firmCosts),
-    }), { hours: 0, gross: 0, bonus: 0, net: 0, netKc: 0, firm: 0, firmKc: 0 });
-    obrRows.push({ "Radnik": "UKUPNO", "Sati": totalsScoped.hours, "Zarada (€)": totalsScoped.gross, "Bonus (€)": totalsScoped.bonus,
-      "ZA ISPLATU KOVERTOM (€)": totalsScoped.net, "ZA ISPLATU KOVERTOM (Kč)": totalsScoped.netKc, "Trošak firme (€)": totalsScoped.firm, "Trošak firme (Kč)": totalsScoped.firmKc });
-    const ws1 = XLSX.utils.json_to_sheet(obrRows);
-    ws1["!cols"] = [{wch:22},{wch:18},{wch:8},{wch:11},{wch:12},{wch:10},{wch:11},{wch:11},{wch:11},{wch:11},{wch:17},{wch:17},{wch:15},{wch:15},{wch:10}];
-    XLSX.utils.book_append_sheet(wb, ws1, "Obračun");
-
-    const satiRows = periodLogs.filter((l) => !scoped || targetIds.has(l.workerId)).sort((a, b) => a.date.localeCompare(b.date)).map((l) => {
-      const wk = data.workers.find((x) => x.id === l.workerId);
-      return { "Datum": fmtDate(l.date), "Radnik": wk?.name || "", "Objekt": objName(l.objectId) || "",
-        "Od": l.from || "", "Do": l.to || "", "Sati": l.hours,
-        "Satnica": rateFor(data, wk, l.date), "Iznos": round2(l.hours * rateFor(data, wk, l.date)),
-        "Valuta": wCur(wk) === "CZK" ? "Kč" : "€" };
-    });
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(satiRows.length ? satiRows : [{ "Datum": "" }]), "Sati");
-
-    const payRows = data.payments.filter((pp) => (view === "month" ? inMonth : inYear)(pp.date) && (!scoped || !pp.workerId || targetIds.has(pp.workerId))).sort((a, b) => a.date.localeCompare(b.date)).map((pp) => ({
-      "Datum": fmtDate(pp.date),
-      "Za": pp.workerId ? (data.workers.find((x) => x.id === pp.workerId)?.name || "") : "Objekt: " + (objName(pp.objectId) || ""),
-      "Vrsta": TYPE_LABEL[pp.type] || pp.type,
-      "Iznos": pp.amount,
-      "Valuta": pp.currency === "CZK" ? "Kč" : "€",
-      "Napomena": pp.note || "",
-    }));
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(payRows.length ? payRows : [{ "Datum": "" }]), "Isplate i troškovi");
-
+    const period = view === "month" ? `${MONTHS[m - 1]} ${y}.` : `Godina ${y}.`;
+    const subtitle = [period, objFilterName || "svi objekti", exportScopeLabel || null].filter(Boolean).join("  ·  ");
+    const cur = (c) => (c === "CZK" ? "Kč" : "€");
+    const wName = (id) => data.workers.find((x) => x.id === id)?.name || "";
+    const paidStatus = (r) => { if (view !== "month") return ""; const p = paidFor(data, r.w.id, month); return p ? (p.approved ? "Odobreno" : "Predloženo") : "Nije"; };
+    const statusColor = (v) => (v === "Odobreno" ? XC.green : v === "Predloženo" ? XC.amber : v === "Nije" ? XC.red : null);
+    const net = { bold: true, color: () => XC.amber, fill: () => XC.amberSoft };
     const objRows = [...byObject.entries()].sort(([ka], [kb]) => objName(ka).localeCompare(objName(kb), "hr")).map(([k, v]) => ({
-      "Objekt": k === "__none__" ? "Bez objekta" : objName(k), "Sati": v.hours,
-      "Zarada radnika (€)": v.gross, "Zarada radnika (Kč)": v.grossKc || 0,
-      "Troškovi objekta (€)": v.costs || 0, "Troškovi objekta (Kč)": v.costsKc || 0,
-      ...(admin ? {
-        "Naplata (€)": v.revenue, "Naplata (Kč)": v.revenueKc || 0,
-        "Dobit (€)": round2(v.revenue - v.gross - (v.costs || 0)),
-        "Dobit (Kč)": round2((v.revenueKc || 0) - (v.grossKc || 0) - (v.costsKc || 0)),
-      } : {}),
+      obj: k === "__none__" ? "Bez objekta" : objName(k), hours: v.hours, grossE: v.gross, grossK: v.grossKc || 0,
+      costE: v.costs || 0, costK: v.costsKc || 0, revE: v.revenue, revK: v.revenueKc || 0,
+      profE: round2(v.revenue - v.gross - (v.costs || 0)), profK: round2((v.revenueKc || 0) - (v.grossKc || 0) - (v.costsKc || 0)),
     }));
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(objRows.length ? objRows : [{ "Objekt": "" }]), "Po objektima");
-    XLSX.writeFile(wb, `Obracun_${view === "month" ? MONTHS[m - 1] + "_" + y : "Godina_" + y}${objFilterName ? "_" + objFilterName.replace(/[^\w]+/g, "") : ""}.xlsx`);
+    downloadStyledXlsx({
+      fileName: `Obracun_${view === "month" ? MONTHS[m - 1] + "_" + y : "Godina_" + y}${objFilterName ? "_" + objFilterName.normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[^\w]+/g, "") : ""}.xlsx`,
+      sheets: [
+        { name: "Obračun", title: `Obračun plaća — ${period}`, subtitle, landscape: true, freezeCols: 1,
+          total: { keys: ["hours", "grossE", "grossK", "extraE", "extraK", "bonus", "adv", "ded", "bankE", "bankK", "netE", "netK", "firmE", "firmK"] },
+          columns: [
+            { key: "w", header: "Radnik", width: 24, bold: true }, { key: "obj", header: "Objekt", width: 16 },
+            { key: "hours", header: "Sati", width: 8, type: "hours" }, { key: "rate", header: "Satnica", width: 9, type: "money" },
+            { key: "rcur", header: "Valuta", width: 7, type: "center" },
+            { key: "grossE", header: "Zarada (€)", width: 11, type: "eur" }, { key: "grossK", header: "Zarada (Kč)", width: 11, type: "czk" },
+            { key: "extraE", header: "Vikend / praznik (€)", width: 11, type: "eur" }, { key: "extraK", header: "Vikend / praznik (Kč)", width: 11, type: "czk" },
+            { key: "bonus", header: "Bonus (€)", width: 10, type: "eur" }, { key: "adv", header: "Avans (€)", width: 10, type: "eur" },
+            { key: "ded", header: "Odbici (€)", width: 10, type: "eur" },
+            { key: "bankE", header: "Na račun (€)", width: 11, type: "eur" }, { key: "bankK", header: "Na račun (Kč)", width: 11, type: "czk" },
+            { key: "netE", header: "Za isplatu kovertom (€)", width: 13, type: "eur", ...net }, { key: "netK", header: "Za isplatu kovertom (Kč)", width: 13, type: "czk", ...net },
+            { key: "firmE", header: "Trošak firme (€)", width: 12, type: "eur" }, { key: "firmK", header: "Trošak firme (Kč)", width: 12, type: "czk" },
+            { key: "method", header: "Način isplate", width: 16 },
+            ...(view === "month" ? [{ key: "paid", header: "Isplaćeno", width: 12, type: "center", bold: true, color: statusColor }] : []),
+          ],
+          rows: exportTargetRows.map((r) => ({
+            w: r.w.name, obj: objName(r.w.objectId) || "", hours: r.hours,
+            rate: r.rateSet.length === 1 ? r.rateSet[0] : r.rateSet.length === 0 ? rateNow(data, r.w) : "razne", rcur: cur(wCur(r.w)),
+            grossE: r.gross, grossK: r.grossKc, extraE: r.extraPay, extraK: r.extraPayKc, bonus: r.bonuses, adv: r.advances, ded: r.deductions,
+            bankE: r.bank, bankK: r.czk.bank, netE: r.net, netK: r.czk.net, firmE: r.firmCosts, firmK: r.czk.firmCosts,
+            method: paymentMethodLabel(r).replace(/[💶🏦+]/g, "").trim(), paid: paidStatus(r),
+          })),
+          emptyText: "Nema radnika za ovo razdoblje.",
+          note: "Zbroj (UKUPNO) prati filter: kad u zaglavlju filtriraš npr. jedan objekt, zbroj se odnosi samo na prikazane redove." },
+        { name: "Sati", title: `Sati — ${period}`, subtitle, landscape: true, total: { keys: ["hours"] },
+          columns: [
+            { key: "date", header: "Datum", width: 12, type: "date" }, { key: "w", header: "Radnik", width: 24, bold: true },
+            { key: "obj", header: "Objekt", width: 18 }, { key: "from", header: "Od", width: 8, type: "center" }, { key: "to", header: "Do", width: 8, type: "center" },
+            { key: "hours", header: "Sati", width: 8, type: "hours" }, { key: "rate", header: "Satnica", width: 9, type: "money" },
+            { key: "amount", header: "Iznos", width: 11, type: "money" }, { key: "cur", header: "Valuta", width: 7, type: "center" },
+          ],
+          rows: periodLogs.filter((l) => !scoped || targetIds.has(l.workerId)).sort((a, b) => a.date.localeCompare(b.date) || wName(a.workerId).localeCompare(wName(b.workerId), "hr")).map((l) => {
+            const wk = data.workers.find((x) => x.id === l.workerId);
+            const rate = rateFor(data, wk, l.date);
+            return { date: l.date, w: wk?.name || "", obj: objName(l.objectId) || "", from: l.from || "", to: l.to || "", hours: l.hours, rate, amount: round2(l.hours * rate), cur: cur(wCur(wk)) };
+          }),
+          emptyText: "Nema upisanih sati za ovo razdoblje." },
+        { name: "Isplate i troškovi", title: `Isplate i troškovi — ${period}`, subtitle, landscape: true,
+          columns: [
+            { key: "date", header: "Datum", width: 12, type: "date" }, { key: "za", header: "Za", width: 26, bold: true },
+            { key: "type", header: "Vrsta", width: 14 }, { key: "amount", header: "Iznos", width: 12, type: "money" },
+            { key: "cur", header: "Valuta", width: 7, type: "center" }, { key: "note", header: "Napomena", width: 36, wrap: true },
+          ],
+          rows: data.payments.filter((pp) => (view === "month" ? inMonth : inYear)(pp.date) && (!scoped || !pp.workerId || targetIds.has(pp.workerId))).sort((a, b) => a.date.localeCompare(b.date)).map((pp) => ({
+            date: pp.date, za: pp.workerId ? wName(pp.workerId) : "Objekt: " + (objName(pp.objectId) || ""),
+            type: TYPE_LABEL[pp.type] || pp.type, amount: pp.amount, cur: cur(pp.currency), note: pp.note || "",
+          })),
+          emptyText: "Nema isplata ni troškova za ovo razdoblje." },
+        { name: "Po objektima", title: `Po objektima — ${period}`, subtitle, landscape: true,
+          total: { keys: ["hours", "grossE", "grossK", "costE", "costK", ...(admin ? ["revE", "revK", "profE", "profK"] : [])] },
+          columns: [
+            { key: "obj", header: "Objekt", width: 22, bold: true }, { key: "hours", header: "Sati", width: 9, type: "hours" },
+            { key: "grossE", header: "Zarada radnika (€)", width: 13, type: "eur" }, { key: "grossK", header: "Zarada radnika (Kč)", width: 13, type: "czk" },
+            { key: "costE", header: "Troškovi objekta (€)", width: 13, type: "eur" }, { key: "costK", header: "Troškovi objekta (Kč)", width: 13, type: "czk" },
+            ...(admin ? [
+              { key: "revE", header: "Naplata (€)", width: 13, type: "eur" }, { key: "revK", header: "Naplata (Kč)", width: 13, type: "czk" },
+              { key: "profE", header: "Dobit (€)", width: 13, type: "eur", bold: true, color: (v) => (v < 0 ? XC.red : XC.green) },
+              { key: "profK", header: "Dobit (Kč)", width: 13, type: "czk", bold: true, color: (v) => (v < 0 ? XC.red : XC.green) },
+            ] : []),
+          ],
+          rows: objRows, emptyText: "Nema podataka po objektima." },
+      ],
+    }).catch((e) => alert("Izvoz nije uspio: " + (e.message || e)));
   };
 
   return (
