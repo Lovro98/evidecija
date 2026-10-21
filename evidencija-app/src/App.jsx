@@ -4509,6 +4509,7 @@ function WorkerDetail({ worker, data, api, onBack }) {
 /* ================================================================== */
 function ObjectDetail({ object, data, api, onBack, onOpenWorker }) {
   const [mode, setMode] = useState("day");
+  const [section, setSection] = useState(api.admin ? "pregled" : "sati"); // pregled | sati | fakture | postavke
   const [date, setDate] = useState(todayISO());
   const [month, setMonth] = useState(curMonth());
   const [inputs, setInputs] = useState({});
@@ -4812,25 +4813,29 @@ function ObjectDetail({ object, data, api, onBack, onOpenWorker }) {
       <button onClick={onBack} style={{ background: "none", border: "none", color: S.green, fontWeight: 700, fontSize: 14.5, padding: "2px 0 12px", cursor: "pointer" }}>← Natrag</button>
       <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10, flexWrap: "wrap" }}>
         <div style={{ fontSize: 19, fontWeight: 800 }}>🏨 {object.name}{object.archived && <Tag color={S.sub} bg="#EEF0ED"> 📁 zatvoren</Tag>}</div>
-        <div style={{ display: "flex", gap: 6, marginLeft: "auto", alignItems: "center" }}>
-          {["HR", "CZ"].map((c) => (
-            <button key={c} onClick={() => (object.country || "HR") !== c && api.setObjectCountry(object, c)} style={{
-              padding: "5px 11px", borderRadius: 999, fontWeight: 700, fontSize: 12.5, cursor: "pointer",
-              background: (object.country || "HR") === c ? S.blue : "#fff", color: (object.country || "HR") === c ? "#fff" : S.sub,
-              border: `1px solid ${(object.country || "HR") === c ? S.blue : S.line}` }}>
-              {FLAG[c]} {c}
-            </button>
-          ))}
-          {api.admin && (
-            <Btn small kind="ghost" onClick={() => api.archiveObject(object, !object.archived)} style={{ color: object.archived ? S.green : S.amber, fontWeight: 700 }}>
-              {object.archived ? "↩ Otvori objekt" : "📁 Zatvori objekt"}
-            </Btn>
-          )}
-        </div>
+        <Tag color={S.blue} bg={S.blueSoft}>{FLAG[object.country || "HR"]} {object.country || "HR"}</Tag>
       </div>
 
+      <div style={{ display: "flex", background: "#E9ECE6", borderRadius: 12, padding: 3, marginBottom: 12, gap: 2 }}>
+        {[["pregled", "📊 Pregled"], ["sati", "🕒 Sati"], ...(api.admin ? [["fakture", "🧾 Fakture"], ["postavke", "⚙️ Postavke"]] : [])].map(([id, label]) => (
+          <button key={id} onClick={() => setSection(id)} style={{ flex: 1, border: "none", borderRadius: 10, padding: "9px 4px", cursor: "pointer", fontSize: 13,
+            fontWeight: section === id ? 700 : 500, background: section === id ? "#fff" : "transparent", color: section === id ? S.green : S.sub,
+            boxShadow: section === id ? "0 1px 3px rgba(0,0,0,.08)" : "none", whiteSpace: "nowrap" }}>{label}</button>
+        ))}
+      </div>
+
+      {section === "pregled" && (
+        <Card style={{ background: S.blueSoft, borderColor: "#CBDCEA", padding: "10px 14px" }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+            <Btn small kind="ghost" onClick={prevM}>←</Btn>
+            <div style={{ fontWeight: 800 }}>{MONTHS[mm - 1]} {my}.</div>
+            <Btn small kind="ghost" onClick={nextM}>→</Btn>
+          </div>
+        </Card>
+      )}
+
       {api.admin && (() => {
-        const mk = mode === "day" ? monthKey(date) : month;
+        const mk = section === "sati" && mode === "day" ? monthKey(date) : month;
         const objLogs = data.logs.filter((l) => l.objectId === object.id && monthKey(l.date) === mk);
         const objBrigade = (data.brigadeCosts || []).filter((bg) => bg.objectId === object.id && monthKey(bg.date) === mk);
         const rv = objRevenue(data, object, objLogs, objBrigade);
@@ -4848,8 +4853,52 @@ function ObjectDetail({ object, data, api, onBack, onOpenWorker }) {
         const extraCost = round2(oPays.filter((pp) => (pp.currency || "EUR") === "EUR").reduce((s, pp) => s + pp.amount, 0));
         const extraCostKc = round2(oPays.filter((pp) => pp.currency === "CZK").reduce((s, pp) => s + pp.amount, 0));
         return (
+          <>
+          {section === "pregled" && (
           <Card style={{ background: S.amberSoft, borderColor: "#EBD9B4" }}>
-            <div style={{ fontWeight: 700, color: S.amber, marginBottom: 8 }}>👑 Admin — naplata i dobit</div>
+            <div style={{ fontWeight: 800, fontSize: 15, marginBottom: 10 }}>💶 Naplata i dobit — {MONTHS[mm - 1]} {my}.</div>
+            {(() => {
+              const revE = rv.revenue, revK = rv.revenueKc;
+              const profitE = round2(revE - costE - extraCost - brigadeCostE);
+              const profitK = round2(revK - costK - extraCostKc - brigadeCostK);
+              return (
+                <div className="num" style={{ fontSize: 14 }}>
+                  {rv.byPosition.length === 0 && (
+                    <div style={{ display: "flex", justifyContent: "space-between", padding: "3px 0" }}><span>Naplata (0 h)</span><b>{money(0, bc)}</b></div>
+                  )}
+                  {rv.byPosition.map((row, i) => (
+                    <div key={i} style={{ display: "flex", justifyContent: "space-between", padding: "3px 0" }}>
+                      <span>Naplata{row.position ? " · " + row.position : ""} ({fmtH(row.hours)} × {money(row.rate, row.cur)})</span><b>{money(row.amount, row.cur)}</b>
+                    </div>
+                  ))}
+                  {costE > 0 && <div style={{ display: "flex", justifyContent: "space-between", padding: "3px 0" }}><span>Plaća radnika (€)</span><b>−{eur(costE)}</b></div>}
+                  {costK > 0 && <div style={{ display: "flex", justifyContent: "space-between", padding: "3px 0" }}><span>Plaća radnika (Kč)</span><b>−{czk(costK)}</b></div>}
+                  {extraCost > 0 && <div style={{ display: "flex", justifyContent: "space-between", padding: "3px 0" }}><span>Troškovi objekta (€)</span><b>−{eur(extraCost)}</b></div>}
+                  {extraCostKc > 0 && <div style={{ display: "flex", justifyContent: "space-between", padding: "3px 0" }}><span>Troškovi objekta (Kč)</span><b>−{czk(extraCostKc)}</b></div>}
+                  {brigadeCostE > 0 && <div style={{ display: "flex", justifyContent: "space-between", padding: "3px 0" }}><span>Brigada — isplaćeno cash (€)</span><b>−{eur(brigadeCostE)}</b></div>}
+                  {brigadeCostK > 0 && <div style={{ display: "flex", justifyContent: "space-between", padding: "3px 0" }}><span>Brigada — isplaćeno cash (Kč)</span><b>−{czk(brigadeCostK)}</b></div>}
+                  <div style={{ borderTop: `1px dashed #EBD9B4`, paddingTop: 5, marginTop: 2 }}>
+                    {(profitE !== 0 || profitK === 0) && (
+                      <div style={{ display: "flex", justifyContent: "space-between", fontWeight: 800 }}>
+                        <span>Dobit ovaj mjesec (€)</span><span style={{ color: profitE >= 0 ? S.green : S.red }}>{eur(profitE)}</span>
+                      </div>
+                    )}
+                    {profitK !== 0 && (
+                      <div style={{ display: "flex", justifyContent: "space-between", fontWeight: 800 }}>
+                        <span>Dobit ovaj mjesec (Kč)</span><span style={{ color: profitK >= 0 ? S.green : S.red }}>{czk(profitK)}</span>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              );
+            })()}
+            {object.monthlyBudget > 0 && (() => { const spent = bc === "CZK" ? costK + extraCostKc + brigadeCostK : costE + extraCost + brigadeCostE; const pct = round2((spent / object.monthlyBudget) * 100); const over = spent > object.monthlyBudget;
+              return <div className="num" style={{ fontSize: 12.5, marginTop: 8, fontWeight: 600, color: over ? S.red : pct >= 80 ? S.amber : S.sub }}>{over || pct >= 80 ? "⚠️ " : ""}Proračun: potrošeno {money(round2(spent), bc)} od {money(object.monthlyBudget, bc)} ({pct}%)</div>; })()}
+          </Card>
+          )}
+          {section === "postavke" && (<>
+          <Card>
+            <div style={{ fontWeight: 800, fontSize: 15, marginBottom: 10 }}>💶 Naplata objekta</div>
             <Field label={`Objekt plaća (${bc === "CZK" ? "Kč" : "€"} / sat)`}>
               <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
                 <input inputMode="decimal" value={rateEdit} onChange={(e) => setRateEdit(e.target.value)} placeholder={bc === "CZK" ? "npr. 250" : "npr. 10.00"} />
@@ -4886,8 +4935,11 @@ function ObjectDetail({ object, data, api, onBack, onOpenWorker }) {
               })()}
             </Field>
 
-            <div style={{ borderTop: `1px dashed #EBD9B4`, marginTop: 4, paddingTop: 10 }}>
-              <div style={{ fontSize: 12.5, fontWeight: 700, color: S.amber, marginBottom: 6 }}>Različita cijena po poziciji (opcionalno)</div>
+          </Card>
+          <Card>
+            <div style={{ fontWeight: 800, fontSize: 15, marginBottom: 10 }}>🏷 Cijene po poziciji</div>
+            <div style={{ marginTop: 0 }}>
+              <div style={{ fontSize: 12, color: S.sub, marginBottom: 8 }}>Opcionalno: drugačija cijena za pojedinu poziciju.</div>
               {myPositionRates.length > 0 && (
                 <div style={{ marginBottom: 8 }}>
                   {myPositionRates.map((pb) => (
@@ -4931,8 +4983,11 @@ function ObjectDetail({ object, data, api, onBack, onOpenWorker }) {
               </div>
             </div>
 
-            <div style={{ borderTop: `1px dashed #EBD9B4`, marginTop: 4, paddingTop: 10 }}>
-              <div style={{ fontSize: 12.5, fontWeight: 700, color: S.amber, marginBottom: 6 }}>👷 Brigada (bez imena) — isplaćeno u cashu</div>
+          </Card>
+          <Card>
+            <div style={{ fontWeight: 800, fontSize: 15, marginBottom: 10 }}>👷 Brigada (bez imena)</div>
+            <div style={{ marginTop: 0 }}>
+              
               <div style={{ fontSize: 11.5, color: S.sub, marginBottom: 8 }}>
                 Za kad pošalješ dodatnu osobu na dan i odmah je platiš. Sati se naplaćuju hotelu po zadanoj cijeni objekta, a iznos ide kao trošak.
               </div>
@@ -4978,43 +5033,11 @@ function ObjectDetail({ object, data, api, onBack, onOpenWorker }) {
               )}
             </div>
 
-            {(() => {
-              const revE = rv.revenue, revK = rv.revenueKc;
-              const profitE = round2(revE - costE - extraCost - brigadeCostE);
-              const profitK = round2(revK - costK - extraCostKc - brigadeCostK);
-              return (
-                <div className="num" style={{ fontSize: 14, borderTop: `1px dashed #EBD9B4`, marginTop: 10, paddingTop: 10 }}>
-                  {rv.byPosition.length === 0 && (
-                    <div style={{ display: "flex", justifyContent: "space-between", padding: "3px 0" }}><span>Naplata (0 h)</span><b>{money(0, bc)}</b></div>
-                  )}
-                  {rv.byPosition.map((row, i) => (
-                    <div key={i} style={{ display: "flex", justifyContent: "space-between", padding: "3px 0" }}>
-                      <span>Naplata{row.position ? " · " + row.position : ""} ({fmtH(row.hours)} × {money(row.rate, row.cur)})</span><b>{money(row.amount, row.cur)}</b>
-                    </div>
-                  ))}
-                  {costE > 0 && <div style={{ display: "flex", justifyContent: "space-between", padding: "3px 0" }}><span>Plaća radnika (€)</span><b>−{eur(costE)}</b></div>}
-                  {costK > 0 && <div style={{ display: "flex", justifyContent: "space-between", padding: "3px 0" }}><span>Plaća radnika (Kč)</span><b>−{czk(costK)}</b></div>}
-                  {extraCost > 0 && <div style={{ display: "flex", justifyContent: "space-between", padding: "3px 0" }}><span>Troškovi objekta (€)</span><b>−{eur(extraCost)}</b></div>}
-                  {extraCostKc > 0 && <div style={{ display: "flex", justifyContent: "space-between", padding: "3px 0" }}><span>Troškovi objekta (Kč)</span><b>−{czk(extraCostKc)}</b></div>}
-                  {brigadeCostE > 0 && <div style={{ display: "flex", justifyContent: "space-between", padding: "3px 0" }}><span>Brigada — isplaćeno cash (€)</span><b>−{eur(brigadeCostE)}</b></div>}
-                  {brigadeCostK > 0 && <div style={{ display: "flex", justifyContent: "space-between", padding: "3px 0" }}><span>Brigada — isplaćeno cash (Kč)</span><b>−{czk(brigadeCostK)}</b></div>}
-                  <div style={{ borderTop: `1px dashed #EBD9B4`, paddingTop: 5, marginTop: 2 }}>
-                    {(profitE !== 0 || profitK === 0) && (
-                      <div style={{ display: "flex", justifyContent: "space-between", fontWeight: 800 }}>
-                        <span>Dobit ovaj mjesec (€)</span><span style={{ color: profitE >= 0 ? S.green : S.red }}>{eur(profitE)}</span>
-                      </div>
-                    )}
-                    {profitK !== 0 && (
-                      <div style={{ display: "flex", justifyContent: "space-between", fontWeight: 800 }}>
-                        <span>Dobit ovaj mjesec (Kč)</span><span style={{ color: profitK >= 0 ? S.green : S.red }}>{czk(profitK)}</span>
-                      </div>
-                    )}
-                  </div>
-                </div>
-              );
-            })()}
-            <div style={{ borderTop: `1px dashed #EBD9B4`, marginTop: 10, paddingTop: 10 }}>
-              <div style={{ fontSize: 12.5, fontWeight: 700, color: S.amber, marginBottom: 6 }}>Vidljiv zaposlenicima</div>
+          </Card>
+          <Card>
+            <div style={{ fontWeight: 800, fontSize: 15, marginBottom: 10 }}>🔑 Pristup zaposlenika</div>
+            <div style={{ marginTop: 0 }}>
+              <div style={{ fontSize: 12, color: S.sub, marginBottom: 6 }}>Koji zaposlenici vide ovaj objekt u aplikaciji.</div>
               {(data.profiles || []).filter((p) => p.role !== "admin").length === 0 ? (
                 <div style={{ fontSize: 12.5, color: S.sub }}>Još nema zaposlenika.</div>
               ) : [...(data.profiles || [])].filter((p) => p.role !== "admin").sort((a, b) => (a.name || "").localeCompare(b.name || "", "hr")).map((p) => {
@@ -5028,11 +5051,31 @@ function ObjectDetail({ object, data, api, onBack, onOpenWorker }) {
               })}
             </div>
           </Card>
+          <Card>
+            <div style={{ fontWeight: 800, fontSize: 15, marginBottom: 10 }}>🏳️ Država i status</div>
+            <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+          {["HR", "CZ"].map((c) => (
+            <button key={c} onClick={() => (object.country || "HR") !== c && api.setObjectCountry(object, c)} style={{
+              padding: "5px 11px", borderRadius: 999, fontWeight: 700, fontSize: 12.5, cursor: "pointer",
+              background: (object.country || "HR") === c ? S.blue : "#fff", color: (object.country || "HR") === c ? "#fff" : S.sub,
+              border: `1px solid ${(object.country || "HR") === c ? S.blue : S.line}` }}>
+              {FLAG[c]} {c}
+            </button>
+          ))}
+          {api.admin && (
+            <Btn small kind="ghost" onClick={() => api.archiveObject(object, !object.archived)} style={{ color: object.archived ? S.green : S.amber, fontWeight: 700 }}>
+              {object.archived ? "↩ Otvori objekt" : "📁 Zatvori objekt"}
+            </Btn>
+          )}
+            </div>
+          </Card>
+          </>)}
+          </>
         );
       })()}
 
-      {(() => {
-        const mk2 = mode === "day" ? monthKey(date) : month;
+      {section === "pregled" && (() => {
+        const mk2 = month;
         const wStats = new Map();
         data.logs.filter((l) => l.objectId === object.id && monthKey(l.date) === mk2).forEach((l) => {
           wStats.set(l.workerId, round2((wStats.get(l.workerId) || 0) + l.hours));
@@ -5048,7 +5091,7 @@ function ObjectDetail({ object, data, api, onBack, onOpenWorker }) {
         const tot = round2(rows2.reduce((s, r) => s + r.h, 0));
         return (
           <Card>
-            <div style={{ fontWeight: 700, marginBottom: 6 }}>👷 Radnici na objektu — {mode === "day" ? "ovaj mjesec" : `${MONTHS[mm - 1]} ${my}.`}</div>
+            <div style={{ fontWeight: 800, fontSize: 15, marginBottom: 6 }}>👷 Radnici i sati — {MONTHS[mm - 1]} {my}.</div>
             {rows2.map((r) => (
               <div key={r.w.id} className="num" style={{ display: "flex", justifyContent: "space-between", padding: "5px 0", borderBottom: `1px solid ${S.line}`, fontSize: 13.5 }}>
                 <span onClick={() => onOpenWorker && onOpenWorker(r.w.id)} style={{ fontWeight: 600, cursor: onOpenWorker ? "pointer" : "default", color: onOpenWorker ? S.blue : "inherit" }}>
@@ -5080,7 +5123,7 @@ function ObjectDetail({ object, data, api, onBack, onOpenWorker }) {
         );
       })()}
 
-      {api.admin && (
+      {api.admin && section === "fakture" && (
         <Card>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10, flexWrap: "wrap", gap: 8 }}>
             <div style={{ fontWeight: 700 }}>🧾 Fakture i dokumenti objekta</div>
@@ -5181,6 +5224,17 @@ function ObjectDetail({ object, data, api, onBack, onOpenWorker }) {
         </Card>
       )}
 
+      {section === "pregled" && (
+            <Card style={{ padding: "10px 14px", display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+              <div style={{ flex: 1, minWidth: 180 }}>
+                <div style={{ fontWeight: 700, fontSize: 14 }}>📄 Neplacené volno za knjigovođu</div>
+                <div style={{ fontSize: 12, color: S.sub }}>Excel za {MONTHS[mm - 1].toLowerCase()} {my}.: tko, od kada do kada, broj računa</div>
+              </div>
+              <Btn small kind="excel" onClick={exportNeplaceneVolno}>⬇ Excel</Btn>
+            </Card>
+      )}
+
+      {section === "sati" && (<>
       <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
         {[["day", "Unos po danu"], ["month", "Sati za cijeli mjesec"]].map(([id, label]) => (
           <button key={id} onClick={() => setMode(id)} style={{ flex: 1, padding: "10px 8px", borderRadius: 10, fontWeight: 700, fontSize: 13.5, cursor: "pointer",
@@ -5207,15 +5261,6 @@ function ObjectDetail({ object, data, api, onBack, onOpenWorker }) {
               <Btn small kind="ghost" onClick={nextM}>→</Btn>
             </div>
           </Card>
-          {(
-            <Card style={{ padding: "10px 14px", display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-              <div style={{ flex: 1, minWidth: 180 }}>
-                <div style={{ fontWeight: 700, fontSize: 14 }}>📄 Neplacené volno za knjigovođu</div>
-                <div style={{ fontSize: 12, color: S.sub }}>Excel za {MONTHS[mm - 1].toLowerCase()} {my}.: tko, od kada do kada, broj računa</div>
-              </div>
-              <Btn small kind="excel" onClick={exportNeplaceneVolno}>⬇ Excel</Btn>
-            </Card>
-          )}
           <Card style={{ padding: "12px 14px" }}>
             <label style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10, cursor: "pointer" }}>
               <input type="checkbox" checked={workers.length > 0 && monthSel.size === workers.length}
@@ -5359,6 +5404,8 @@ function ObjectDetail({ object, data, api, onBack, onOpenWorker }) {
           </div>
         </Card>
       )}
+
+      </>)}
 
       {invViewer && (
         <div onClick={() => setInvViewer(null)} style={{ position: "fixed", inset: 0, background: "rgba(10,14,12,.92)", zIndex: 50,
