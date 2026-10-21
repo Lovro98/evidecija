@@ -692,7 +692,7 @@ async function fetchAll(isAdmin) {
     workers: (workers.data || []).map((w) => ({
       id: w.id, name: w.name, phone: w.phone || "", rate: Number(w.base_rate) || 0,
       objectId: w.object_id || "", note: w.note || "", archived: !!w.archived, archivedDate: w.archived_date || "",
-      permitExpiry: w.permit_expiry || "", contractExpiry: w.contract_expiry || "", position: w.position || "",
+      permitExpiry: w.permit_expiry || "", contractExpiry: w.contract_expiry || "", position: w.position || "", bankAccount: w.bank_account || "",
       rateCurrency: w.rate_currency === "CZK" ? "CZK" : "EUR",
     })),
     objects: (objects.data || []).map((o) => ({
@@ -916,7 +916,7 @@ export default function App() {
       if (!name) throw new Error("Ime radnika ne smije biti prazno.");
       const { data: w, error } = await supabase.from("workers")
         .insert({ name, phone: f.phone, base_rate: parseNum(f.rate) || 0, rate_currency: f.rateCur || "EUR", object_id: f.objectId || null, note: f.note,
-          permit_expiry: f.permitExpiry || null, contract_expiry: f.contractExpiry || null, position: f.position || "", created_by: session.user.id })
+          permit_expiry: f.permitExpiry || null, contract_expiry: f.contractExpiry || null, position: f.position || "", bank_account: (f.bankAccount || "").trim(), created_by: session.user.id })
         .select().single();
       if (error) throw error;
       if (f.objectId) await ins("assignments", { worker_id: w.id, object_id: f.objectId, from_date: todayISO(), created_by: session.user.id });
@@ -946,10 +946,11 @@ export default function App() {
         if ((old.position || "") !== (f.position || "")) diffs.push(`pozicija "${old.position || "—"}"→"${f.position || "—"}"`);
         if ((old.permitExpiry || "") !== (f.permitExpiry || "")) diffs.push(`istek dozvole ${old.permitExpiry || "—"}→${f.permitExpiry || "—"}`);
         if ((old.contractExpiry || "") !== (f.contractExpiry || "")) diffs.push(`istek ugovora ${old.contractExpiry || "—"}→${f.contractExpiry || "—"}`);
+        if ((old.bankAccount || "") !== (f.bankAccount || "").trim()) diffs.push("broj računa promijenjen");
       }
       return act(() => upd("workers", id, {
         name: newName, phone: f.phone, base_rate: parseNum(f.rate) || 0, rate_currency: f.rateCur || "EUR", object_id: f.objectId || null, note: f.note,
-        permit_expiry: f.permitExpiry || null, contract_expiry: f.contractExpiry || null, position: f.position || "",
+        permit_expiry: f.permitExpiry || null, contract_expiry: f.contractExpiry || null, position: f.position || "", bank_account: (f.bankAccount || "").trim(),
       }), `Uredio podatke radnika: ${name}${diffs.length ? " (" + diffs.join(", ") + ")" : ""}`);
     },
     setPosition: (w, position) => act(() => upd("workers", w.id, { position }),
@@ -3548,6 +3549,7 @@ function WorkersTab({ data, api, onOpen, onOpenObject }) {
             <div style={{ flex: 1 }}><Field label="Istek radne dozvole"><input type="date" value={form.permitExpiry} onChange={(e) => setForm({ ...form, permitExpiry: e.target.value })} /></Field></div>
             <div style={{ flex: 1 }}><Field label="Istek ugovora"><input type="date" value={form.contractExpiry} onChange={(e) => setForm({ ...form, contractExpiry: e.target.value })} /></Field></div>
           </div>
+          <Field label="Broj bankovnog računa (Číslo účtu) — za knjigovođu"><input value={form.bankAccount || ""} onChange={(e) => setForm({ ...form, bankAccount: e.target.value })} placeholder="npr. 123456789/0800" /></Field>
           <Field label={api.t("note") + " (OIB…)"}><textarea rows={2} value={form.note} onChange={(e) => setForm({ ...form, note: e.target.value })} /></Field>
           <Btn onClick={addWorker} style={{ width: "100%" }}>{api.t("saveWorker")}</Btn>
         </Card>
@@ -4026,7 +4028,7 @@ function DirectoryTab({ data, api, onOpen }) {
       sheets: [{
         name: "Imenik", title: "Imenik radnika", subtitle: `${active} aktivnih · ${former} bivših`, landscape: true, freezeCols: 1,
         columns: [
-          { key: "name", header: "Prezime i ime", width: 26, bold: true }, { key: "phone", header: "Telefon", width: 16 },
+          { key: "name", header: "Prezime i ime", width: 26, bold: true }, { key: "phone", header: "Telefon", width: 16 }, { key: "acc", header: "Broj računa", width: 22 },
           { key: "obj", header: "Objekt", width: 20 }, { key: "pos", header: "Pozicija", width: 18 },
           { key: "rate", header: "Satnica", width: 10, type: "money" }, { key: "cur", header: "Valuta", width: 8, type: "center" },
           { key: "permit", header: "Istek radne dozvole", width: 14, type: "date", color: (v, r) => (r.permitSoon ? XC.red : null), fill: (v, r) => (r.permitSoon ? XC.redSoft : null) },
@@ -4035,7 +4037,7 @@ function DirectoryTab({ data, api, onOpen }) {
           { key: "note", header: "Napomena", width: 32, wrap: true },
         ],
         rows: list.map((w) => ({
-          name: w.name, phone: w.phone || "", obj: objName(w.objectId), pos: w.position || "",
+          name: w.name, phone: w.phone || "", acc: w.bankAccount || "", obj: objName(w.objectId), pos: w.position || "",
           rate: rateNow(data, w) || "", cur: wCur(w) === "CZK" ? "Kč" : "€",
           permit: w.permitExpiry, contract: w.contractExpiry,
           permitSoon: !w.archived && soon(w.permitExpiry), contractSoon: !w.archived && soon(w.contractExpiry),
@@ -4361,6 +4363,7 @@ function WorkerDetail({ worker, data, api, onBack }) {
               <div style={{ flex: 1 }}><Field label="Istek radne dozvole"><input type="date" value={form.permitExpiry || ""} onChange={(e) => setForm({ ...form, permitExpiry: e.target.value })} /></Field></div>
               <div style={{ flex: 1 }}><Field label="Istek ugovora"><input type="date" value={form.contractExpiry || ""} onChange={(e) => setForm({ ...form, contractExpiry: e.target.value })} /></Field></div>
             </div>
+            <Field label="Broj bankovnog računa (Číslo účtu) — za knjigovođu"><input value={form.bankAccount || ""} onChange={(e) => setForm({ ...form, bankAccount: e.target.value })} placeholder="npr. 123456789/0800" /></Field>
             <Field label="Napomena"><textarea rows={2} value={form.note} onChange={(e) => setForm({ ...form, note: e.target.value })} /></Field>
             <div style={{ display: "flex", gap: 8 }}>
               <Btn small onClick={save}>Spremi</Btn>
@@ -4635,6 +4638,67 @@ function ObjectDetail({ object, data, api, onBack, onOpenWorker }) {
   const [my, mm] = month.split("-").map(Number);
   const prevM = () => setMonth(mm === 1 ? `${my - 1}-12` : `${my}-${String(mm - 1).padStart(2, "0")}`);
   const nextM = () => setMonth(mm === 12 ? `${my + 1}-01` : `${my}-${String(mm + 1).padStart(2, "0")}`);
+  // Neplacené volno za knjigovođu: radni dani u mjesecu bez upisanih sati (po radniku), spojeni u razdoblja od–do
+  const exportNeplaceneVolno = () => {
+    const CZ_MONTHS = ["leden", "únor", "březen", "duben", "květen", "červen", "červenec", "srpen", "září", "říjen", "listopad", "prosinec"];
+    const isHol = (iso) => (object.country === "CZ" ? isCzHoliday(iso) : !!holidayName(iso));
+    const days = []; for (let d = 1; d <= new Date(my, mm, 0).getDate(); d++) days.push(`${month}-${String(d).padStart(2, "0")}`);
+    const workDays = days.filter((d) => !isWeekend(d) && !isHol(d));
+    const monthLogs = data.logs.filter((l) => l.date.startsWith(month));
+    const ids = new Set([
+      ...data.workers.filter((w) => !w.archived && w.objectId === object.id).map((w) => w.id),
+      ...monthLogs.filter((l) => l.objectId === object.id).map((l) => l.workerId),
+    ]);
+    const people = sortedWorkers(data.workers.filter((w) => ids.has(w.id)));
+    const split = (name) => { const t = name.replace(/\s*\(.*?\)\s*/g, " ").trim().split(/\s+/); return { sur: t[0] || "", first: t.slice(1).join(" ") }; };
+    const rows = [];
+    people.forEach((w) => {
+      const mine = monthLogs.filter((l) => l.workerId === w.id);
+      const { sur, first } = split(w.name);
+      const base = { sur, first, pos: w.position || "", acc: w.bankAccount || "", hours: round2(mine.reduce((s, l) => s + l.hours, 0)) };
+      const hasDaily = mine.some((l) => !l.monthly);
+      if (!hasDaily) {
+        rows.push({ ...base, from: "", to: "", n: "", note: mine.length ? "Hodiny zadány jen za celý měsíc – doplňte dny volna" : "Žádné odpracované hodiny – doplňte" });
+        return;
+      }
+      const worked = new Set(mine.filter((l) => l.hours > 0).map((l) => l.date));
+      const missing = workDays.filter((d) => !worked.has(d));
+      if (!missing.length) { rows.push({ ...base, from: "", to: "", n: 0, note: "Bez neplaceného volna" }); return; }
+      // spoji uzastopne radne dane (vikend/praznik između ne prekida razdoblje)
+      const ranges = [];
+      missing.forEach((d) => {
+        const r = ranges[ranges.length - 1];
+        if (r) {
+          const between = workDays.slice(workDays.indexOf(r.to) + 1, workDays.indexOf(d));
+          if (!between.length) { r.to = d; r.n++; return; }
+        }
+        ranges.push({ from: d, to: d, n: 1 });
+      });
+      ranges.forEach((r, i) => rows.push({ ...base, hours: i === 0 ? base.hours : "", acc: i === 0 ? base.acc : "", from: r.from, to: r.to, n: r.n, note: "" }));
+    });
+    const period = `${CZ_MONTHS[mm - 1]} ${my}`;
+    downloadStyledXlsx({
+      fileName: `Neplacene_volno_${object.name.normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[^\w]+/g, "_")}_${month}.xlsx`,
+      sheets: [{
+        name: "Neplacené volno", title: `Neplacené volno – ${object.name} – ${period}`,
+        subtitle: `${data.settings.company_name || "Molnar Rose agency & floristry s.r.o."} · podklad pro mzdy · ${workDays.length} pracovních dní v měsíci`,
+        landscape: true, freezeCols: 2, total: { label: "CELKEM", keys: ["n", "hours"] },
+        columns: [
+          { key: "sur", header: "Příjmení", width: 18, bold: true }, { key: "first", header: "Jméno", width: 16, bold: true },
+          { key: "pos", header: "Pozice", width: 16 },
+          { key: "from", header: "Neplacené volno od", width: 15, type: "date", fill: (v) => (v ? XC.amberSoft : null) },
+          { key: "to", header: "Neplacené volno do", width: 15, type: "date", fill: (v) => (v ? XC.amberSoft : null) },
+          { key: "n", header: "Počet prac. dní", width: 11, type: "int" },
+          { key: "hours", header: "Odpracováno hodin", width: 12, type: "hours" },
+          { key: "acc", header: "Číslo účtu", width: 24 },
+          { key: "note", header: "Poznámka", width: 40, wrap: true, color: (v) => (/doplňte/.test(v || "") ? XC.red : null) },
+        ],
+        rows,
+        emptyText: "V tomto objektu nejsou v tomto měsíci žádní zaměstnanci.",
+        note: "Neplacené volno = pracovní dny (po–pá, bez svátků) bez záznamu docházky v aplikaci. Řádky s červenou poznámkou je potřeba doplnit ručně. Prosím zkontrolujte před odesláním účetní.",
+      }],
+    }).catch((e) => alert("Izvoz nije uspio: " + (e.message || e)));
+  };
 
   const allActiveWorkers = sortedWorkers(data.workers.filter((w) => !w.archived));
   const wq = q.trim().toLowerCase();
@@ -5138,6 +5202,15 @@ function ObjectDetail({ object, data, api, onBack, onOpenWorker }) {
               <Btn small kind="ghost" onClick={nextM}>→</Btn>
             </div>
           </Card>
+          {api.admin && (
+            <Card style={{ padding: "10px 14px", display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+              <div style={{ flex: 1, minWidth: 180 }}>
+                <div style={{ fontWeight: 700, fontSize: 14 }}>📄 Neplacené volno za knjigovođu</div>
+                <div style={{ fontSize: 12, color: S.sub }}>Excel za {MONTHS[mm - 1].toLowerCase()} {my}.: tko, od kada do kada, broj računa</div>
+              </div>
+              <Btn small kind="excel" onClick={exportNeplaceneVolno}>⬇ Excel</Btn>
+            </Card>
+          )}
           <Card style={{ padding: "12px 14px" }}>
             <label style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10, cursor: "pointer" }}>
               <input type="checkbox" checked={workers.length > 0 && monthSel.size === workers.length}
