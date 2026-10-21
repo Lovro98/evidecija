@@ -655,7 +655,10 @@ async function fetchAll(isAdmin) {
   if (err) throw err.error;
 
   let billing = [], audit = [], trash = [], members = [], invoicePayments = [], settings = {}, objectInvoices = [], payrollNotes = [], positionBilling = [], reminders = [], loginLog = [], errorLog = [], commissionRates = [], commissionPayouts = [], brigadeCosts = [], purchaseInvoices = [], monthClose = [];
+  let bankMap = {};
   if (isAdmin) {
+    const wb = await supabase.from("worker_bank").select("worker_id, bank_account");
+    if (!wb.error) (wb.data || []).forEach((r) => { bankMap[r.worker_id] = r.bank_account || ""; });
     const [b, a, tw, tl, tp, om, ip, st, oi, pn, pb, rm, ll, el, cr, cp, bg, pi, mc] = await Promise.all([
       supabase.from("object_billing").select("*"),
       supabase.from("audit_log").select("*").order("at", { ascending: false }).limit(80),
@@ -692,7 +695,7 @@ async function fetchAll(isAdmin) {
     workers: (workers.data || []).map((w) => ({
       id: w.id, name: w.name, phone: w.phone || "", rate: Number(w.base_rate) || 0,
       objectId: w.object_id || "", note: w.note || "", archived: !!w.archived, archivedDate: w.archived_date || "",
-      permitExpiry: w.permit_expiry || "", contractExpiry: w.contract_expiry || "", position: w.position || "", bankAccount: w.bank_account || "",
+      permitExpiry: w.permit_expiry || "", contractExpiry: w.contract_expiry || "", position: w.position || "", bankAccount: bankMap[w.id] || "",
       rateCurrency: w.rate_currency === "CZK" ? "CZK" : "EUR",
     })),
     objects: (objects.data || []).map((o) => ({
@@ -902,6 +905,7 @@ export default function App() {
   const ins = (table, row) => supabase.from(table).insert(row).then(({ error }) => { if (error) throw error; });
   const upd = (table, id, patch) => supabase.from(table).update(patch).eq("id", id).then(({ error }) => { if (error) throw error; });
   const softDel = (table, id) => upd(table, id, { deleted_at: new Date().toISOString() });
+  const saveBank = (workerId, acc) => supabase.from("worker_bank").upsert({ worker_id: workerId, bank_account: (acc || "").trim(), updated_by: session.user.id, updated_at: new Date().toISOString() }).then(({ error }) => { if (error) throw error; });
   const guardPaid = (workerId, dateOrMonth) => {
     const mo = dateOrMonth.length === 7 ? dateOrMonth : monthKey(dateOrMonth);
     const p = paidFor(data, workerId, mo);
@@ -916,10 +920,11 @@ export default function App() {
       if (!name) throw new Error("Ime radnika ne smije biti prazno.");
       const { data: w, error } = await supabase.from("workers")
         .insert({ name, phone: f.phone, base_rate: parseNum(f.rate) || 0, rate_currency: f.rateCur || "EUR", object_id: f.objectId || null, note: f.note,
-          permit_expiry: f.permitExpiry || null, contract_expiry: f.contractExpiry || null, position: f.position || "", bank_account: (f.bankAccount || "").trim(), created_by: session.user.id })
+          permit_expiry: f.permitExpiry || null, contract_expiry: f.contractExpiry || null, position: f.position || "", created_by: session.user.id })
         .select().single();
       if (error) throw error;
       if (f.objectId) await ins("assignments", { worker_id: w.id, object_id: f.objectId, from_date: todayISO(), created_by: session.user.id });
+      if (admin && (f.bankAccount || "").trim()) await saveBank(w.id, f.bankAccount);
     }, `Dodao radnika: ${normalizeName(f.name)}`),
     addWorkersBulk: (rows) => act(async () => {
       const clean = rows.map((r) => ({ ...r, name: normalizeName(r.name) })).filter((r) => r.name);
@@ -948,10 +953,10 @@ export default function App() {
         if ((old.contractExpiry || "") !== (f.contractExpiry || "")) diffs.push(`istek ugovora ${old.contractExpiry || "—"}→${f.contractExpiry || "—"}`);
         if ((old.bankAccount || "") !== (f.bankAccount || "").trim()) diffs.push("broj računa promijenjen");
       }
-      return act(() => upd("workers", id, {
+      return act(async () => { await upd("workers", id, {
         name: newName, phone: f.phone, base_rate: parseNum(f.rate) || 0, rate_currency: f.rateCur || "EUR", object_id: f.objectId || null, note: f.note,
-        permit_expiry: f.permitExpiry || null, contract_expiry: f.contractExpiry || null, position: f.position || "", bank_account: (f.bankAccount || "").trim(),
-      }), `Uredio podatke radnika: ${name}${diffs.length ? " (" + diffs.join(", ") + ")" : ""}`);
+        permit_expiry: f.permitExpiry || null, contract_expiry: f.contractExpiry || null, position: f.position || "",
+      }); if (admin && (old?.bankAccount || "") !== (f.bankAccount || "").trim()) await saveBank(id, f.bankAccount); }, `Uredio podatke radnika: ${name}${diffs.length ? " (" + diffs.join(", ") + ")" : ""}`);
     },
     setPosition: (w, position) => act(() => upd("workers", w.id, { position }),
       `Postavio poziciju radniku ${w.name}: ${position || "—"}`),
@@ -3549,7 +3554,7 @@ function WorkersTab({ data, api, onOpen, onOpenObject }) {
             <div style={{ flex: 1 }}><Field label="Istek radne dozvole"><input type="date" value={form.permitExpiry} onChange={(e) => setForm({ ...form, permitExpiry: e.target.value })} /></Field></div>
             <div style={{ flex: 1 }}><Field label="Istek ugovora"><input type="date" value={form.contractExpiry} onChange={(e) => setForm({ ...form, contractExpiry: e.target.value })} /></Field></div>
           </div>
-          <Field label="Broj bankovnog računa (Číslo účtu) — za knjigovođu"><input value={form.bankAccount || ""} onChange={(e) => setForm({ ...form, bankAccount: e.target.value })} placeholder="npr. 123456789/0800" /></Field>
+          {api.admin && <Field label="Broj bankovnog računa (Číslo účtu) — za knjigovođu"><input value={form.bankAccount || ""} onChange={(e) => setForm({ ...form, bankAccount: e.target.value })} placeholder="npr. 123456789/0800" /></Field>}
           <Field label={api.t("note") + " (OIB…)"}><textarea rows={2} value={form.note} onChange={(e) => setForm({ ...form, note: e.target.value })} /></Field>
           <Btn onClick={addWorker} style={{ width: "100%" }}>{api.t("saveWorker")}</Btn>
         </Card>
@@ -4363,7 +4368,7 @@ function WorkerDetail({ worker, data, api, onBack }) {
               <div style={{ flex: 1 }}><Field label="Istek radne dozvole"><input type="date" value={form.permitExpiry || ""} onChange={(e) => setForm({ ...form, permitExpiry: e.target.value })} /></Field></div>
               <div style={{ flex: 1 }}><Field label="Istek ugovora"><input type="date" value={form.contractExpiry || ""} onChange={(e) => setForm({ ...form, contractExpiry: e.target.value })} /></Field></div>
             </div>
-            <Field label="Broj bankovnog računa (Číslo účtu) — za knjigovođu"><input value={form.bankAccount || ""} onChange={(e) => setForm({ ...form, bankAccount: e.target.value })} placeholder="npr. 123456789/0800" /></Field>
+            {api.admin && <Field label="Broj bankovnog računa (Číslo účtu) — za knjigovođu"><input value={form.bankAccount || ""} onChange={(e) => setForm({ ...form, bankAccount: e.target.value })} placeholder="npr. 123456789/0800" /></Field>}
             <Field label="Napomena"><textarea rows={2} value={form.note} onChange={(e) => setForm({ ...form, note: e.target.value })} /></Field>
             <div style={{ display: "flex", gap: 8 }}>
               <Btn small onClick={save}>Spremi</Btn>
