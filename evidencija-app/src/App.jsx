@@ -3,6 +3,7 @@ import * as XLSX from "xlsx";
 import * as pdfjsLib from "pdfjs-dist/build/pdf.mjs";
 import pdfjsWorkerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import { supabase } from "./supabase.js";
+import { exportUnpaidXlsx } from "./unpaidExport.js";
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorkerUrl;
 
@@ -1581,6 +1582,7 @@ function UnpaidPanel({ data, api, onOpenWorker }) {
   const [open, setOpen] = useState(() => new Set());
   const [showClosed, setShowClosed] = useState(false);
   const [payForm, setPayForm] = useState(null); // { key, wageId, amount, date, note }
+  const [exporting, setExporting] = useState(false);
   const [newOpen, setNewOpen] = useState(false);
   const [nf, setNf] = useState({ workerId: "", objectId: "", month: prevMonthKey(curMonth()), section: "", amount: "", calc: "" });
 
@@ -1694,30 +1696,17 @@ function UnpaidPanel({ data, api, onOpenWorker }) {
     if (ok) { setNewOpen(false); setNf({ ...nf, workerId: "", section: "", amount: "", calc: "" }); load(); }
   };
 
-  const exportXlsx = () => {
-    const src = fr;
-    const wb = XLSX.utils.book_new();
-    if (!obj) {
-      const byObj = objList.map((o) => ({ "Objekt": o.name, "Radnika": o.workers.size, "Ukupno na kovertama (Kč)": o.amount, "Isplaćeno (Kč)": o.paid, "Ostaje (Kč)": o.remaining }));
-      byObj.push({ "Objekt": "UKUPNO", "Ukupno na kovertama (Kč)": sum(objList, "amount"), "Isplaćeno (Kč)": sum(objList, "paid"), "Ostaje (Kč)": sum(objList, "remaining") });
-      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(byObj), "Po objektima");
-    }
-    const byWorker = all.map((g) => ({ "Objekt": objName(g.objectId || "none"), "Radnik": g.name, "Mjeseci": g.list.map((r) => monthLabel(r.month)).join(", "),
-      "Ukupno na kovertama (Kč)": g.amount, "Isplaćeno (Kč)": g.paid, "Ostaje (Kč)": g.remaining }))
-      .sort((a, b) => a["Objekt"].localeCompare(b["Objekt"], "hr") || a["Radnik"].localeCompare(b["Radnik"], "hr"));
-    byWorker.push({ "Objekt": "UKUPNO", "Ukupno na kovertama (Kč)": sum(all, "amount"), "Isplaćeno (Kč)": totalPaid, "Ostaje (Kč)": totalOwed });
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(byWorker), "Po radnicima");
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet([...src].sort((a, b) => objName(objKey(a)).localeCompare(objName(objKey(b)), "hr") || a.worker_name.localeCompare(b.worker_name, "hr") || a.month.localeCompare(b.month)).map((r) => ({
-      "Objekt": objName(objKey(r)), "Radnik": r.worker_name, "Mjesec": monthLabel(r.month), "Odjel": r.section || "",
-      "Iznos (Kč)": r.amount, "Isplaćeno (Kč)": r.paid, "Ostaje (Kč)": r.remaining, "Izračun": r.calc_note || "", "Napomena": r.note || "",
-    }))), "Koverte");
-    const wageById = Object.fromEntries(src.map((r) => [r.id, r]));
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(pays.filter((p) => wageById[p.unpaid_wage_id]).map((p) => ({
-      "Datum": p.pay_date ? fmtDate(p.pay_date) : "bez datuma", "Objekt": objName(objKey(wageById[p.unpaid_wage_id])), "Radnik": wageById[p.unpaid_wage_id].worker_name,
-      "Za mjesec": monthLabel(wageById[p.unpaid_wage_id].month), "Iznos (Kč)": p.amount, "Napomena": p.note || "",
-    }))), "Isplate");
-    const suffix = obj ? "_" + objName(obj).normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[^\w]+/g, "") : "";
-    XLSX.writeFile(wb, `Neisplaceno${suffix}_${todayISO()}.xlsx`);
+  const exportXlsx = async () => {
+    if (!fr.length) { alert("Nema koverti za izvoz."); return; }
+    const suffix = obj ? "_" + objName(obj).normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^\w]+/g, "") : "";
+    setExporting(true);
+    try {
+      await exportUnpaidXlsx({
+        rows: fr.map((r) => ({ ...r, objectName: objName(objKey(r)) })),
+        pays, scope: obj ? objName(obj) : null, fileName: `Neisplaceno${suffix}_${todayISO()}.xlsx`,
+      });
+    } catch (e) { alert("Izvoz nije uspio: " + (e.message || e)); }
+    finally { setExporting(false); }
   };
 
   const workerOptions = sortedWorkers(data.workers);
@@ -1752,7 +1741,7 @@ function UnpaidPanel({ data, api, onOpenWorker }) {
       <div className="num" style={{ fontSize: 30, fontWeight: 800, color: S.ink, margin: "2px 0 4px" }}>{czk(owed)}</div>
       <div className="num" style={{ fontSize: 13, color: S.sub }}>{sub}</div>
       <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
-        <Btn small kind="excel" onClick={exportXlsx}>⬇ Preuzmi tablicu</Btn>
+        <Btn small kind="excel" onClick={exportXlsx} disabled={exporting}>{exporting ? "Pripremam…" : "⬇ Preuzmi tablicu"}</Btn>
         <Btn small kind="ghost" onClick={openNew}>＋ Nova koverta</Btn>
         <Btn small kind="ghost" onClick={() => setShowClosed(!showClosed)}>{showClosed ? "Sakrij isplaćene" : "Prikaži i isplaćene"}</Btn>
       </div>
