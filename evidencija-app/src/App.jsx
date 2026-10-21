@@ -4,7 +4,7 @@ import * as pdfjsLib from "pdfjs-dist/build/pdf.mjs";
 import pdfjsWorkerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import { supabase } from "./supabase.js";
 import { exportUnpaidXlsx } from "./unpaidExport.js";
-import { downloadStyledXlsx, XC } from "./xlsxStyled.js";
+import { downloadStyledXlsx, XC, xDate } from "./xlsxStyled.js";
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorkerUrl;
 
@@ -4510,6 +4510,7 @@ function WorkerDetail({ worker, data, api, onBack }) {
 function ObjectDetail({ object, data, api, onBack, onOpenWorker }) {
   const [mode, setMode] = useState("day");
   const [section, setSection] = useState(api.admin ? "pregled" : "sati"); // pregled | sati | fakture | postavke
+  const [volnoMonth, setVolnoMonth] = useState(() => prevMonthKey(curMonth())); // Neplacené volno: zadano prošli mjesec
   const [date, setDate] = useState(todayISO());
   const [month, setMonth] = useState(curMonth());
   const [inputs, setInputs] = useState({});
@@ -4646,9 +4647,11 @@ function ObjectDetail({ object, data, api, onBack, onOpenWorker }) {
   const nextM = () => setMonth(mm === 12 ? `${my + 1}-01` : `${my}-${String(mm + 1).padStart(2, "0")}`);
   // Neplacené volno za knjigovođu: radni dani u mjesecu bez upisanih sati (po radniku), spojeni u razdoblja od–do
   const exportNeplaceneVolno = () => {
+    const month = volnoMonth; const [my, mm] = volnoMonth.split("-").map(Number);
     const CZ_MONTHS = ["leden", "únor", "březen", "duben", "květen", "červen", "červenec", "srpen", "září", "říjen", "listopad", "prosinec"];
     const isHol = (iso) => (object.country === "CZ" ? isCzHoliday(iso) : !!holidayName(iso));
-    const days = []; for (let d = 1; d <= new Date(my, mm, 0).getDate(); d++) days.push(`${month}-${String(d).padStart(2, "0")}`);
+    const lastDay = new Date(my, mm, 0).getDate();
+    const days = []; for (let d = 1; d <= lastDay; d++) days.push(`${month}-${String(d).padStart(2, "0")}`);
     const workDays = days.filter((d) => !isWeekend(d) && !isHol(d));
     const monthLogs = data.logs.filter((l) => l.date.startsWith(month));
     const ids = new Set([
@@ -4680,9 +4683,9 @@ function ObjectDetail({ object, data, api, onBack, onOpenWorker }) {
         }
         ranges.push({ from: d, to: d, n: 1 });
       });
-      ranges.forEach((r, i) => rows.push({ ...base, hours: i === 0 ? base.hours : "", acc: i === 0 ? base.acc : "", from: r.from, to: r.to, n: r.n, note: "" }));
+      ranges.forEach((r, i) => rows.push({ ...base, hours: i === 0 ? base.hours : "", acc: i === 0 ? base.acc : "", fd: Number(r.from.slice(8)), td: Number(r.to.slice(8)), from: r.from, to: r.to, n: r.n, note: "" }));
     });
-    for (let k = 0; k < 8; k++) rows.push({ sur: "", first: "", pos: "", from: "", to: "", n: "", hours: "", acc: "", note: "" });
+    for (let k = 0; k < 8; k++) rows.push({ sur: "", first: "", pos: "", fd: "", td: "", from: "", to: "", n: "", hours: "", acc: "", note: "" });
     // svátky cijele godine → list "Svátky" za formulu NETWORKDAYS
     const yearDays = []; for (let d = new Date(Date.UTC(my, 0, 1)); d.getUTCFullYear() === my; d.setUTCDate(d.getUTCDate() + 1)) yearDays.push(d.toISOString().slice(0, 10));
     const holidays = yearDays.filter((d) => !isWeekend(d) && isHol(d));
@@ -4697,8 +4700,10 @@ function ObjectDetail({ object, data, api, onBack, onOpenWorker }) {
         columns: [
           { key: "sur", header: "Příjmení", width: 18, bold: true }, { key: "first", header: "Jméno", width: 16, bold: true },
           { key: "pos", header: "Pozice", width: 16 },
-          { key: "from", header: "Neplacené volno od", width: 15, type: "date", fill: (v) => (v ? XC.amberSoft : null) },
-          { key: "to", header: "Neplacené volno do", width: 15, type: "date", fill: (v) => (v ? XC.amberSoft : null) },
+          { key: "fd", header: "Od (den)", width: 9, type: "center", bold: true, fill: () => XC.amberSoft },
+          { key: "td", header: "Do (den)", width: 9, type: "center", bold: true, fill: () => XC.amberSoft },
+          { key: "from", header: "Neplacené volno od", width: 15, type: "date" },
+          { key: "to", header: "Neplacené volno do", width: 15, type: "date" },
           { key: "n", header: "Počet prac. dní", width: 11, type: "int" },
           { key: "hours", header: "Odpracováno hodin", width: 12, type: "hours" },
           { key: "acc", header: "Číslo účtu", width: 24 },
@@ -4706,17 +4711,19 @@ function ObjectDetail({ object, data, api, onBack, onOpenWorker }) {
         ],
         rows,
         emptyText: "V tomto objektu nejsou v tomto měsíci žádní zaměstnanci.",
-        note: "Neplacené volno = pracovní dny (po–pá, bez svátků) bez záznamu docházky. Stačí vyplnit datum „od“ a „do“ (např. 15.9.2026) – počet pracovních dní se spočítá sám. Volné řádky dole jsou pro doplnění. Prosím zkontrolujte před odesláním účetní.",
+        note: "Neplacené volno = pracovní dny (po–pá, bez svátků) bez záznamu docházky. Do žlutých sloupců „Od (den)“ a „Do (den)“ stačí napsat číslo dne (např. 15) – datum i počet pracovních dní se doplní samy. Volné řádky dole jsou pro doplnění. Prosím zkontrolujte před odesláním účetní.",
         after: (ws, { first }) => {
           const last = first + rows.length - 1;
           for (let r = first; r <= last; r++) {
             const row = rows[r - first];
-            ws.getCell(`F${r}`).value = { formula: `IF(AND(ISNUMBER(D${r}),ISNUMBER(E${r})),NETWORKDAYS(D${r},E${r},${holRef}),"")`, result: typeof row.n === "number" && row.from ? row.n : "" };
-            ws.getCell(`F${r}`).alignment = { horizontal: "center", vertical: "middle" };
-            ["D", "E"].forEach((c) => { ws.getCell(`${c}${r}`).numFmt = "dd.mm.yyyy"; ws.getCell(`${c}${r}`).alignment = { horizontal: "center", vertical: "middle" }; });
+            ws.getCell(`F${r}`).value = { formula: `IF(ISNUMBER(D${r}),DATE(${my},${mm},D${r}),"")`, result: row.from ? xDate(row.from) : "" };
+            ws.getCell(`G${r}`).value = { formula: `IF(ISNUMBER(E${r}),DATE(${my},${mm},E${r}),"")`, result: row.to ? xDate(row.to) : "" };
+            ws.getCell(`H${r}`).value = { formula: `IF(AND(ISNUMBER(F${r}),ISNUMBER(G${r})),NETWORKDAYS(F${r},G${r},${holRef}),"")`, result: typeof row.n === "number" && row.from ? row.n : "" };
+            ["F", "G"].forEach((c) => { ws.getCell(`${c}${r}`).numFmt = "dd.mm.yyyy"; });
+            ["D", "E", "F", "G", "H"].forEach((c) => { ws.getCell(`${c}${r}`).alignment = { horizontal: "center", vertical: "middle" }; });
           }
-          ws.dataValidations.add(`D${first}:E${last}`, { type: "date", operator: "greaterThan", allowBlank: true, formulae: [new Date(Date.UTC(2000, 0, 1))],
-            showErrorMessage: true, errorTitle: "Datum", error: "Zadejte datum, např. 15.9.2026", showInputMessage: true, promptTitle: "Datum", prompt: "např. 15.9.2026" });
+          ws.dataValidations.add(`D${first}:E${last}`, { type: "whole", operator: "between", allowBlank: true, formulae: [1, lastDay],
+            showErrorMessage: true, errorTitle: "Den v měsíci", error: `Napište jen číslo dne (1–${lastDay}).`, showInputMessage: true, promptTitle: "Den", prompt: `Číslo dne 1–${lastDay}, např. 15` });
         },
       }, {
         name: "Svátky", title: `Státní svátky ${my}`, subtitle: "Nepočítají se do pracovních dní", tabColor: XC.sub,
@@ -5248,7 +5255,12 @@ function ObjectDetail({ object, data, api, onBack, onOpenWorker }) {
             <Card style={{ padding: "10px 14px", display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
               <div style={{ flex: 1, minWidth: 180 }}>
                 <div style={{ fontWeight: 700, fontSize: 14 }}>📄 Neplacené volno za knjigovođu</div>
-                <div style={{ fontSize: 12, color: S.sub }}>Excel za {MONTHS[mm - 1].toLowerCase()} {my}.: tko, od kada do kada, broj računa</div>
+                <div style={{ fontSize: 12, color: S.sub }}>Tko, od kada do kada, broj računa — za knjigovođu</div>
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                <Btn small kind="ghost" onClick={() => setVolnoMonth(prevMonthKey(volnoMonth))}>←</Btn>
+                <div style={{ fontWeight: 700, fontSize: 13.5, minWidth: 104, textAlign: "center" }}>{MONTHS[Number(volnoMonth.slice(5)) - 1]} {volnoMonth.slice(0, 4)}.</div>
+                <Btn small kind="ghost" onClick={() => { const [yy, m2] = volnoMonth.split("-").map(Number); setVolnoMonth(m2 === 12 ? `${yy + 1}-01` : `${yy}-${String(m2 + 1).padStart(2, "0")}`); }}>→</Btn>
               </div>
               <Btn small kind="excel" onClick={exportNeplaceneVolno}>⬇ Excel</Btn>
             </Card>
