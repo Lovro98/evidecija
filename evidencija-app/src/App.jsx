@@ -411,35 +411,93 @@ const findWorkerByName = (workers, rawName) => {
   return workers.find((w) => normName(w.name) === target);
 };
 
-function parseMzdyPdf(lines) {
+/* ---------- Mzdy PDF-ovi od knjigovođe: pásky, oprava, mzdové náklady, příkazy k úhradě ---------- */
+// soc.-zdr. koji se odbija na koverti (fiksno prema ugovoru): puno radno vrijeme / pola / DPČ-DPP
+const SOCZDR_FULL = 5500, SOCZDR_HALF = 3300, FULL_TARIF = 22400;
+const socZdrFor = (p) => (/^DP[PČC]$/i.test(p.kat || "") || (!p.zdrav && !p.soc) ? 0 : (p.tarif >= FULL_TARIF ? SOCZDR_FULL : SOCZDR_HALF));
+const mzdyAmount = (line) => {
+  const nums = [...line.matchAll(/(\d[\d\s]*(?:[.,]\d+)?)\s*K\s*č/gi)];
+  return nums.length ? czNum(nums[nums.length - 1][1]) : 0;
+};
+// vrsta dokumenta po sadržaju
+function mzdyDocType(lines) {
+  const txt = lines.slice(0, 15).join(" ");
+  if (/MZDOV.{1,3}\s*N.{1,3}KLADY/i.test(txt)) return "naklady";
+  if (/QR\s*platby/i.test(txt) || lines.some((l) => /z\s*pr.{1,3}va\s*p.{1,3}jemci/i.test(l))) return "prikazy";
+  return "pasky";
+}
+// výplatní pásky (i "oprava") → po radniku
+function parseMzdyPasky(lines) {
   const out = [];
   let cur = null;
-  const push = () => {
-    if (cur && cur.name && (cur.zdrav || cur.soc || cur.pojist)) {
-      const sum = round2((cur.zdrav || 0) + (cur.soc || 0) + (cur.pojist || 0));
-      out.push({ name: cur.name, month: cur.month, zdrav: cur.zdrav, soc: cur.soc, pojist: cur.pojist, sumKc: sum, halfKc: round2(sum / 2) });
-    }
-    cur = null;
-  };
-  const lastAmount = (line) => {
-    const nums = [...line.matchAll(/(\d[\d\s]*(?:[.,]\d+)?)\s*K\s*č/gi)];
-    return nums.length ? czNum(nums[nums.length - 1][1]) : 0;
-  };
+  const push = () => { if (cur && cur.name) out.push(cur); cur = null; };
   for (const line of lines) {
-    // redak s brojem radnika, imenom i rodnim brojem (npr. "│ 90002 │ REPECKA Sofija │ 005306/3296 │ HPP │ 2026/06 │")
     const m = line.match(/(\d{2,6})\s*\S{0,3}\s*([A-ZÁ-Ž][A-Za-zÁ-Žá-ž]+(?:\s+[A-Za-zÁ-Žá-ž]+)+?)\s*\S{0,3}\s*(\d{6}\/\d{3,4})\s*\S{0,3}\s*(\S{2,4})\s*\S{0,3}\s*(\d{4})\s*\/\s*(\d{2})/);
-    if (m) {
-      push();
-      cur = { name: m[2].trim(), month: `${m[5]}-${m[6]}`, zdrav: 0, soc: 0, pojist: 0 };
-      continue;
-    }
+    if (m) { push(); cur = { name: m[2].trim(), kat: m[4].toUpperCase(), month: `${m[5]}-${m[6]}`, tarif: 0, zdrav: 0, soc: 0, pojist: 0, dobirka: 0, hruba: 0 }; continue; }
     if (!cur) continue;
-    if (/Zdrav\.?\s*poj/i.test(line)) cur.zdrav = lastAmount(line);
-    else if (/Soc\.?\s*poj/i.test(line)) cur.soc = lastAmount(line);
-    else if (/Pojistn.{0,3}zam.{0,4}stnavatel/i.test(line)) cur.pojist = lastAmount(line);
+    const t = line.match(/M.{1,3}s.{1,3}n.{1,3}\s*tarif\s+(\d[\d\s]*)\s*K\s*č/i);
+    if (t) cur.tarif = czNum(t[1]);
+    if (/Zdrav\.?\s*poj/i.test(line)) cur.zdrav = mzdyAmount(line);
+    else if (/Soc\.?\s*poj/i.test(line)) cur.soc = mzdyAmount(line);
+    else if (/Pojistn.{0,3}zam.{0,4}stnavatel/i.test(line)) cur.pojist = mzdyAmount(line);
+    else if (/Hrub.{1,2}\s*mzda/i.test(line)) cur.hruba = mzdyAmount(line);
+    if (/Dob.{1,2}rka/i.test(line)) cur.dobirka = mzdyAmount(line);
   }
   push();
   return out;
+}
+// mzdové náklady → { prezime: dobírka } za provjeru
+function parseMzdyNaklady(lines) {
+  const out = [];
+  for (const line of lines) {
+    const m = line.match(/^([A-ZÁ-Ž]{2,}[A-ZÁ-Ž\-]*)\s+([A-Za-zÁ-Žá-ž]+)\s+(\d[\d\s]*)$/);
+    if (!m) continue;
+    const nums = m[3].trim().split(/\s+/).map(Number);
+    if (nums.length < 2) continue;
+    out.push({ surname: m[1], first: m[2], hruba: nums[0], dobirka: nums[nums.length - 1] });
+  }
+  return out;
+}
+// příkazy k úhradě (QR platby) → uplate
+function parseMzdyPrikazy(lines) {
+  const out = [];
+  let cur = null;
+  for (const line of lines) {
+    if (/p.{1,3}jemce\s*:/i.test(line) && !/zpr/i.test(line)) { if (cur) out.push(cur); cur = { to: line.split(":").slice(1).join(":").trim(), amount: 0, msg: "" }; continue; }
+    if (!cur) continue;
+    const a = line.match(/.{1,3}stka\s*:\s*([\d\s]+(?:[.,]\d+)?)/i);
+    if (a) cur.amount = czNum(a[1]);
+    const z = line.match(/zpr.{1,3}va\s*p.{1,3}jemci\s*:\s*(.*)$/i);
+    if (z) cur.msg = z[1].trim();
+  }
+  if (cur) out.push(cur);
+  return out.filter((p) => p.amount > 0).map((p) => ({
+    ...p, to: p.to || (/da.{1,2}/i.test(p.msg) ? "Finanční úřad" : ""),
+    label: /zdrav/i.test(p.msg) ? "zdravotní pojištění" : /soci/i.test(p.msg) ? "sociální pojištění" : /da/i.test(p.msg) ? "daň ze mzdy" : p.msg,
+  }));
+}
+// sličnost imena: isto prezime + ime s najviše 2 razlike (Ievgen ≈ Jevgen)
+const editDist = (a, b) => {
+  const d = Array.from({ length: a.length + 1 }, (_, i) => [i, ...Array(b.length).fill(0)]);
+  for (let j = 1; j <= b.length; j++) d[0][j] = j;
+  for (let i = 1; i <= a.length; i++) for (let j = 1; j <= b.length; j++)
+    d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+  return d[a.length][b.length];
+};
+const plainTokens = (s) => (s || "").normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().replace(/[^a-z\s]/g, " ").split(/\s+/).filter(Boolean);
+function matchWorkerFuzzy(workers, rawName) {
+  const exact = findWorkerByName(workers, rawName);
+  if (exact) return exact;
+  const [sur, ...rest] = plainTokens(rawName);
+  const first = rest.join(" ");
+  const cands = workers.filter((w) => {
+    const t = plainTokens(w.name);
+    if (!t.includes(sur) && !t.some((x) => editDist(x, sur) <= 1)) return false;
+    const others = t.filter((x) => x !== sur).join(" ");
+    return !first || !others || editDist(others, first) <= 2;
+  });
+  const active = cands.filter((w) => !w.archived);
+  return (active.length === 1 ? active[0] : cands.length === 1 ? cands[0] : null);
 }
 
 /* ---------- čitanje izlaznih faktura (PDF) — izvlači iznos, PDV, kupca, broj, datum ---------- */
@@ -5737,58 +5795,107 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
 
   const czkRate = Number(data.settings.czk_rate) || 25;
   const handleMzdyFile = async (e) => {
-    const file = e.target.files?.[0];
+    const files = [...(e.target.files || [])];
     e.target.value = "";
-    if (!file) return;
+    if (!files.length) return;
     setMzdyErr(""); setMzdyBusy(true);
     try {
-      const lines = await extractPdfLines(file);
-      const parsed = parseMzdyPdf(lines);
-      if (!parsed.length) { setMzdyErr("Nisam prepoznao nijednog radnika s doprinosima u ovoj datoteci."); setMzdyBusy(false); return; }
+      // "oprava" se obrađuje zadnja → zamjenjuje stare pásky istog radnika
+      files.sort((a, b) => (/oprav/i.test(a.name) ? 1 : 0) - (/oprav/i.test(b.name) ? 1 : 0));
+      const people = new Map(); // normName → páska
+      let naklady = [], prikazy = [];
+      const docs = [];
+      for (const f of files) {
+        const lines = await extractPdfLines(f);
+        const type = mzdyDocType(lines);
+        if (type === "naklady") { naklady = parseMzdyNaklady(lines); docs.push(`${f.name}: mzdové náklady`); }
+        else if (type === "prikazy") { prikazy = parseMzdyPrikazy(lines); docs.push(`${f.name}: příkazy k úhradě`); }
+        else {
+          const list = parseMzdyPasky(lines);
+          list.forEach((p) => people.set(normName(p.name), { ...p, corrected: people.has(normName(p.name)) }));
+          docs.push(`${f.name}: ${list.length} pásky${/oprav/i.test(f.name) ? " (oprava)" : ""}`);
+        }
+      }
+      if (!people.size) { setMzdyErr("Nisam našao nijednu výplatní pásku. Učitaj PDF s páskama (i opravu ako postoji)."); setMzdyBusy(false); return; }
       const monthCounts = {};
-      parsed.forEach((p) => { monthCounts[p.month] = (monthCounts[p.month] || 0) + 1; });
-      const commonMonth = Object.entries(monthCounts).sort((a, b) => b[1] - a[1])[0][0];
-      const rows = parsed.map((p) => {
-        const matched = findWorkerByName(data.workers, p.name);
-        const cur = matched ? wCur(matched) : "CZK";
-        const amount = cur === "CZK" ? p.halfKc : round2(p.halfKc / czkRate);
-        return { rawName: p.name, sumKc: p.sumKc, halfKc: p.halfKc, workerId: matched?.id || "", currency: cur, amount: String(amount), include: !!matched };
-      });
-      setMzdyReview({ month: commonMonth, rows });
+      people.forEach((p) => { monthCounts[p.month] = (monthCounts[p.month] || 0) + 1; });
+      const mo = Object.entries(monthCounts).sort((a, b) => b[1] - a[1])[0][0];
+      const rows = [...people.values()].map((p) => {
+        const w = matchWorkerFuzzy(data.workers, p.name);
+        const cur = w ? wCur(w) : "CZK";
+        const conv = (kc) => String(cur === "CZK" ? kc : round2(kc / czkRate));
+        const soc = socZdrFor(p);
+        const nk = naklady.find((n) => plainTokens(p.name)[0] === plainTokens(n.surname)[0] && plainTokens(p.name).slice(1).join(" ").startsWith(plainTokens(n.first).join(" ").slice(0, 5)));
+        const exBank = w ? round2(data.payments.filter((x) => x.workerId === w.id && x.type === "racun" && monthKey(x.date) === mo && (x.currency || "EUR") === cur && !/Mzdy PDF/.test(x.note || "")).reduce((s, x) => s + x.amount, 0)) : 0;
+        const bankAmt = Number(conv(p.dobirka));
+        const exNote = w ? (data.payrollNotes || []).filter((n) => n.workerId === w.id && n.month === mo).reduce((s, n) => s + n.amount, 0) : 0;
+        const locked = w ? !!paidFor(data, w.id, mo)?.approved : false;
+        return {
+          rawName: p.name, kat: p.kat, tarif: p.tarif, corrected: p.corrected, workerId: w?.id || "", currency: cur,
+          socZdr: conv(soc), bank: conv(p.dobirka), dobirkaKc: p.dobirka,
+          include: !!w && !locked, addBank: !!w && p.dobirka > 0 && !(exBank > 0),
+          exBank, exNote, locked,
+          warn: [
+            nk && Math.round(nk.dobirka) !== Math.round(p.dobirka) ? `Mzdové náklady kažu ${czk(nk.dobirka)} na račun` : "",
+            exBank > 0 ? `već ručno upisano na račun ${money(exBank, cur)}${Math.round(exBank) === Math.round(bankAmt) ? " (isto)" : ""}` : "",
+            locked ? "mjesec je odobren i zaključan" : "",
+          ].filter(Boolean),
+        };
+      }).sort((a, b) => (a.workerId ? 0 : 1) - (b.workerId ? 0 : 1) || a.rawName.localeCompare(b.rawName, "hr"));
+      setMzdyReview({ month: mo, rows, prikazy, docs, addReminders: prikazy.length > 0 });
     } catch (err) {
-      setMzdyErr("Ne mogu pročitati ovu datoteku: " + (err.message || err));
+      setMzdyErr("Ne mogu pročitati datoteku: " + (err.message || err));
     }
     setMzdyBusy(false);
   };
   const saveMzdyReview = async () => {
-    setMzdyBusy(true);
-    setMzdyErr("");
-    let saved = 0, failed = 0, skipped = 0;
-    for (const row of mzdyReview.rows) {
-      if (!row.include || !row.workerId) { skipped++; continue; }
-      const w = data.workers.find((x) => x.id === row.workerId);
-      const amount = round2(parseNum(row.amount) || 0);
-      if (amount <= 0) { skipped++; continue; }
-      const ok = await api.addPayrollNote({
-        workerId: row.workerId,
-        month: mzdyReview.month,
-        amount,
-        currency: row.currency,
-        sourceCzk: row.halfKc,
-        note: MZDY_NOTE_LABEL,
-      }, w?.name || row.rawName);
-      ok ? saved++ : failed++;
-    }
+    const mo = mzdyReview.month;
+    const [yy, mm] = mo.split("-").map(Number);
+    const lastDay = `${mo}-${String(new Date(yy, mm, 0).getDate()).padStart(2, "0")}`;
+    const nextMonth20 = (() => { const d = new Date(yy, mm, 20); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-20`; })();
+    const rows = mzdyReview.rows.filter((r) => r.include && r.workerId && !r.locked);
+    if (!rows.length && !(mzdyReview.addReminders && mzdyReview.prikazy.length)) { setMzdyErr("Ništa nije odabrano za spremanje."); return; }
+    setMzdyBusy(true); setMzdyErr("");
+    const uid = api.uid();
+    const tag = `Dobírka (Mzdy PDF ${String(mm).padStart(2, "0")}/${yy})`;
+    const ok = await api.run(async () => {
+      for (const r of rows) {
+        const soc = round2(parseNum(r.socZdr) || 0);
+        // soc.-zdr.: stara napomena za taj mjesec se zamjenjuje novom
+        const old = (data.payrollNotes || []).filter((n) => n.workerId === r.workerId && n.month === mo);
+        if (old.length) {
+          const { error } = await supabase.from("payroll_notes").update({ deleted_at: new Date().toISOString() }).in("id", old.map((n) => n.id));
+          if (error) throw error;
+        }
+        if (soc > 0) {
+          const { error } = await supabase.from("payroll_notes").insert({ worker_id: r.workerId, month: mo, amount: soc, currency: r.currency,
+            source_czk: r.currency === "CZK" ? soc : round2(soc * czkRate), note: MZDY_NOTE_LABEL, created_by: uid });
+          if (error) throw error;
+        }
+        // na račun (Dobírka): prethodni uvoz iz PDF-a se zamjenjuje, ručni upisi ostaju
+        const bank = round2(parseNum(r.bank) || 0);
+        if (r.addBank && bank > 0) {
+          const prev = data.payments.filter((x) => x.workerId === r.workerId && x.type === "racun" && monthKey(x.date) === mo && /Mzdy PDF/.test(x.note || ""));
+          if (prev.length) {
+            const { error } = await supabase.from("payments").update({ deleted_at: new Date().toISOString() }).in("id", prev.map((x) => x.id));
+            if (error) throw error;
+          }
+          const { error } = await supabase.from("payments").insert({ worker_id: r.workerId, object_id: null, pay_date: lastDay, type: "racun",
+            amount: bank, note: tag, deduct: true, currency: r.currency, created_by: uid });
+          if (error) throw error;
+        }
+      }
+      if (mzdyReview.addReminders) {
+        for (const p of mzdyReview.prikazy) {
+          const text = `Platiti ${p.to || ""} ${czk(p.amount)} – ${p.label} ${String(mm).padStart(2, "0")}/${yy}`.replace(/\s+/g, " ").trim();
+          if ((data.reminders || []).some((x) => x.text === text)) continue;
+          const { error } = await supabase.from("reminders").insert({ text, due_date: nextMonth20, created_by: uid });
+          if (error) throw error;
+        }
+      }
+    }, `Uvezao Mzdy PDF za ${mo}: ${rows.length} radnika (soc.-zdr. i na račun)`);
     setMzdyBusy(false);
-    if (failed > 0) {
-      setMzdyErr(`Nije spremljeno ${failed} od ${failed + saved} napomena. Najčešći uzrok: tablica "payroll_notes" ne postoji u bazi (pokreni schema.sql) ili nemaš admin ovlasti. Klikni Odustani pa pogledaj crvenu poruku na vrhu stranice za točan detalj.`);
-      return; // ostavi prozor otvoren da se ispravi
-    }
-    if (saved === 0) {
-      setMzdyErr("Ništa nije spremljeno — nijedan red nema odabranog radnika ili je iznos 0.");
-      return;
-    }
-    setMzdyReview(null);
+    if (ok) setMzdyReview(null);
   };
 
   const periodLogs = data.logs.filter((l) => (view === "month" ? inMonth : inYear)(l.date) && (objFilters.size === 0 || objFilters.has(l.objectId)));
@@ -6169,74 +6276,99 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
       {admin && view === "month" && (
         <div style={{ marginBottom: 12 }}>
           <Btn small kind="ghost" onClick={() => mzdyFileRef.current?.click()} disabled={mzdyBusy}>
-            {mzdyBusy ? "Čitam datoteku…" : "📄 Učitaj Mzdy (PDF)"}
+            {mzdyBusy ? "Čitam datoteke…" : "📄 Učitaj Mzdy (PDF-ovi od knjigovođe)"}
           </Btn>
-          <input ref={mzdyFileRef} type="file" accept="application/pdf" onChange={handleMzdyFile} style={{ display: "none" }} />
+          <input ref={mzdyFileRef} type="file" accept="application/pdf" multiple onChange={handleMzdyFile} style={{ display: "none" }} />
           {mzdyErr && <div style={{ color: S.red, fontSize: 12.5, marginTop: 6 }}>{mzdyErr}</div>}
         </div>
       )}
 
-      {mzdyReview && (
+      {mzdyReview && (() => {
+        const setRow = (i, patch) => { const rows = [...mzdyReview.rows]; rows[i] = { ...rows[i], ...patch }; setMzdyReview({ ...mzdyReview, rows }); };
+        const chosen = mzdyReview.rows.filter((r) => r.include && r.workerId && !r.locked);
+        const sumBy = (k) => chosen.reduce((s, r) => s + (r.currency === "CZK" ? (parseNum(r[k]) || 0) : 0), 0);
+        return (
         <div style={{ position: "fixed", inset: 0, background: "rgba(10,14,12,.92)", zIndex: 60, overflowY: "auto", padding: "20px 12px 40px" }}>
-          <div style={{ maxWidth: 520, margin: "0 auto", background: "#fff", borderRadius: 14, padding: 18 }}>
-            <div style={{ fontWeight: 800, fontSize: 17, marginBottom: 4 }}>📄 Pregled prije spremanja</div>
-            <div style={{ fontSize: 12.5, color: S.sub, marginBottom: 14 }}>
-              Provjeri prepoznata imena i iznose (pola zbroja zdravstvenog, socijalnog i doprinosa poslodavca) prije nego spremiš — svaki iznos možeš ispraviti.
+          <div style={{ maxWidth: 560, margin: "0 auto", background: "#fff", borderRadius: 14, padding: 18 }}>
+            <div style={{ fontWeight: 800, fontSize: 17, marginBottom: 4 }}>📄 Mzdy — provjera prije spremanja</div>
+            <div style={{ fontSize: 12.5, color: S.sub, marginBottom: 10 }}>
+              Na kovertu se oduzima <b>soc.-zdr.</b> (puno radno vrijeme {czk(SOCZDR_FULL)}, pola {czk(SOCZDR_HALF)}, DPČ 0) i <b>na račun</b> (Dobírka iz pásky). Svaki iznos možeš ispraviti.
             </div>
-            <Field label="Mjesec za koji vrijedi napomena">
+            <div style={{ background: S.bg, borderRadius: 10, padding: "8px 10px", fontSize: 12, color: S.sub, marginBottom: 12 }}>
+              {mzdyReview.docs.map((d, i) => <div key={i}>✓ {d}</div>)}
+            </div>
+            <Field label="Mjesec">
               <input type="month" value={mzdyReview.month} onChange={(e) => setMzdyReview({ ...mzdyReview, month: e.target.value })} />
             </Field>
             {mzdyReview.rows.map((row, i) => (
-              <div key={i} style={{ border: `1px solid ${S.line}`, borderRadius: 10, padding: "10px 12px", marginBottom: 10 }}>
+              <div key={i} style={{ border: `1px solid ${row.include && row.workerId ? S.green : S.line}`, borderRadius: 12, padding: "10px 12px", marginBottom: 10, opacity: row.locked ? 0.6 : 1 }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
-                  <input type="checkbox" checked={row.include} onChange={(e) => {
-                    const rows = [...mzdyReview.rows]; rows[i] = { ...row, include: e.target.checked }; setMzdyReview({ ...mzdyReview, rows });
-                  }} style={{ width: 18, height: 18 }} />
-                  <div style={{ flex: 1 }}>
-                    <div style={{ fontWeight: 700, fontSize: 14 }}>{row.rawName}</div>
-                    <div className="num" style={{ fontSize: 12, color: S.sub }}>iz PDF-a: zbroj {czk(row.sumKc)} ÷ 2 = {czk(row.halfKc)}</div>
+                  <input type="checkbox" checked={row.include} disabled={row.locked || !row.workerId} onChange={(e) => setRow(i, { include: e.target.checked })} style={{ width: 18, height: 18 }} />
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontWeight: 700, fontSize: 14.5 }}>{row.rawName} {row.corrected && <Tag color={S.blue} bg={S.blueSoft}>oprava</Tag>}</div>
+                    <div className="num" style={{ fontSize: 12, color: S.sub }}>
+                      {row.kat}{row.tarif ? ` · tarif ${czk(row.tarif)} (${row.tarif >= FULL_TARIF ? "puno" : "pola"} radno vrijeme)` : ""}
+                    </div>
                   </div>
                 </div>
-                <Field label="Radnik">
+                <Field label="Radnik u aplikaciji">
                   <select value={row.workerId} onChange={(e) => {
                     const wk = data.workers.find((x) => x.id === e.target.value);
-                    const cur = wk ? wCur(wk) : row.currency;
-                    const amount = cur === "CZK" ? row.halfKc : round2(row.halfKc / czkRate);
-                    const rows = [...mzdyReview.rows]; rows[i] = { ...row, workerId: e.target.value, currency: cur, amount: String(amount), include: !!e.target.value };
-                    setMzdyReview({ ...mzdyReview, rows });
+                    const cur = wk ? wCur(wk) : "CZK";
+                    const toCur = (v) => String(cur === row.currency ? v : cur === "CZK" ? round2((parseNum(v) || 0) * czkRate) : round2((parseNum(v) || 0) / czkRate));
+                    setRow(i, { workerId: e.target.value, currency: cur, socZdr: toCur(row.socZdr), bank: toCur(row.bank), include: !!e.target.value && !row.locked });
                   }}>
-                    <option value="">{row.workerId ? "" : "— nije prepoznat, odaberi ručno —"}</option>
-                    {sortedWorkers(data.workers.filter((w) => !w.archived)).map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}
+                    <option value="">— nije prepoznat, odaberi ručno —</option>
+                    {sortedWorkers(data.workers).map((w) => <option key={w.id} value={w.id}>{w.name}{w.archived ? " (bivši)" : ""}</option>)}
                   </select>
                 </Field>
-                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                <div style={{ display: "flex", gap: 8 }}>
                   <div style={{ flex: 1 }}>
-                    <Field label={`Iznos za kovertu (soc. + zdr., ${row.currency === "CZK" ? "Kč" : "€"})`}>
-                      <input inputMode="decimal" value={row.amount} onChange={(e) => {
-                        const rows = [...mzdyReview.rows]; rows[i] = { ...row, amount: e.target.value }; setMzdyReview({ ...mzdyReview, rows });
-                      }} />
+                    <Field label={`soc.-zdr. (${row.currency === "CZK" ? "Kč" : "€"})`}>
+                      <input inputMode="decimal" value={row.socZdr} onChange={(e) => setRow(i, { socZdr: e.target.value })} />
                     </Field>
                   </div>
-                  <div style={{ marginTop: 6 }}>
-                    <CurChips small value={row.currency} onChange={(v) => {
-                      const rows = [...mzdyReview.rows]; rows[i] = { ...row, currency: v }; setMzdyReview({ ...mzdyReview, rows });
-                    }} />
+                  <div style={{ flex: 1 }}>
+                    <Field label={`Na račun (${row.currency === "CZK" ? "Kč" : "€"})`}>
+                      <input inputMode="decimal" value={row.bank} disabled={!row.addBank} onChange={(e) => setRow(i, { bank: e.target.value })} />
+                    </Field>
                   </div>
                 </div>
+                <label style={{ display: "flex", alignItems: "center", gap: 7, fontSize: 12.5, cursor: "pointer" }}>
+                  <input type="checkbox" checked={row.addBank} onChange={(e) => setRow(i, { addBank: e.target.checked })} style={{ width: 16, height: 16 }} />
+                  Upiši "na račun" iz pásky
+                </label>
+                {row.warn.map((w, k) => <div key={k} style={{ fontSize: 12, color: S.amber, marginTop: 4 }}>⚠️ {w}</div>)}
               </div>
             ))}
-            {mzdyErr && (
-              <div style={{ background: S.redSoft, color: S.red, borderRadius: 8, padding: "8px 10px", fontSize: 12.5, fontWeight: 600, marginBottom: 8 }}>
-                {mzdyErr}
+            {mzdyReview.prikazy.length > 0 && (
+              <div style={{ border: `1px solid ${S.line}`, borderRadius: 12, padding: "10px 12px", marginBottom: 10 }}>
+                <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 6 }}>🏦 Příkazy k úhradě</div>
+                {mzdyReview.prikazy.map((p, k) => (
+                  <div key={k} className="num" style={{ display: "flex", justifyContent: "space-between", fontSize: 13, padding: "3px 0" }}>
+                    <span>{p.to} · {p.label}</span><b>{czk(p.amount)}</b>
+                  </div>
+                ))}
+                <label style={{ display: "flex", alignItems: "center", gap: 7, fontSize: 12.5, cursor: "pointer", marginTop: 6 }}>
+                  <input type="checkbox" checked={mzdyReview.addReminders} onChange={(e) => setMzdyReview({ ...mzdyReview, addReminders: e.target.checked })} style={{ width: 16, height: 16 }} />
+                  Dodaj podsjetnike za plaćanje (rok 20. idućeg mjeseca)
+                </label>
               </div>
             )}
+            <div className="num" style={{ background: S.greenSoft, borderRadius: 10, padding: "8px 12px", fontSize: 13, marginBottom: 10 }}>
+              Spremit će se za <b>{chosen.length}</b> radnika: soc.-zdr. <b>{czk(sumBy("socZdr"))}</b> · na račun <b>{czk(chosen.filter((r) => r.addBank).reduce((s, r) => s + (r.currency === "CZK" ? (parseNum(r.bank) || 0) : 0), 0))}</b>
+            </div>
+            {mzdyErr && (
+              <div style={{ background: S.redSoft, color: S.red, borderRadius: 8, padding: "8px 10px", fontSize: 12.5, fontWeight: 600, marginBottom: 8 }}>{mzdyErr}</div>
+            )}
             <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
-              <Btn onClick={saveMzdyReview} disabled={mzdyBusy} style={{ flex: 1 }}>{mzdyBusy ? "Spremam…" : "💾 Spremi napomene"}</Btn>
+              <Btn onClick={saveMzdyReview} disabled={mzdyBusy} style={{ flex: 1 }}>{mzdyBusy ? "Spremam…" : "💾 Spremi"}</Btn>
               <Btn kind="ghost" onClick={() => { setMzdyReview(null); setMzdyErr(""); }}>Odustani</Btn>
             </div>
           </div>
         </div>
-      )}
+        );
+      })()}
 
       {rows.length === 0 ? <Empty text={objFilters.size > 0 ? `Za ${objFilterName} u ovom razdoblju nema upisanih sati.` : "Za ovo razdoblje nema upisanih sati ni isplata."} /> : (
         <>
