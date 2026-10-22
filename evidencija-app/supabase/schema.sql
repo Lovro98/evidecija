@@ -646,3 +646,59 @@ alter table object_invoices add column if not exists file_path text default '';
 -- Naziv kupca kako stoji na PDF fakturi ("Odběratel") — pamti se po objektu da se
 -- kod sljedećeg uvoza PDF faktura automatski prepozna kojem objektu pripada
 alter table objects add column if not exists invoice_customer_name text default '';
+
+-- ============================================================
+-- FINANCIJE (samo admin): bankovni izvodi, kategorije, pravila za
+-- automatsko razvrstavanje. Iz toga se računa mjesečni pregled i
+-- procjena poreza na dobit / dividende za českú s.r.o.
+-- ============================================================
+create table if not exists bank_imports (
+  id uuid primary key default gen_random_uuid(),
+  file_name text default '',
+  date_from date,
+  date_to date,
+  row_count int default 0,
+  created_by uuid references profiles,
+  created_at timestamptz default now()
+);
+
+create table if not exists bank_transactions (
+  id uuid primary key default gen_random_uuid(),
+  import_id uuid references bank_imports on delete cascade, -- null = ručno upisano (npr. gotovina)
+  tx_date date not null,
+  amount numeric not null,                 -- + uplata, − isplata
+  currency text not null default 'CZK',
+  counterparty text default '',
+  counter_account text default '',
+  vs text default '',
+  message text default '',
+  category text default '',                -- '' = nerazvrstano
+  category_auto boolean default false,     -- true = predložila pravila, admin još nije potvrdio
+  vat_rate numeric,                        -- null = zadana stopa kategorije
+  note text default '',
+  hash text not null unique,               -- sprječava dvostruki uvoz istog izvoda
+  created_by uuid references profiles,
+  created_at timestamptz default now()
+);
+create index if not exists bank_transactions_date_idx on bank_transactions (tx_date);
+
+create table if not exists bank_rules (
+  id uuid primary key default gen_random_uuid(),
+  pattern text not null,                   -- dio imena partnera, broja računa ili poruke
+  category text not null,
+  created_by uuid references profiles,
+  created_at timestamptz default now()
+);
+
+alter table bank_imports enable row level security;
+alter table bank_transactions enable row level security;
+alter table bank_rules enable row level security;
+drop policy if exists "bimp_admin_all" on bank_imports;
+create policy "bimp_admin_all" on bank_imports for all to authenticated
+  using (is_admin()) with check (is_admin());
+drop policy if exists "btx_admin_all" on bank_transactions;
+create policy "btx_admin_all" on bank_transactions for all to authenticated
+  using (is_admin()) with check (is_admin());
+drop policy if exists "brule_admin_all" on bank_rules;
+create policy "brule_admin_all" on bank_rules for all to authenticated
+  using (is_admin()) with check (is_admin());

@@ -6,6 +6,7 @@ import { supabase } from "./supabase.js";
 import { exportUnpaidXlsx } from "./unpaidExport.js";
 import { downloadStyledXlsx, XC, xDate } from "./xlsxStyled.js";
 import { TR_UK } from "./i18n_uk.js";
+import { FIN_CATS, CZ_CIT, CZ_DIVIDEND, catLabel, catKind, suggestCategory, ruleMatches, txText, fold, decodeText, parseCsv, findHeader, guessMapping, FIELDS, rowsToTxs, finYear, taxEstimate, vatOf, toCzkAmt } from "./finance.js";
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorkerUrl;
 
@@ -1669,7 +1670,7 @@ function exportAllData(data) {
 /*  ADMIN PANELI                                                       */
 /* ================================================================== */
 const ADMIN_MENU = [
-  ["approvals", "⏳", "Odobravanje isplata"], ["unpaid", "💰", "Neisplaćeno (dugovi radnicima)"], ["vat", "🧾", "DPH"], ["users", "👥", "Korisnici i provizije"],
+  ["approvals", "⏳", "Odobravanje isplata"], ["finance", "💼", "Financije (banka i porezi)"], ["unpaid", "💰", "Neisplaćeno (dugovi radnicima)"], ["vat", "🧾", "DPH"], ["users", "👥", "Korisnici i provizije"],
   ["firm", "🏢", "Podaci firme i postavke"], ["audit", "📜", "Povijest radnji"], ["logins", "🔐", "Prijave"],
   ["errors", "🐛", "Greške aplikacije"], ["trash", "🗑", "Koš (obrisano)"],
 ];
@@ -2071,6 +2072,490 @@ function UnpaidPanel({ data, api, onOpenWorker }) {
   );
 }
 
+/* ================================================================== */
+/*  FINANCIJE — bankovni izvodi, mjesečni pregled, procjena poreza     */
+/*  Tablice: bank_imports, bank_transactions, bank_rules (samo admin)  */
+/* ================================================================== */
+function FinancePanel({ data, api }) {
+  const rate = Number(data.settings?.czk_rate) || 25;
+  const thisYear = new Date().getFullYear();
+  const [year, setYear] = useState(thisYear);
+  const [txs, setTxs] = useState(null);
+  const [imports, setImports] = useState([]);
+  const [rules, setRules] = useState([]);
+  const [loadErr, setLoadErr] = useState("");
+  const [view, setView] = useState("pregled"); // pregled | transakcije | uvoz | pravila
+  const [fMonth, setFMonth] = useState("");
+  const [fCat, setFCat] = useState("all");
+  const [q, setQ] = useState("");
+  const [limit, setLimit] = useState(150);
+  const [remember, setRemember] = useState(true);
+  const [revBasis, setRevBasis] = useState("banka"); // banka | fakture
+  const [imp, setImp] = useState(null); // { fileName, rows, header, map }
+  const [manual, setManual] = useState(null);
+  const [ruleForm, setRuleForm] = useState({ pattern: "", category: "" });
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState("");
+
+  const load = useCallback(async () => {
+    try {
+      const all = [];
+      for (let from = 0; ; from += 1000) {
+        const { data: d, error } = await supabase.from("bank_transactions").select("*")
+          .gte("tx_date", `${year}-01-01`).lte("tx_date", `${year}-12-31`)
+          .order("tx_date", { ascending: false }).order("id").range(from, from + 999);
+        if (error) throw error;
+        all.push(...d);
+        if (d.length < 1000) break;
+      }
+      const [im, ru] = await Promise.all([
+        supabase.from("bank_imports").select("*").order("created_at", { ascending: false }).limit(100),
+        supabase.from("bank_rules").select("*").order("created_at"),
+      ]);
+      if (im.error || ru.error) throw im.error || ru.error;
+      setTxs(all.map((t) => ({ ...t, amount: Number(t.amount), vat_rate: t.vat_rate == null ? null : Number(t.vat_rate) })));
+      setImports(im.data); setRules(ru.data); setLoadErr("");
+    } catch (e) { setLoadErr(e.message || String(e)); }
+  }, [year]);
+  useEffect(() => { load(); }, [load]);
+
+  const audit = (action) => supabase.from("audit_log").insert({ user_id: api.uid(), user_name: data.profiles.find((p) => p.id === api.uid())?.name || "", action }).then(() => {});
+  const run = async (fn) => {
+    setBusy(true); setMsg("");
+    try { await fn(); await load(); }
+    catch (e) { setMsg("Greška: " + (e.message || e)); }
+    finally { setBusy(false); }
+  };
+
+  if (loadErr) return (
+    <Card style={{ marginTop: 8, color: S.red, fontSize: 13.5 }}>
+      Ne mogu učitati financije: {loadErr}
+      <div style={{ color: S.sub, marginTop: 6 }}>Ako tablice još ne postoje, u Supabase → SQL Editor pokreni zadnji dio datoteke <b>supabase/schema.sql</b> (odjeljak FINANCIJE).</div>
+    </Card>
+  );
+  if (!txs) return <Card style={{ marginTop: 8, color: S.sub }}>Učitavam…</Card>;
+
+  /* ---------- izračuni ---------- */
+  const { months, byCat } = finYear(txs, year, rate);
+  const invNet = Array(12).fill(0);
+  (data.objectInvoices || []).forEach((i) => {
+    const mo = invoiceTaxMonth(i);
+    if (mo?.startsWith(String(year))) invNet[Number(mo.slice(5, 7)) - 1] += toCzk(i.amount - (i.vatAmount || 0), i.currency, rate);
+  });
+  // broj mjeseci s podacima (ne zadnji mjesec) — da projekcija radi i kad izvode počneš dodavati usred godine
+  const covered = months.filter((m, i) => m.count || (revBasis === "fakture" && invNet[i])).length;
+  const incomeOf = (i) => (revBasis === "fakture" ? invNet[i] : months[i].income);
+  const sumM = (f) => months.reduce((s, m) => s + m[f], 0);
+  const income = months.reduce((s, _m, i) => s + incomeOf(i), 0);
+  const cost = sumM("cost");
+  const est = taxEstimate({ income, cost, monthsCovered: covered });
+  const citPaid = sumM("taxPaid");
+  const uncat = txs.filter((t) => !t.category).length;
+  const autoCount = txs.filter((t) => t.category && t.category_auto).length;
+  const nowMo = curMonth();
+  const vatMonths = months.map((m) => m.month).filter((mo) => mo <= nowMo);
+  const vatRows = vatMonths.map((mo) => ({ mo, v: vatSummary(data, mo) }));
+  const vatOwed = vatRows.reduce((s, r) => s + r.v.payable, 0);
+  const vatPaid = sumM("vatPaid");
+  const nextVat = vatRows.find((r) => r.v.payable > 0 && daysUntil(r.v.due) >= 0);
+  const Kc = (n) => czk(Math.round(n));
+
+  const filtered = txs.filter((t) => (!fMonth || t.tx_date.startsWith(fMonth))
+    && (fCat === "all" || (fCat === "none" ? !t.category : fCat === "auto" ? t.category && t.category_auto : t.category === fCat))
+    && (!q || fold([t.counterparty, t.counter_account, t.vs, t.message, t.note, String(t.amount)].join(" ")).includes(fold(q))));
+
+  /* ---------- akcije ---------- */
+  const patchTx = async (ids, patch) => {
+    setTxs((list) => list.map((t) => (ids.includes(t.id) ? { ...t, ...patch } : t)));
+    for (let i = 0; i < ids.length; i += 200) {
+      const { error } = await supabase.from("bank_transactions").update(patch).in("id", ids.slice(i, i + 200));
+      if (error) { setMsg("Greška: " + error.message); load(); return; }
+    }
+  };
+  const setCat = async (tx, category) => {
+    await patchTx([tx.id], { category, category_auto: false });
+    const pattern = (tx.counterparty || tx.counter_account || "").trim();
+    if (!remember || !category || !pattern) return;
+    const existing = rules.find((r) => fold(r.pattern) === fold(pattern));
+    if (existing?.category === category) return;
+    const { error } = existing
+      ? await supabase.from("bank_rules").update({ category }).eq("id", existing.id)
+      : await supabase.from("bank_rules").insert({ pattern, category, created_by: api.uid() });
+    if (error) { setMsg("Greška pri spremanju pravila: " + error.message); return; }
+    const others = txs.filter((t) => t.id !== tx.id && (!t.category || t.category_auto) && t.category !== category && ruleMatches(txText(t), pattern)).map((t) => t.id);
+    if (others.length) await patchTx(others, { category, category_auto: true });
+    setMsg(`Zapamćeno: "${pattern}" → ${catLabel(category)}${others.length ? ` (razvrstano još ${others.length})` : ""}`);
+    const { data: ru } = await supabase.from("bank_rules").select("*").order("created_at");
+    if (ru) setRules(ru);
+  };
+  const applyRules = () => run(async () => {
+    const groups = {};
+    txs.filter((t) => !t.category || t.category_auto).forEach((t) => {
+      const c = suggestCategory(t, rules);
+      if (c && c !== t.category) (groups[c] ||= []).push(t.id);
+    });
+    let n = 0;
+    for (const [c, ids] of Object.entries(groups)) { await patchTx(ids, { category: c, category_auto: true }); n += ids.length; }
+    setMsg(n ? `Razvrstano po pravilima: ${n}` : "Nema novih prijedloga.");
+  });
+  const confirmAuto = () => run(async () => {
+    const ids = filtered.filter((t) => t.category && t.category_auto).map((t) => t.id);
+    await patchTx(ids, { category_auto: false });
+    setMsg(`Potvrđeno: ${ids.length}`);
+  });
+
+  const onFile = async (file) => {
+    if (!file) return;
+    setMsg("");
+    try {
+      const buf = await file.arrayBuffer();
+      let rows;
+      if (/\.xlsx?$/i.test(file.name)) {
+        const wb = XLSX.read(buf, { type: "array", cellDates: true });
+        rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, raw: true, defval: "" });
+      } else rows = parseCsv(decodeText(buf));
+      const h = findHeader(rows);
+      setImp({ fileName: file.name, rows, header: Math.max(h, 0), map: guessMapping(rows[Math.max(h, 0)] || []), notFound: h < 0 });
+    } catch (e) { setMsg("Ne mogu pročitati datoteku: " + (e.message || e)); }
+  };
+  const parsed = imp ? rowsToTxs(imp.rows, imp.header, imp.map) : null;
+  const doImport = () => run(async () => {
+    const list = parsed.txs;
+    if (!list.length) throw new Error("Nema transakcija za uvoz — provjeri stupce.");
+    const dates = list.map((t) => t.tx_date).sort();
+    const { data: im, error } = await supabase.from("bank_imports")
+      .insert({ file_name: imp.fileName, date_from: dates[0], date_to: dates[dates.length - 1], created_by: api.uid() }).select().single();
+    if (error) throw error;
+    let inserted = 0;
+    for (let i = 0; i < list.length; i += 500) {
+      const chunk = list.slice(i, i + 500).map((t) => {
+        const c = suggestCategory(t, rules);
+        return { ...t, import_id: im.id, category: c, category_auto: !!c, created_by: api.uid() };
+      });
+      const { data: ins, error: e2 } = await supabase.from("bank_transactions").upsert(chunk, { onConflict: "hash", ignoreDuplicates: true }).select("id");
+      if (e2) throw e2;
+      inserted += ins.length;
+    }
+    if (inserted) await supabase.from("bank_imports").update({ row_count: inserted }).eq("id", im.id);
+    else await supabase.from("bank_imports").delete().eq("id", im.id);
+    await audit(`Uvezao bankovni izvod ${imp.fileName}: ${inserted} novih transakcija (${fmtDate(dates[0])} – ${fmtDate(dates[dates.length - 1])})`);
+    setMsg(`Uvezeno ${inserted} novih transakcija${list.length - inserted ? `, ${list.length - inserted} već postoji pa je preskočeno` : ""}. Provjeri prijedloge kategorija.`);
+    setImp(null);
+    setYear(Number(dates[dates.length - 1].slice(0, 4)));
+    setFMonth(""); setFCat(inserted ? "auto" : "all"); setView("transakcije");
+  });
+  const delImport = (im) => window.confirm(`Obrisati uvoz "${im.file_name}" i svih ${im.row_count} transakcija iz njega?`) && run(async () => {
+    const { error } = await supabase.from("bank_imports").delete().eq("id", im.id);
+    if (error) throw error;
+    await audit(`Obrisao bankovni izvod ${im.file_name} (${im.row_count} transakcija)`);
+  });
+  const delTx = (t) => window.confirm(`Obrisati transakciju ${fmtDate(t.tx_date)} ${money(t.amount, t.currency)}?`) && run(async () => {
+    const { error } = await supabase.from("bank_transactions").delete().eq("id", t.id);
+    if (error) throw error;
+  });
+  const saveManual = () => run(async () => {
+    const amount = round2(parseNum(manual.amount) || 0) * (manual.sign === "-" ? -1 : 1);
+    if (!manual.date || !amount) throw new Error("Upiši datum i iznos.");
+    const { error } = await supabase.from("bank_transactions").insert({
+      tx_date: manual.date, amount, currency: manual.currency, counterparty: manual.counterparty.trim(), message: "Ručni upis",
+      category: manual.category, category_auto: false, hash: `manual|${Date.now()}|${Math.random().toString(36).slice(2)}`, created_by: api.uid(),
+    });
+    if (error) throw error;
+    await audit(`Ručno upisao financijsku stavku: ${manual.counterparty} ${money(amount, manual.currency)} (${fmtDate(manual.date)})`);
+    setManual(null);
+  });
+  const addRule = () => run(async () => {
+    if (!ruleForm.pattern.trim() || !ruleForm.category) return;
+    const { error } = await supabase.from("bank_rules").insert({ pattern: ruleForm.pattern.trim(), category: ruleForm.category, created_by: api.uid() });
+    if (error) throw error;
+    setRuleForm({ pattern: "", category: "" });
+  });
+  const delRule = (r) => run(async () => {
+    const { error } = await supabase.from("bank_rules").delete().eq("id", r.id);
+    if (error) throw error;
+  });
+
+  /* ---------- prikaz ---------- */
+  const chip = (on) => ({ padding: "6px 11px", borderRadius: 999, fontWeight: 700, fontSize: 12.5, cursor: "pointer",
+    background: on ? S.green : "#fff", color: on ? "#fff" : S.sub, border: `1px solid ${on ? S.green : S.line}` });
+  const row = { display: "flex", justifyContent: "space-between", gap: 8, padding: "5px 0", borderBottom: `1px solid ${S.line}`, fontSize: 13 };
+  const sel = { width: "auto", padding: "6px 8px", fontSize: 13 };
+  const catSelect = (value, onChange, style) => (
+    <select value={value} onChange={(e) => onChange(e.target.value)} style={{ ...sel, ...style }}>
+      <option value="">❔ Nerazvrstano</option>
+      {FIN_CATS.map(([k, label]) => <option key={k} value={k}>{label}</option>)}
+    </select>
+  );
+  const monthName = (mo) => `${mName(Number(mo.slice(5, 7)) - 1)} ${mo.slice(0, 4)}.`;
+
+  return (
+    <div style={{ marginTop: 8 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, marginBottom: 10, flexWrap: "wrap" }}>
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+          {[["pregled", "📊 Pregled"], ["transakcije", "📋 Transakcije"], ["uvoz", "📥 Uvoz izvoda"], ["pravila", "⚙️ Pravila"]].map(([id, label]) => (
+            <button key={id} onClick={() => setView(id)} style={chip(view === id)}>{label}</button>
+          ))}
+        </div>
+        <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+          <button onClick={() => setYear(year - 1)} style={{ background: "#fff", border: `1px solid ${S.line}`, borderRadius: 8, width: 26, height: 26, cursor: "pointer", fontWeight: 700 }}>‹</button>
+          <b style={{ padding: "0 4px", fontSize: 14 }}>{year}.</b>
+          <button onClick={() => setYear(year + 1)} disabled={year >= thisYear} style={{ background: "#fff", border: `1px solid ${S.line}`, borderRadius: 8, width: 26, height: 26, cursor: "pointer", fontWeight: 700, opacity: year >= thisYear ? 0.4 : 1 }}>›</button>
+        </div>
+      </div>
+      {busy && <div style={{ fontSize: 12.5, color: S.sub, marginBottom: 8 }}>Spremam…</div>}
+      {msg && <div style={{ background: msg.startsWith("Greška") || msg.startsWith("Ne mogu") ? S.redSoft : S.greenSoft, color: msg.startsWith("Greška") || msg.startsWith("Ne mogu") ? S.red : S.green, borderRadius: 10, padding: "8px 12px", marginBottom: 10, fontSize: 13, fontWeight: 600 }}>
+        {msg} <button onClick={() => setMsg("")} style={{ background: "none", border: "none", color: "inherit", fontWeight: 800, cursor: "pointer", float: "right" }}>✕</button>
+      </div>}
+
+      {view === "pregled" && (
+        <>
+          {txs.length === 0 && (
+            <Card style={{ background: S.blueSoft, borderColor: S.blueSoft }}>
+              <div style={{ fontWeight: 700, marginBottom: 4 }}>Još nema transakcija za {year}.</div>
+              <div style={{ fontSize: 13.5, marginBottom: 8 }}>Izvezi izvod iz internet bankarstva kao CSV (ili Excel) i učitaj ga ovdje. Svaki mjesec samo dodaš novi — duplikati se preskaču sami.</div>
+              <Btn small onClick={() => setView("uvoz")}>📥 Uvezi izvod</Btn>
+            </Card>
+          )}
+          {(uncat > 0 || autoCount > 0) && (
+            <Card style={{ background: S.amberSoft, borderColor: S.amberSoft, fontSize: 13.5 }}>
+              {uncat > 0 && <div>❔ <b>{uncat}</b> transakcija nije razvrstano — isplate bez kategorije se ne odbijaju kao trošak.</div>}
+              {autoCount > 0 && <div>🤖 <b>{autoCount}</b> kategorija je predloženo automatski — provjeri ih.</div>}
+              <Btn small kind="ghost" style={{ marginTop: 6 }} onClick={() => { setFMonth(""); setFCat(uncat ? "none" : "auto"); setView("transakcije"); }}>Pregledaj</Btn>
+            </Card>
+          )}
+
+          <Card>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 8 }}>
+              <div style={{ fontWeight: 700 }}>💼 {year}. do sada (bez DPH)</div>
+              <div style={{ display: "flex", gap: 4 }}>
+                <button onClick={() => setRevBasis("banka")} style={chip(revBasis === "banka")}>prihod po banci</button>
+                <button onClick={() => setRevBasis("fakture")} style={chip(revBasis === "fakture")}>po fakturama</button>
+              </div>
+            </div>
+            <div style={row}><span>Prihodi</span><b className="num" style={{ color: S.green }}>{Kc(income)}</b></div>
+            <div style={row}><span>Porezno priznati troškovi</span><b className="num" style={{ color: S.red }}>− {Kc(cost)}</b></div>
+            <div style={{ ...row, fontSize: 15, borderBottom: "none" }}><b>Dobit</b><b className="num" style={{ color: est.profit >= 0 ? S.green : S.red }}>{Kc(est.profit)}</b></div>
+            {sumM("owner") > 0 && <div style={{ fontSize: 12.5, color: S.sub }}>Isplaćeno vlasniku ove godine: {Kc(sumM("owner"))} (nije trošak)</div>}
+            <div style={{ fontSize: 11.5, color: S.sub, marginTop: 4 }}>
+              {revBasis === "banka" ? "Prihod = uplate na račun umanjene za DPH (prema stopi kategorije)." : "Prihod = izdane fakture (bez DPH) iz kartice Objekti, po DUZP-u."} Troškovi = isplate s izvoda bez DPH-a. Plaće isplaćene u gotovini nisu na izvodu — dodaj ih ručno u Transakcijama ako idu u knjige.
+            </div>
+          </Card>
+
+          <Card>
+            <div style={{ fontWeight: 700, marginBottom: 8 }}>🏛 Procjena poreza na dobit ({Math.round(CZ_CIT * 100)} %)</div>
+            <div style={row}><span>Do sada: osnovica {Kc(est.base)}</span><b className="num">{Kc(est.cit)}</b></div>
+            {est.factor > 1 && <div style={row}><span>Ako nastavi ovako cijelu godinu ({covered} mj. s podacima → 12): dobit {Kc(est.yProfit)}</span><b className="num">{Kc(est.yCit)}</b></div>}
+            {citPaid !== 0 && <div style={row}><span>Već plaćene zálohe ove godine</span><b className="num" style={{ color: S.green }}>− {Kc(citPaid)}</b></div>}
+            <div style={{ ...row, fontSize: 15, borderBottom: "none", background: S.amberSoft, borderRadius: 10, padding: "8px 10px", marginTop: 6 }}>
+              <b>Za platiti za {year}. (procjena)</b><b className="num" style={{ color: S.amber }}>{Kc(Math.max(0, est.yCit - citPaid))}</b>
+            </div>
+            <div style={{ fontSize: 11.5, color: S.sub, marginTop: 6 }}>
+              Prijava (přiznání k DPPO) za {year}. predaje se do 1. 4. {year + 1}. na papiru, elektronički mjesec dana kasnije, a preko poreznog savjetnika do 1. 7. {year + 1}. Osnovica se zaokružuje na tisuće naniže.
+              Zálohe tijekom godine ovise o porezu iz prošle godine. Knjigovođa računa po fakturama i amortizaciji, pa se konačan iznos može razlikovati.
+            </div>
+          </Card>
+
+          <Card>
+            <div style={{ fontWeight: 700, marginBottom: 8 }}>👤 Ako dobit isplatiš sebi (dividenda {Math.round(CZ_DIVIDEND * 100)} %)</div>
+            <div style={row}><span>Dobit nakon poreza (procjena za cijelu godinu)</span><b className="num">{Kc(est.afterTax)}</b></div>
+            <div style={row}><span>Porez na dividendu (sráží firma)</span><b className="num" style={{ color: S.amber }}>{Kc(est.dividendTax)}</b></div>
+            <div style={{ ...row, borderBottom: "none" }}><b>Tebi ostaje na ruke</b><b className="num" style={{ color: S.green }}>{Kc(est.afterTax - est.dividendTax)}</b></div>
+            <div style={{ fontSize: 11.5, color: S.sub, marginTop: 4 }}>Dividenda se smije isplatiti tek nakon što valná hromada odobri godišnje izvješće. Porez firma uplaćuje do kraja idućeg mjeseca nakon isplate.</div>
+          </Card>
+
+          <Card>
+            <div style={{ fontWeight: 700, marginBottom: 8 }}>🧾 DPH {year}. (iz faktura u 🧾 DPH)</div>
+            <div style={row}><span>Obračunato za platiti (izdane − primljene fakture)</span><b className="num">{Kc(vatOwed)}</b></div>
+            <div style={row}><span>Plaćeno poreznom uredu (s izvoda)</span><b className="num" style={{ color: S.green }}>− {Kc(vatPaid)}</b></div>
+            <div style={{ ...row, borderBottom: "none" }}><b>Razlika (otvoreno)</b><b className="num" style={{ color: vatOwed - vatPaid > 0 ? S.amber : S.green }}>{Kc(vatOwed - vatPaid)}</b></div>
+            {nextVat && <div style={{ fontSize: 13, marginTop: 4 }}>📅 Sljedeće: <b>{Kc(nextVat.v.payable)}</b> za {monthName(nextVat.mo)} do <b>{fmtDate(nextVat.v.due)}</b></div>}
+            <div style={{ fontSize: 11.5, color: S.sub, marginTop: 4 }}>DPH za mjesec se plaća do 25. idućeg, pa je zadnji mjesec obično još otvoren. Primljene fakture s DPH-om upiši u 🧾 DPH da se odbiju.</div>
+          </Card>
+
+          <Card>
+            <div style={{ fontWeight: 700, marginBottom: 8 }}>📅 Po mjesecima</div>
+            <div style={{ ...row, color: S.sub, fontSize: 12, fontWeight: 700 }}><span style={{ flex: 1 }}>Mjesec</span><span style={{ width: 90, textAlign: "right" }}>Prihodi</span><span style={{ width: 90, textAlign: "right" }}>Troškovi</span><span style={{ width: 90, textAlign: "right" }}>Rezultat</span></div>
+            {months.map((m, i) => (m.count || invNet[i]) ? (
+              <div key={m.month} onClick={() => { setFMonth(m.month); setFCat("all"); setView("transakcije"); }} style={{ ...row, cursor: "pointer" }}>
+                <span style={{ flex: 1 }}>{mName(i)}{m.uncat ? <span style={{ color: S.amber }}> · ❔{m.uncat}</span> : null}</span>
+                <span className="num" style={{ width: 90, textAlign: "right", color: S.green }}>{Kc(incomeOf(i))}</span>
+                <span className="num" style={{ width: 90, textAlign: "right", color: S.red }}>{Kc(m.cost)}</span>
+                <b className="num" style={{ width: 90, textAlign: "right" }}>{Kc(incomeOf(i) - m.cost)}</b>
+              </div>
+            ) : null)}
+          </Card>
+
+          <Card>
+            <div style={{ fontWeight: 700, marginBottom: 8 }}>🗂 Po kategorijama ({year}.)</div>
+            {Object.entries(byCat).sort((a, b) => a[1].gross - b[1].gross).map(([k, v]) => (
+              <div key={k} onClick={() => { setFMonth(""); setFCat(k || "none"); setView("transakcije"); }} style={{ ...row, cursor: "pointer" }}>
+                <span>{catLabel(k)} <span style={{ color: S.sub, fontSize: 12 }}>({v.count})</span></span>
+                <b className="num" style={{ color: v.gross >= 0 ? S.green : S.ink }}>{Kc(v.gross)}</b>
+              </div>
+            ))}
+          </Card>
+        </>
+      )}
+
+      {view === "transakcije" && (
+        <Card>
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 8 }}>
+            <select value={fMonth} onChange={(e) => setFMonth(e.target.value)} style={sel}>
+              <option value="">Cijela godina</option>
+              {months.map((m, i) => <option key={m.month} value={m.month}>{mName(i)}</option>)}
+            </select>
+            <select value={fCat} onChange={(e) => setFCat(e.target.value)} style={sel}>
+              <option value="all">Sve kategorije</option>
+              <option value="none">❔ Nerazvrstano</option>
+              <option value="auto">🤖 Automatski prijedlozi</option>
+              {FIN_CATS.map(([k, label]) => <option key={k} value={k}>{label}</option>)}
+            </select>
+            <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="traži partnera, VS, poruku…" style={{ flex: "1 1 150px", width: "auto", padding: "6px 10px", fontSize: 13 }} />
+          </div>
+          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 8, fontSize: 12.5 }}>
+            <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }}>
+              <input type="checkbox" checked={remember} onChange={(e) => setRemember(e.target.checked)} style={{ width: 16, height: 16 }} />
+              Zapamti kategoriju za istog partnera
+            </label>
+            <span style={{ flex: 1 }} />
+            {filtered.some((t) => t.category_auto) && <Btn small kind="ghost" onClick={confirmAuto}>✓ Potvrdi prijedloge</Btn>}
+            <Btn small kind="ghost" onClick={() => setManual(manual ? null : { date: todayISO(), amount: "", sign: "-", currency: "CZK", counterparty: "", category: "" })}>➕ Ručno</Btn>
+          </div>
+          {manual && (
+            <div style={{ background: S.bg, borderRadius: 10, padding: 10, marginBottom: 8 }}>
+              <div style={{ fontSize: 12.5, fontWeight: 700, marginBottom: 6 }}>Stavka koja nije na izvodu (npr. gotovina)</div>
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+                <input type="date" value={manual.date} onChange={(e) => setManual({ ...manual, date: e.target.value })} style={{ width: 150 }} />
+                <button onClick={() => setManual({ ...manual, sign: manual.sign === "-" ? "+" : "-" })} style={chip(false)}>{manual.sign === "-" ? "− isplata" : "+ uplata"}</button>
+                <input inputMode="decimal" value={manual.amount} onChange={(e) => setManual({ ...manual, amount: e.target.value })} placeholder="iznos" style={{ flex: "1 1 90px", width: "auto" }} />
+                <CurChips small value={manual.currency} onChange={(c) => setManual({ ...manual, currency: c })} />
+                <input value={manual.counterparty} onChange={(e) => setManual({ ...manual, counterparty: e.target.value })} placeholder="opis / partner" style={{ flex: "2 1 140px", width: "auto" }} />
+                {catSelect(manual.category, (c) => setManual({ ...manual, category: c }))}
+                <Btn small onClick={saveManual}>Spremi</Btn>
+              </div>
+            </div>
+          )}
+          <div style={{ fontSize: 12.5, color: S.sub, marginBottom: 4 }}>
+            {filtered.length} transakcija · uplate {Kc(filtered.filter((t) => t.amount > 0).reduce((s, t) => s + toCzkAmt(t, rate), 0))} · isplate {Kc(filtered.filter((t) => t.amount < 0).reduce((s, t) => s + toCzkAmt(t, rate), 0))}
+          </div>
+          {filtered.length === 0 && <Empty text="Nema transakcija za ovaj filter." />}
+          {filtered.slice(0, limit).map((t) => {
+            const kind = catKind(t.category);
+            return (
+              <div key={t.id} style={{ padding: "8px 0", borderBottom: `1px solid ${S.line}`, fontSize: 13 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
+                  <div style={{ minWidth: 0 }}>
+                    <b>{t.counterparty || t.message || t.counter_account || "—"}</b>
+                    <div style={{ fontSize: 11.5, color: S.sub, wordBreak: "break-word" }}>
+                      {fmtDate(t.tx_date)}{t.counter_account ? " · " + t.counter_account : ""}{t.vs ? " · VS " + t.vs : ""}{t.counterparty && t.message ? " · " + t.message : ""}
+                    </div>
+                  </div>
+                  <b className="num" style={{ color: t.amount > 0 ? S.green : S.ink, whiteSpace: "nowrap" }}>{t.amount > 0 ? "+" : ""}{money(t.amount, t.currency)}</b>
+                </div>
+                <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap", marginTop: 5 }}>
+                  {catSelect(t.category || "", (c) => setCat(t, c),
+                    { borderColor: !t.category ? S.amber : t.category_auto ? S.blue : S.line, maxWidth: 230 })}
+                  {t.category_auto && <Tag color={S.blue} bg={S.blueSoft}>🤖 prijedlog</Tag>}
+                  {(kind === "in" || kind === "cost") && (
+                    <span style={{ display: "flex", gap: 3, alignItems: "center", fontSize: 11.5, color: S.sub }}>
+                      DPH
+                      {[0, 12, 21].map((r) => (
+                        <button key={r} onClick={() => patchTx([t.id], { vat_rate: r })} style={{ ...chip(vatOf(t) === r), padding: "2px 7px", fontSize: 11.5 }}>{r}%</button>
+                      ))}
+                    </span>
+                  )}
+                  <span style={{ flex: 1 }} />
+                  <button onClick={() => delTx(t)} title="Obriši" style={{ background: "none", border: "none", color: S.red, cursor: "pointer", fontSize: 14 }}>✕</button>
+                </div>
+              </div>
+            );
+          })}
+          {filtered.length > limit && <Btn small kind="ghost" style={{ marginTop: 8 }} onClick={() => setLimit(limit + 300)}>Prikaži još ({filtered.length - limit})</Btn>}
+        </Card>
+      )}
+
+      {view === "uvoz" && (
+        <>
+          <Card>
+            <div style={{ fontWeight: 700, marginBottom: 6 }}>📥 Učitaj bankovni izvod</div>
+            <div style={{ fontSize: 13, color: S.sub, marginBottom: 8 }}>
+              U internet bankarstvu izvezi pohyby za mjesec kao <b>CSV</b> (ili Excel). Prepoznaju se Fio, KB, ČSOB, Česká spořitelna, Raiffeisen, Air Bank, Moneta, UniCredit i slični.
+              Ako učitaš isti izvod dvaput, iste transakcije se preskaču.
+            </div>
+            <input type="file" accept=".csv,.txt,.xlsx,.xls" onChange={(e) => { onFile(e.target.files?.[0]); e.target.value = ""; }} />
+          </Card>
+          {imp && (
+            <Card>
+              <div style={{ fontWeight: 700, marginBottom: 6 }}>{imp.fileName}</div>
+              {imp.notFound && <div style={{ color: S.amber, fontSize: 13, marginBottom: 6 }}>Nisam sam prepoznao zaglavlje — odaberi redak sa zaglavljem i stupce ispod.</div>}
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center", fontSize: 12.5, marginBottom: 6 }}>
+                Zaglavlje je u retku
+                <select value={imp.header} onChange={(e) => { const h = Number(e.target.value); setImp({ ...imp, header: h, map: guessMapping(imp.rows[h] || []) }); }} style={sel}>
+                  {imp.rows.slice(0, 40).map((r, i) => <option key={i} value={i}>{i + 1}: {r.slice(0, 3).join(" | ").slice(0, 40)}</option>)}
+                </select>
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(150px, 1fr))", gap: 6, marginBottom: 8 }}>
+                {FIELDS.map(([f, label]) => (
+                  <label key={f} style={{ fontSize: 11.5, color: S.sub }}>{label}
+                    <select value={imp.map[f] ?? -1} onChange={(e) => setImp({ ...imp, map: { ...imp.map, [f]: Number(e.target.value) } })} style={{ ...sel, width: "100%" }}>
+                      <option value={-1}>—</option>
+                      {(imp.rows[imp.header] || []).map((h, i) => <option key={i} value={i}>{String(h) || `stupac ${i + 1}`}</option>)}
+                    </select>
+                  </label>
+                ))}
+              </div>
+              <div style={{ fontSize: 12, color: S.sub, marginBottom: 6 }}>Poruka se slaže iz: {(imp.map.message || []).map((i) => imp.rows[imp.header]?.[i]).join(", ") || "—"}</div>
+              <div style={{ fontWeight: 700, fontSize: 13, margin: "6px 0" }}>
+                Pronađeno {parsed.txs.length} transakcija{parsed.skipped ? ` (preskočeno ${parsed.skipped} redaka bez datuma/iznosa)` : ""}
+              </div>
+              {parsed.txs.slice(0, 8).map((t) => (
+                <div key={t.hash} style={row}>
+                  <span style={{ minWidth: 0 }}>{fmtDate(t.tx_date)} · {t.counterparty || t.message || "—"}<br /><span style={{ fontSize: 11.5, color: S.sub }}>{catLabel(suggestCategory(t, rules))}</span></span>
+                  <b className="num" style={{ color: t.amount > 0 ? S.green : S.ink, whiteSpace: "nowrap" }}>{money(t.amount, t.currency)}</b>
+                </div>
+              ))}
+              <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+                <Btn small onClick={doImport} disabled={busy || !parsed.txs.length}>Uvezi {parsed.txs.length} transakcija</Btn>
+                <Btn small kind="ghost" onClick={() => setImp(null)}>Odustani</Btn>
+              </div>
+            </Card>
+          )}
+          <Card>
+            <div style={{ fontWeight: 700, marginBottom: 6 }}>Prethodni uvozi</div>
+            {imports.length === 0 ? <div style={{ color: S.sub, fontSize: 13 }}>Još ništa nije uvezeno.</div> : imports.map((im) => (
+              <div key={im.id} style={row}>
+                <span>{im.file_name}<br /><span style={{ fontSize: 11.5, color: S.sub }}>{fmtDate(im.date_from)} – {fmtDate(im.date_to)} · {im.row_count} transakcija · uvezeno {fmtDate(String(im.created_at).slice(0, 10))}</span></span>
+                <button onClick={() => delImport(im)} style={{ background: "none", border: "none", color: S.red, cursor: "pointer", fontSize: 15 }}>✕</button>
+              </div>
+            ))}
+          </Card>
+        </>
+      )}
+
+      {view === "pravila" && (
+        <Card>
+          <div style={{ fontWeight: 700, marginBottom: 6 }}>⚙️ Pravila za automatsko razvrstavanje</div>
+          <div style={{ fontSize: 12.5, color: S.sub, marginBottom: 8 }}>
+            Ako ime partnera, broj računa ili poruka sadrži zadani tekst, transakcija dobije tu kategoriju. Pravila nastaju sama kad promijeniš kategoriju (uz kvačicu „Zapamti“).
+            Uz tvoja pravila postoje i ugrađena (ČSSZ, VZP, finanční úřad, poplatek, benzinske…).
+          </div>
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 8 }}>
+            <input value={ruleForm.pattern} onChange={(e) => setRuleForm({ ...ruleForm, pattern: e.target.value })} placeholder="tekst, npr. Hotel Praha ili 123456789/0100" style={{ flex: "2 1 160px", width: "auto" }} />
+            {catSelect(ruleForm.category, (c) => setRuleForm({ ...ruleForm, category: c }))}
+            <Btn small onClick={addRule} disabled={!ruleForm.pattern.trim() || !ruleForm.category}>Dodaj</Btn>
+          </div>
+          {rules.map((r) => (
+            <div key={r.id} style={row}>
+              <span>„{r.pattern}“ → {catLabel(r.category)}</span>
+              <button onClick={() => delRule(r)} style={{ background: "none", border: "none", color: S.red, cursor: "pointer", fontSize: 15 }}>✕</button>
+            </div>
+          ))}
+          <Btn small kind="ghost" style={{ marginTop: 10 }} onClick={applyRules}>🤖 Primijeni pravila na nerazvrstane i prijedloge ({year}.)</Btn>
+        </Card>
+      )}
+    </div>
+  );
+}
 function AdminPanels({ data, api, panel, setPanel, onOpenWorker, onOpenProfile }) {
   const [firm, setFirm] = useState({ company_name: "", address: "", oib: "", iban: "", czk_rate: "25", czk_rate_auto: true, weekend_pct: "0", holiday_pct: "0", expiry_warn_days: "30", payday_day: "5", payday_reminder_days: "3" });
   const [auditQ, setAuditQ] = useState("");
@@ -2175,6 +2660,7 @@ function AdminPanels({ data, api, panel, setPanel, onOpenWorker, onOpenProfile }
       )}
 
       {panel === "unpaid" && <UnpaidPanel data={data} api={api} onOpenWorker={onOpenWorker} />}
+      {panel === "finance" && <FinancePanel data={data} api={api} />}
 
       {panel === "users" && (
         <Card style={{ marginTop: 8 }}>
