@@ -376,11 +376,18 @@ function printDoc(title, bodyHtml) {
     th{background:#f2f4f0;font-size:12px} .right{text-align:right}
     .tot td{font-weight:bold;font-size:14px;border-top:2px solid #1C2521}
     .muted{color:#5C6862;font-size:12px} .head{border-bottom:2px solid #1C2521;padding-bottom:10px;margin-bottom:14px}
+    h3{font-size:12px;text-transform:uppercase;letter-spacing:.6px;color:#5C6862;margin:20px 0 0}
   </style></head><body>${bodyHtml}<script>setTimeout(function(){window.print()},350)<\/script></body></html>`);
   w.document.close();
 }
+// polje "oib" služi i za češki IČO: 8 znamenki = IČO (DIČ plátce DPH je CZ + IČO), 11 znamenki = hrvatski OIB
+const firmIdLabel = (id) => {
+  const v = String(id || "").replace(/\s+/g, "");
+  if (!v) return "";
+  return /^\d{8}$/.test(v) ? `IČO: ${v} · DIČ: CZ${v}` : `OIB: ${v}`;
+};
 const firmHead = (st) => `<div class="head"><h1>${st.company_name || "Moja firma"}</h1>
-  <div class="muted">${[st.address, st.oib ? "OIB: " + st.oib : "", st.iban ? "IBAN: " + st.iban : ""].filter(Boolean).join(" · ")}</div></div>`;
+  <div class="muted">${[st.address, firmIdLabel(st.oib), st.iban ? "IBAN: " + st.iban : ""].filter(Boolean).join(" · ")}</div></div>`;
 function printGeneratedInvoice(inv, object, st) {
   const [y, m] = inv.period.split("-").map(Number);
   const periodLabel = `${MONTHS[m - 1]} ${y}.`;
@@ -1522,6 +1529,16 @@ function SignaturePad({ title, onSave, onClose }) {
 }
 function Tag({ children, color, bg }) {
   return <span style={{ background: bg, color, borderRadius: 999, padding: "3px 10px", fontSize: 12, fontWeight: 700, whiteSpace: "nowrap" }}>{children}</span>;
+}
+// iznos u dvije valute: veći je onaj koji postoji (samo Kč → Kč gore), drugi ispod manjim slovima
+function TwoCur({ e, k, color }) {
+  const czkMain = e === 0 && k !== 0;
+  return (
+    <>
+      <div className="num" style={{ fontSize: 18, fontWeight: 800, color }}>{czkMain ? czk(k) : eur(e)}</div>
+      {!czkMain && k !== 0 && <div className="num" style={{ fontSize: 13.5, fontWeight: 700, color }}>{czk(k)}</div>}
+    </>
+  );
 }
 function MiniBars({ items, fmt, color }) {
   const max = Math.max(...items.map((i) => i.value), 0.001);
@@ -2898,7 +2915,7 @@ function AdminPanels({ data, api, panel, setPanel, onOpenWorker, onOpenProfile }
           <Field label={tr("Naziv firme")}><input value={firm.company_name} onChange={(e) => setFirm({ ...firm, company_name: e.target.value })} placeholder={tr("npr. Moja Firma d.o.o.")} /></Field>
           <Field label={tr("Adresa")}><input value={firm.address} onChange={(e) => setFirm({ ...firm, address: e.target.value })} /></Field>
           <div style={{ display: "flex", gap: 10 }}>
-            <div style={{ flex: 1 }}><Field label={tr("OIB")}><input value={firm.oib} onChange={(e) => setFirm({ ...firm, oib: e.target.value })} /></Field></div>
+            <div style={{ flex: 1 }}><Field label={tr("IČO (CZ) ili OIB (HR)")}><input value={firm.oib} onChange={(e) => setFirm({ ...firm, oib: e.target.value })} /></Field></div>
             <div style={{ flex: 1.4 }}><Field label={tr("IBAN")}><input value={firm.iban} onChange={(e) => setFirm({ ...firm, iban: e.target.value })} /></Field></div>
           </div>
           <Field label={tr("Tečaj 1 € = ? Kč (za izračun iz Mzdy PDF-a i zbrojeve u €)")}>
@@ -6381,6 +6398,8 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
   const [objPickerOpen, setObjPickerOpen] = useState(false);
   const [showPayoutCal, setShowPayoutCal] = useState(false);
   const [showCombinedEur, setShowCombinedEur] = useState(false);
+  const [section, setSection] = useState("radnici"); // radnici | objekti | analiza
+  const [exportOpen, setExportOpen] = useState(false);
   const [payStatusFilter, setPayStatusFilter] = useState("all"); // all | paid | pending | unpaid
   const [signatures, setSignatures] = useState({}); // workerId -> dataURL, samo za trenutnu sesiju (ne sprema se u bazu)
   const [sigTarget, setSigTarget] = useState(null); // { id, name } radnika koji trenutno potpisuje
@@ -6413,6 +6432,12 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
   const PAY_STATUS_LABEL = { all: "", paid: "✓ Isplaćeno", pending: "⏳ Predloženo", unpaid: "Bez isplate" };
   const exportScopeLabel = selected.size > 0 ? `${selected.size} odabrano`
     : (view === "month" ? PAY_STATUS_LABEL[payStatusFilter] : "");
+  const exportScopeText = [
+    selected.size > 0 ? tr("Za {0} označenih radnika", selected.size)
+      : payStatusFilter !== "all" && view === "month" ? tr("Za filter: {0}", tr(PAY_STATUS_LABEL[payStatusFilter]))
+      : tr("Za sve prikazane radnike"),
+    objFilterName,
+  ].filter(Boolean).join(" · ");
   const unpaidRows = view === "month" ? displayRows.filter((r) => !paidFor(data, r.w.id, month)) : [];
   const pendingRows = view === "month" ? displayRows.filter((r) => { const p = paidFor(data, r.w.id, month); return p && !p.approved; }) : [];
   const allSelected = unpaidRows.length > 0 && unpaidRows.every((r) => selected.has(r.w.id));
@@ -6639,30 +6664,67 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
     last6.push({ label: mShort(d.getMonth()), hours: hrs, profit, profitKc });
   }
 
+  /* razrada obračuna jednog radnika — ista za ekran i PDF (oznake su hrvatske, na ekranu idu kroz tr) */
+  const noteFor = (r) => (view === "month" ? (data.payrollNotes || []).find((n) => n.workerId === r.w.id && n.month === month) : null);
+  const amtText = (e, k, gc) => [e ? eur(e) : "", k ? czk(k) : ""].filter(Boolean).join(" + ") || money(0, gc);
+  const breakdownOf = (r) => {
+    const note = noteFor(r);
+    const gc = wCur(r.w);
+    const items = [
+      { label: "Zarada", hint: fmtH(r.hours), e: r.gross, k: r.grossKc, sign: "", always: true },
+      { label: "Dodatak vikend / praznik", e: r.extraPay, k: r.extraPayKc, sign: "+" },
+      { label: "Bonus", e: r.bonuses, k: r.czk.bonuses, sign: "+" },
+      { label: "Avans", e: r.advances, k: r.czk.advances, sign: "−" },
+      { label: "Odbici", e: r.deductions, k: r.czk.deductions, sign: "−" },
+      { label: "Na račun (banka)", e: r.bank, k: r.czk.bank, sign: "−" },
+      note ? { label: note.note || MZDY_NOTE_LABEL, e: note.currency === "EUR" ? note.amount : 0, k: note.currency === "CZK" ? note.amount : 0, sign: "−" } : null,
+    ].filter((x) => x && (x.always || x.e || x.k));
+    const netE = round2(r.net - (note && note.currency === "EUR" ? note.amount : 0));
+    const netK = round2(r.czk.net - (note && note.currency === "CZK" ? note.amount : 0));
+    return { items, netE, netK, note, gc, netText: amtText(netE, netK, gc) };
+  };
+
   /* PDF obračun za radnika */
   const payslipBody = (r, st) => {
     const gc = wCur(r.w);
-    const logsHtml = r.logs.sort((a, b) => a.date.localeCompare(b.date)).map((l) =>
-      `<tr><td>${fmtDate(l.date)}</td><td>${logSpan(l)}</td><td>${objName(l.objectId) || ""}</td><td class="right">${fmtH(l.hours)}</td><td class="right">${money(round2(l.hours * rateFor(data, r.w, l.date)), gc)}</td></tr>`).join("");
-    const paysHtml = r.pays.map((p) =>
-      `<tr><td>${fmtDate(p.date)}</td><td colspan="2">${TYPE_LABEL[p.type]}${p.note ? " — " + p.note : ""}</td><td></td><td class="right">${p.type === "bonus" ? "+" : p.deduct ? "−" : ""}${money(p.amount, p.currency)}</td></tr>`).join("");
+    const bd = breakdownOf(r);
+    const docNo = `${view === "month" ? `${y}-${String(m).padStart(2, "0")}` : y}/${String(r.w.id).replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const logs = [...r.logs].sort((a, b) => a.date.localeCompare(b.date));
+    const logsHtml = logs.map((l) =>
+      `<tr><td>${fmtDate(l.date)}</td><td>${logSpan(l)}</td><td>${objName(l.objectId) || ""}</td><td class="right">${fmtH(l.hours)}</td><td class="right">${money(round2(l.hours * rateFor(data, r.w, l.date) + extraPayForLog(data, r.w, l)), gc)}</td></tr>`).join("");
+    const logsTotal = round2((gc === "CZK" ? r.grossKc + r.extraPayKc : r.gross + r.extraPay));
+    const itemsHtml = bd.items.map((it) =>
+      `<tr><td>${it.label}${it.hint ? ` (${it.hint})` : ""}</td><td class="right">${it.sign}${amtText(it.e, it.k, gc)}</td></tr>`).join("");
+    const paysHtml = r.pays.length ? `
+      <h3>Isplate i odbici u razdoblju</h3>
+      <table><tr><th style="width:90px">Datum</th><th>Vrsta</th><th>Napomena</th><th class="right">Iznos</th></tr>
+      ${[...r.pays].sort((a, b) => a.date.localeCompare(b.date)).map((p) =>
+        `<tr><td>${fmtDate(p.date)}</td><td>${TYPE_LABEL[p.type] || p.type}</td><td>${p.note || ""}</td><td class="right">${p.type === "bonus" ? "+" : p.deduct ? "−" : ""}${money(p.amount, p.currency)}</td></tr>`).join("")}</table>` : "";
     return `
       ${firmHead(st)}
-      <h1>Obračun plaće — ${r.w.name}</h1><h2>${periodLabel}</h2>
-      <table><tr><th>Datum</th><th>Vrijeme</th><th>Objekt</th><th class="right">Sati</th><th class="right">Iznos</th></tr>
-      ${logsHtml}${paysHtml}
-      <tr class="tot"><td colspan="3">UKUPNO ${fmtH(r.hours)}</td><td></td><td class="right">${[r.net !== 0 || r.czk.net === 0 ? eur(r.net) : "", r.czk.net !== 0 ? (r.czk.net > 0 ? "" : "−") + czk(Math.abs(r.czk.net)) : ""].filter(Boolean).join("<br>")}</td></tr></table>
-      <div class="muted">Zarada ${gc === "CZK" ? czk(r.grossKc) : eur(r.gross)}${r.extraPay ? " + vikend/praznik " + eur(r.extraPay) : ""}${r.extraPayKc ? " + vikend/praznik " + czk(r.extraPayKc) : ""}${r.bonuses ? " + bonus " + eur(r.bonuses) : ""}${r.czk.bonuses ? " + bonus " + czk(r.czk.bonuses) : ""}${r.advances ? " − avans " + eur(r.advances) : ""}${r.czk.advances ? " − avans " + czk(r.czk.advances) : ""}${r.deductions ? " − odbici " + eur(r.deductions) : ""}${r.czk.deductions ? " − odbici " + czk(r.czk.deductions) : ""}${r.bank ? " − na račun " + eur(r.bank) : ""}${r.czk.bank ? " − na račun " + czk(r.czk.bank) : ""} = <b>za isplatu (kovertom) ${[r.net !== 0 || r.czk.net === 0 ? eur(r.net) : "", r.czk.net !== 0 ? czk(r.czk.net) : ""].filter(Boolean).join(" i ")}</b></div>
-      <div class="muted" style="margin-top:24px;display:flex;gap:28px;align-items:flex-end">
-        <div>Potpis radnika:${signatures[r.w.id] ? `<br><img src="${signatures[r.w.id]}" style="height:60px;display:block;margin-top:2px" />` : " ______________________"}</div>
-        <div>Potpis poslodavca: ______________________</div>
-      </div>`;
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:16px">
+        <div><h1>Pregled sati i isplate</h1><h2>${r.w.name}${r.w.position ? " · " + r.w.position : ""} · ${periodLabel}</h2></div>
+        <div class="muted" style="text-align:right;white-space:nowrap">Broj: <b>${docNo}</b><br>Datum izdavanja: ${fmtDate(todayISO())}</div>
+      </div>
+      <h3>Evidencija sati</h3>
+      <table><tr><th style="width:90px">Datum</th><th>Vrijeme</th><th>Objekt</th><th class="right">Sati</th><th class="right">Iznos</th></tr>
+      ${logsHtml || `<tr><td colspan="5" class="muted">Nema upisanih sati.</td></tr>`}
+      <tr class="tot"><td colspan="3">Ukupno</td><td class="right">${fmtH(r.hours)}</td><td class="right">${money(logsTotal, gc)}</td></tr></table>
+      ${paysHtml}
+      <h3>Obračun</h3>
+      <table style="max-width:420px;margin-left:auto">${itemsHtml}
+      <tr class="tot"><td>Za isplatu (gotovina)</td><td class="right">${bd.netText}</td></tr></table>
+      <div style="margin-top:40px;display:grid;grid-template-columns:1fr 1fr 1fr;gap:24px;font-size:12px;color:#5C6862">
+        <div><div style="border-bottom:1px solid #1C2521;height:60px"></div>Mjesto i datum</div>
+        <div><div style="border-bottom:1px solid #1C2521;height:60px;display:flex;align-items:flex-end">${signatures[r.w.id] ? `<img src="${signatures[r.w.id]}" style="height:56px" />` : ""}</div>Potpis radnika</div>
+        <div><div style="border-bottom:1px solid #1C2521;height:60px"></div>Potpis poslodavca</div>
+      </div>
+      <div class="muted" style="margin-top:28px;font-size:10.5px">Interni pregled odrađenih sati i gotovinske isplate. Ne zamjenjuje službenu výplatní pásku.</div>`;
   };
   const printPayslip = (r) => printDoc(`Obračun ${r.w.name}`, payslipBody(r, api.settings));
   // dijeli tekstualni sažetak (ne i sam PDF — pravo dijeljenje PDF datoteke traži dodatnu biblioteku)
   const shareSummary = async (r) => {
-    const iznos = [r.net !== 0 || r.czk.net === 0 ? eur(r.net) : "", r.czk.net !== 0 ? czk(r.czk.net) : ""].filter(Boolean).join(" i ");
-    const text = `Obračun — ${r.w.name}\n${periodLabel}\nSati: ${fmtH(r.hours)}\nZa isplatu: ${iznos}`;
+    const text = `Obračun — ${r.w.name}\n${periodLabel}\nSati: ${fmtH(r.hours)}\nZa isplatu: ${breakdownOf(r).netText}`;
     if (navigator.share) { try { await navigator.share({ title: `Obračun ${r.w.name}`, text }); } catch {} }
     else if (navigator.clipboard) { try { await navigator.clipboard.writeText(text); alert(tr("Dijeljenje nije podržano u ovom pregledniku — sažetak je kopiran u međuspremnik.")); } catch { alert(text); } }
     else alert(text);
@@ -6848,58 +6910,6 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
         <Btn small kind="ghost" onClick={view === "month" ? next : () => setMonth(`${y + 1}-${String(m).padStart(2, "0")}`)}>→</Btn>
       </div>
 
-      {admin && (
-        <Card style={{ marginBottom: 12 }}>
-          <div onClick={() => setShowPayoutCal(!showPayoutCal)} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", cursor: "pointer" }}>
-            <div style={{ fontWeight: 700 }}>{tr("📅 Pregled isplata (zadnjih 6 mjeseci)")}</div>
-            <span style={{ fontWeight: 700, color: S.sub }}>{showPayoutCal ? "▲" : "▼"}</span>
-          </div>
-          {showPayoutCal && (() => {
-            const months = [];
-            for (let i = 5; i >= 0; i--) { const d = new Date(y, m - 1 - i, 1); months.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`); }
-            const relevantIds = new Set(data.logs.filter((l) => months.includes(monthKey(l.date))).map((l) => l.workerId));
-            const ws = sortedWorkers(data.workers.filter((w) => relevantIds.has(w.id)));
-            return ws.length === 0 ? (
-              <div style={{ fontSize: 12.5, color: S.sub, marginTop: 8 }}>{tr("Nema radnika sa satima u zadnjih 6 mjeseci.")}</div>
-            ) : (
-              <div style={{ overflowX: "auto", marginTop: 10 }}>
-                <table className="num" style={{ borderCollapse: "collapse", width: "100%", fontSize: 12 }}>
-                  <thead>
-                    <tr>
-                      <th style={{ textAlign: "left", padding: "3px 6px", position: "sticky", left: 0, background: S.card }}>{tr("Radnik")}</th>
-                      {months.map((mo) => <th key={mo} style={{ padding: "3px 4px", fontWeight: 700 }}>{mShort(Number(mo.slice(5, 7)) - 1)}</th>)}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {ws.map((w) => (
-                      <tr key={w.id}>
-                        <td onClick={() => onOpenWorker && onOpenWorker(w.id)} style={{
-                          padding: "3px 6px", fontWeight: 600, cursor: onOpenWorker ? "pointer" : "default", color: onOpenWorker ? S.blue : "inherit",
-                          position: "sticky", left: 0, background: S.card, whiteSpace: "nowrap" }}>{w.name}</td>
-                        {months.map((mo) => {
-                          const hadHours = data.logs.some((l) => l.workerId === w.id && monthKey(l.date) === mo);
-                          const paid = paidFor(data, w.id, mo);
-                          const bg = !hadHours ? "transparent" : paid?.approved ? S.greenSoft : paid ? S.amberSoft : S.redSoft;
-                          const color = !hadHours ? S.line : paid?.approved ? S.green : paid ? S.amber : S.red;
-                          return (
-                            <td key={mo} style={{ textAlign: "center", padding: "3px 2px" }}>
-                              <span style={{ display: "inline-block", width: 20, height: 20, lineHeight: "20px", borderRadius: 5, background: bg, color, fontWeight: 800 }}>
-                                {hadHours ? (paid?.approved ? "✓" : paid ? "⏳" : "✕") : ""}
-                              </span>
-                            </td>
-                          );
-                        })}
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-                <div style={{ fontSize: 11.5, color: S.sub, marginTop: 8 }}>{tr("✓ zeleno = odobreno i zaključano · ⏳ žuto = predloženo, čeka odobrenje · ✕ crveno = ima sati, ništa predloženo · prazno = nema sati taj mjesec")}</div>
-              </div>
-            );
-          })()}
-        </Card>
-      )}
-
       <div style={{ marginBottom: 12 }}>
         <div style={{ fontSize: 12.5, fontWeight: 600, color: S.sub, marginBottom: 5 }}>{api.t("showFor")}</div>
         <div onClick={() => setObjPickerOpen(!objPickerOpen)} style={{
@@ -6933,15 +6943,33 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
         )}
       </div>
 
-      {admin && view === "month" && (
-        <div style={{ marginBottom: 12 }}>
+      <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap", alignItems: "flex-start" }}>
+        {rows.length > 0 && (
+          <div style={{ position: "relative" }}>
+            <Btn small kind="ghost" onClick={() => setExportOpen(!exportOpen)} style={{ fontWeight: 700 }}>{tr("Izvoz i ispis")} {exportOpen ? "▲" : "▼"}</Btn>
+            {exportOpen && (
+              <>
+                <div onClick={() => setExportOpen(false)} style={{ position: "fixed", inset: 0, zIndex: 29 }} />
+                <div style={{ position: "absolute", top: "calc(100% + 4px)", left: 0, zIndex: 30, background: "#fff", border: `1px solid ${S.line}`,
+                  borderRadius: 12, boxShadow: "0 8px 24px rgba(28,37,33,.12)", minWidth: 250, padding: 6 }}>
+                  <div style={{ fontSize: 11.5, color: S.sub, padding: "4px 10px 6px" }}>{exportScopeText}</div>
+                  {[[tr("Excel tablica"), exportExcel], [tr("Koverte za isplatu"), () => printEnvelopes(exportTargetRows)], [tr("PDF obračuni radnika"), printAllPayslips]].map(([label, fn]) => (
+                    <button key={label} onClick={() => { setExportOpen(false); fn(); }} style={{ display: "block", width: "100%", textAlign: "left", background: "none", border: "none",
+                      borderRadius: 8, padding: "9px 10px", fontSize: 14, fontWeight: 600, color: S.ink, cursor: "pointer" }}>{label}</button>
+                  ))}
+                </div>
+              </>
+            )}
+          </div>
+        )}
+        {admin && view === "month" && (
           <Btn small kind="ghost" onClick={() => mzdyFileRef.current?.click()} disabled={mzdyBusy}>
-            {mzdyBusy ? tr("Čitam datoteke…") : tr("📄 Učitaj Mzdy (PDF-ovi od knjigovođe)")}
+            {mzdyBusy ? tr("Čitam datoteke…") : tr("Učitaj Mzdy (PDF od knjigovođe)")}
           </Btn>
-          <input ref={mzdyFileRef} type="file" accept="application/pdf" multiple onChange={handleMzdyFile} style={{ display: "none" }} />
-          {mzdyErr && <div style={{ color: S.red, fontSize: 12.5, marginTop: 6 }}>{mzdyErr}</div>}
-        </div>
-      )}
+        )}
+        <input ref={mzdyFileRef} type="file" accept="application/pdf" multiple onChange={handleMzdyFile} style={{ display: "none" }} />
+        {mzdyErr && <div style={{ color: S.red, fontSize: 12.5, width: "100%" }}>{mzdyErr}</div>}
+      </div>
 
       {mzdyReview && (() => {
         const setRow = (i, patch) => { const rows = [...mzdyReview.rows]; rows[i] = { ...rows[i], ...patch }; setMzdyReview({ ...mzdyReview, rows }); };
@@ -7032,27 +7060,6 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
 
       {rows.length === 0 ? <Empty text={objFilters.size > 0 ? tr("Za {0} u ovom razdoblju nema upisanih sati.", objFilterName) : tr("Za ovo razdoblje nema upisanih sati ni isplata.")} /> : (
         <>
-          {view === "month" && (
-            <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
-              {[["all", "Svi"], ["paid", "✓ Isplaćeno"], ["pending", "⏳ Predloženo"], ["unpaid", "Bez isplate"]].map(([id, label]) => (
-                <button key={id} onClick={() => setPayStatusFilter(id)} style={{ padding: "6px 12px", borderRadius: 999, fontWeight: 700, fontSize: 12.5, cursor: "pointer",
-                  background: payStatusFilter === id ? S.blue : "#fff", color: payStatusFilter === id ? "#fff" : S.sub, border: `1px solid ${payStatusFilter === id ? S.blue : S.line}` }}>{label}</button>
-              ))}
-            </div>
-          )}
-          <div style={{ display: "flex", gap: 8, marginBottom: 4, flexWrap: "wrap" }}>
-            <Btn kind="excel" onClick={exportExcel} style={{ flex: 1 }}>📊 {api.t("excelBtn")}{objFilterName ? " — " + objFilterName : ""}{exportScopeLabel ? " — " + exportScopeLabel : ""}</Btn>
-            <Btn kind="ghost" onClick={() => printEnvelopes(exportTargetRows)} style={{ flex: 1, fontWeight: 700 }}>🖨 {api.t("envelopesBtn")}{objFilterName ? " — " + objFilterName : ""}{exportScopeLabel ? " — " + exportScopeLabel : ""}</Btn>
-            <Btn kind="ghost" onClick={printAllPayslips} style={{ flex: 1, fontWeight: 700 }}>{tr("🖨 Svi PDF obračuni")}{objFilterName ? " — " + objFilterName : ""}{exportScopeLabel ? " — " + exportScopeLabel : ""}</Btn>
-          </div>
-          <div style={{ fontSize: 11.5, color: S.sub, marginBottom: 12 }}>
-            {selected.size > 0
-              ? tr("Excel/koverte/PDF iznad odnose se samo na {0} označenih radnika ispod.", selected.size)
-              : payStatusFilter !== "all"
-                ? tr("Excel/koverte/PDF iznad odnose se samo na filter \"{0}\" — promijeni filter iznad (Svi/Isplaćeno/Predloženo/Bez isplate) ili označi radnike kvačicom ispod za drugačiji odabir.", PAY_STATUS_LABEL[payStatusFilter])
-                : tr("Označi radnike kvačicom ispod da Excel/koverte/PDF budu samo za njih — inače idu za sve prikazane.")}
-          </div>
-
           {(totals.grossKc !== 0 || totals.netKc !== 0 || totals.firmKc !== 0) && (
             <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: S.sub, cursor: "pointer", justifyContent: "flex-end", margin: "0 2px 6px" }}>
               <input type="checkbox" checked={showCombinedEur} onChange={(e) => setShowCombinedEur(e.target.checked)} style={{ width: 15, height: 15 }} />
@@ -7063,351 +7070,409 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, fontSize: 13.5 }}>
               <div><div style={{ color: "#9DB3A8" }}>{api.t("totalHours")}</div><div className="num" style={{ fontSize: 18, fontWeight: 800 }}>{fmtH(totals.hours)}</div></div>
               <div><div style={{ color: "#9DB3A8" }}>{api.t("earningsBonus")}</div>
-                <div className="num" style={{ fontSize: 18, fontWeight: 800 }}>{eur(round2(totals.gross + totals.bonus))}</div>
-                {round2(totals.grossKc + totals.bonusKc) !== 0 && <div className="num" style={{ fontSize: 13.5, fontWeight: 700 }}>{czk(round2(totals.grossKc + totals.bonusKc))}</div>}
+                <TwoCur e={round2(totals.gross + totals.bonus)} k={round2(totals.grossKc + totals.bonusKc)} />
                 {showCombinedEur && round2(totals.grossKc + totals.bonusKc) !== 0 && <div className="num" style={{ fontSize: 11.5, color: "#9DB3A8" }}>≈ {eur(round2(totals.gross + totals.bonus + (totals.grossKc + totals.bonusKc) / czkRate))} {tr("ukupno")}</div>}
               </div>
               <div><div style={{ color: "#9DB3A8" }}>{api.t("toPay")}</div>
-                <div className="num" style={{ fontSize: 18, fontWeight: 800, color: "#7FD6B4" }}>{eur(totals.net)}</div>
-                {totals.netKc !== 0 && <div className="num" style={{ fontSize: 13.5, fontWeight: 700, color: "#7FD6B4" }}>{totals.netKc > 0 ? "" : "−"}{czk(Math.abs(totals.netKc))} {tr("u Kč")}</div>}
+                <TwoCur e={totals.net} k={totals.netKc} color="#7FD6B4" />
                 {showCombinedEur && totals.netKc !== 0 && <div className="num" style={{ fontSize: 11.5, color: "#9DB3A8" }}>≈ {eur(round2(totals.net + totals.netKc / czkRate))} {tr("ukupno")}</div>}
               </div>
               <div><div style={{ color: "#9DB3A8" }}>{api.t("firmCosts")}</div>
-                <div className="num" style={{ fontSize: 18, fontWeight: 800 }}>{eur(round2(totals.firm + objCostsTotal))}</div>
-                {round2(totals.firmKc + objCostsTotalKc) !== 0 && <div className="num" style={{ fontSize: 13.5, fontWeight: 700 }}>{czk(round2(totals.firmKc + objCostsTotalKc))}</div>}
+                <TwoCur e={round2(totals.firm + objCostsTotal)} k={round2(totals.firmKc + objCostsTotalKc)} />
                 {showCombinedEur && round2(totals.firmKc + objCostsTotalKc) !== 0 && <div className="num" style={{ fontSize: 11.5, color: "#9DB3A8" }}>≈ {eur(round2(totals.firm + objCostsTotal + (totals.firmKc + objCostsTotalKc) / czkRate))} {tr("ukupno")}</div>}
               </div>
             </div>
           </Card>
 
-          {/* grafovi */}
-          <Card>
-            <div style={{ fontWeight: 700, marginBottom: 4 }}>{tr("📈 Sati — zadnjih 6 mjeseci")}</div>
-            <MiniBars items={last6.map((x) => ({ label: x.label, value: x.hours }))} fmt={(v) => Math.round(v)} color={S.blue} />
-            {admin && (
-              <>
-                <div style={{ fontWeight: 700, margin: "12px 0 4px", color: S.amber }}>{tr("👑 Dobit u € — zadnjih 6 mjeseci")}</div>
-                <MiniBars items={last6.map((x) => ({ label: x.label, value: x.profit }))} fmt={(v) => Math.round(v) + "€"} color={S.green} />
-                {last6.some((x) => x.profitKc !== 0) && (
-                  <>
-                    <div style={{ fontWeight: 700, margin: "12px 0 4px", color: S.amber }}>{tr("👑 Dobit u Kč — zadnjih 6 mjeseci")}</div>
-                    <MiniBars items={last6.map((x) => ({ label: x.label, value: x.profitKc }))} fmt={(v) => Math.round(v) + " Kč"} color={S.green} />
-                  </>
-                )}
-              </>
-            )}
-          </Card>
+          <div style={{ display: "flex", background: "#fff", border: `1px solid ${S.line}`, borderRadius: 12, padding: 3, marginBottom: 12 }}>
+            {[["radnici", tr("Radnici"), displayRows.length], ["objekti", tr("Objekti"), [...byObject.keys()].filter((k) => k !== "__none__").length], ["analiza", admin ? tr("Dobit i analiza") : tr("Analiza"), null]].map(([id, label, n]) => (
+              <button key={id} onClick={() => setSection(id)} style={{ flex: 1, padding: "8px 6px", borderRadius: 9, border: "none", fontWeight: 700, fontSize: 13.5, cursor: "pointer",
+                background: section === id ? S.ink : "transparent", color: section === id ? "#fff" : S.sub }}>
+                {label}{n != null ? <span style={{ opacity: 0.7, fontWeight: 600 }}> {n}</span> : null}
+              </button>
+            ))}
+          </div>
 
-          {admin && (
-            <Card style={{ background: S.amberSoft, borderColor: "#EBD9B4" }}>
-              <div style={{ fontWeight: 700, color: S.amber, marginBottom: 8 }}>{tr("👑 Admin — dobit ({0})", periodLabelUi)}</div>
-              <div className="num" style={{ fontSize: 14 }}>
-                <div style={{ display: "flex", justifyContent: "space-between", padding: "3px 0" }}><span>{tr("Naplata od objekata")}</span><b>{eur(totalRevenue)}{totalRevenueKc !== 0 ? " + " + czk(totalRevenueKc) : ""}</b></div>
-                <div style={{ display: "flex", justifyContent: "space-between", padding: "3px 0" }}><span>{tr("Plaće + bonusi + svi troškovi")}</span><b>−{eur(totalCost)}{totalCostKc !== 0 ? " − " + czk(totalCostKc) : ""}</b></div>
-                <div style={{ borderTop: `1px dashed #EBD9B4`, paddingTop: 6 }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", fontWeight: 800, fontSize: 15.5 }}>
-                    <span>{tr("DOBIT (€)")}</span><span style={{ color: totalProfit >= 0 ? S.green : S.red }}>{eur(totalProfit)}</span>
-                  </div>
-                  {(totalRevenueKc !== 0 || totalCostKc !== 0) && (
-                    <div style={{ display: "flex", justifyContent: "space-between", fontWeight: 800, fontSize: 15.5 }}>
-                      <span>{tr("DOBIT (Kč)")}</span><span style={{ color: totalProfitKc >= 0 ? S.green : S.red }}>{czk(totalProfitKc)}</span>
-                    </div>
+          {section === "radnici" && (
+            <>
+              {view === "month" && (
+                <div style={{ display: "flex", gap: 8, marginBottom: 10, flexWrap: "wrap" }}>
+                  {[["all", "Svi"], ["paid", "✓ Isplaćeno"], ["pending", "⏳ Predloženo"], ["unpaid", "Bez isplate"]].map(([id, label]) => (
+                    <button key={id} onClick={() => setPayStatusFilter(id)} style={{ padding: "6px 12px", borderRadius: 999, fontWeight: 700, fontSize: 12.5, cursor: "pointer",
+                      background: payStatusFilter === id ? S.ink : "#fff", color: payStatusFilter === id ? "#fff" : S.sub, border: `1px solid ${payStatusFilter === id ? S.ink : S.line}` }}>{tr(label)}</button>
+                  ))}
+                </div>
+              )}
+              {view === "month" && (unpaidRows.length > 0 || pendingRows.length > 0) && (
+                <div style={{ display: "flex", alignItems: "center", gap: 14, padding: "2px 4px 10px", flexWrap: "wrap" }}>
+                  {unpaidRows.length > 0 && (
+                    <label style={{ display: "flex", alignItems: "center", gap: 7, fontSize: 13, cursor: "pointer" }}>
+                      <input type="checkbox" checked={allSelected} onChange={toggleSelectAll} style={{ width: 18, height: 18 }} />
+                      {tr("Označi neisplaćene ({0})", unpaidRows.length)}
+                    </label>
+                  )}
+                  {pendingRows.length > 0 && (
+                    <label style={{ display: "flex", alignItems: "center", gap: 7, fontSize: 13, cursor: "pointer" }}>
+                      <input type="checkbox" checked={allPendingSelected} onChange={toggleSelectAllPending} style={{ width: 18, height: 18 }} />
+                      {tr("Označi predložene ({0})", pendingRows.length)}
+                    </label>
                   )}
                 </div>
-              </div>
-            </Card>
-          )}
+              )}
 
-          {/* rang objekata po dobiti */}
-          {admin && byObject.size > 1 && (() => {
-            const ranked = [...byObject.entries()]
-              .filter(([key]) => key !== "__none__")
-              .map(([key, v]) => {
-                const profitE = round2(v.revenue - v.gross - (v.costs || 0));
-                const profitK = round2((v.revenueKc || 0) - (v.grossKc || 0) - (v.costsKc || 0));
-                return { key, name: objName(key), profitE, profitK, combined: round2(profitE + profitK / czkRate) };
-              })
-              .sort((a, b) => b.combined - a.combined);
-            if (!ranked.length) return null;
-            return (
-              <Card>
-                <div style={{ fontWeight: 700, marginBottom: 8 }}>{tr("🏆 Rang objekata po dobiti")}</div>
-                {ranked.map((r, i) => (
-                  <div key={r.key} className="num" style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 0", borderBottom: `1px solid ${S.line}`, fontSize: 13.5 }}>
-                    <span style={{ color: S.sub, width: 18 }}>{i + 1}.</span>
-                    <span style={{ flex: 1, fontWeight: 600 }}>{r.name}</span>
-                    <span style={{ fontWeight: 700, color: r.combined >= 0 ? S.green : S.red }}>
-                      {r.profitE !== 0 && eur(r.profitE)}{r.profitE !== 0 && r.profitK !== 0 ? " + " : ""}{r.profitK !== 0 && czk(r.profitK)}
-                      {r.profitE === 0 && r.profitK === 0 && eur(0)}
-                    </span>
-                  </div>
-                ))}
-                <div style={{ fontSize: 11, color: S.sub, marginTop: 6 }}>{tr("Poredano po zbroju u €+Kč (po tečaju iz postavki, samo za rang — knjiži se odvojeno).")}</div>
-              </Card>
-            );
-          })()}
-
-          {/* po objektima + naplata od hotela */}
-          {byObject.size > 0 && (
-            <Card style={{ background: S.blueSoft, borderColor: "#CBDCEA" }}>
-              <div style={{ fontWeight: 700, color: S.blue, marginBottom: 8 }}>{tr("🏨 Po objektima")}</div>
-              {["HR", "CZ", "__none__"].map((cGroup) => {
-                const entries = [...byObject.entries()].filter(([key]) => {
-                  if (cGroup === "__none__") return key === "__none__";
-                  const ob = data.objects.find((o) => o.id === key);
-                  return ob && (ob.country || "HR") === cGroup;
-                }).sort(([ka], [kb]) => objName(ka).localeCompare(objName(kb), "hr"));
-                if (!entries.length) return null;
-                const sub = entries.reduce((t, [, v]) => ({
-                  hours: round2(t.hours + v.hours), gross: round2(t.gross + v.gross), grossKc: round2(t.grossKc + (v.grossKc || 0)),
-                  revenue: round2(t.revenue + v.revenue), revenueKc: round2(t.revenueKc + (v.revenueKc || 0)),
-                  costs: round2(t.costs + (v.costs || 0)), costsKc: round2(t.costsKc + (v.costsKc || 0)),
-                }), { hours: 0, gross: 0, grossKc: 0, revenue: 0, revenueKc: 0, costs: 0, costsKc: 0 });
-                const subProfitE = round2(sub.revenue - sub.gross - sub.costs);
-                const subProfitK = round2(sub.revenueKc - sub.grossKc - sub.costsKc);
+              {displayRows.length === 0 && <Empty text={tr("Nitko ne odgovara ovom filteru.")} />}
+              {displayRows.map((r) => {
+                const paid = view === "month" ? paidFor(data, r.w.id, month) : null;
+                const gc = wCur(r.w);
+                const bdHead = breakdownOf(r); // isti iznos kao "Za isplatu" u razradi i na koverti (uključuje soc.-zdr.)
+                const main = gc === "CZK" ? bdHead.netK : bdHead.netE;
+                const other = gc === "CZK" ? bdHead.netE : bdHead.netK;
                 return (
-                  <div key={cGroup}>
-                    {cGroup !== "__none__" && (
-                      <div className="num" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 0 3px", fontWeight: 800, fontSize: 13.5, color: S.blue }}>
-                        <span>{FLAG[cGroup]} {COUNTRY_NAME[cGroup]}</span>
-                        <span>{fmtH(sub.hours)}{admin ? <> {tr("· dobit")}{" "}{[sub.revenue || sub.gross || sub.costs ? eur(subProfitE) : "", sub.revenueKc || sub.grossKc || sub.costsKc ? czk(subProfitK) : ""].filter(Boolean).join(" · ") || eur(0)}</> : null}</span>
-                      </div>
-                    )}
-                    {entries.map(([key, v]) => {
-                const ups = view === "month" ? (data.invoicePayments || []).filter((p) => p.objectId === key && p.month === month) : [];
-                const paid = round2(ups.reduce((s, p) => s + p.amount, 0));
-                const bcKey = data.objects.find((o) => o.id === key)?.billCur || "EUR";
-                const due = round2((bcKey === "CZK" ? v.revenueKc : v.revenue) - paid);
-                return (
-                  <div key={key} style={{ padding: "7px 0", borderBottom: `1px solid #CBDCEA` }}>
-                    <div className="num" style={{ display: "flex", justifyContent: "space-between", fontSize: 14 }}>
-                      <span style={{ fontWeight: 600 }}>{key === "__none__" ? tr("Bez objekta") : objName(key)}</span>
-                      <span>{fmtH(v.hours)} · <b>{[v.gross ? eur(v.gross) : "", v.grossKc ? czk(v.grossKc) : ""].filter(Boolean).join(" + ") || eur(0)}</b>{(v.costs > 0 || v.costsKc > 0) ? <span style={{ color: S.red }}> {tr("· troškovi")}{" "}{[v.costs ? eur(v.costs) : "", v.costsKc ? czk(v.costsKc) : ""].filter(Boolean).join(" + ")}</span> : null}</span>
-                    </div>
-                    {admin && key !== "__none__" && (
-                      <>
-                        <div className="num" style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, color: S.amber, fontWeight: 700 }}>
-                          <span>{tr("naplata")}{" "}{[v.revenue ? eur(v.revenue) : "", v.revenueKc ? czk(v.revenueKc) : ""].filter(Boolean).join(" + ") || eur(0)}</span>
-                          <span>{tr("dobit")}{" "}{[
-                            (v.revenue || v.gross || v.costs) ? eur(round2(v.revenue - v.gross - (v.costs || 0))) : "",
-                            (v.revenueKc || v.grossKc || v.costsKc) ? czk(round2((v.revenueKc || 0) - (v.grossKc || 0) - (v.costsKc || 0))) : "",
-                          ].filter(Boolean).join(" · ") || eur(0)}</span>
+                  <Card key={r.w.id} style={paid ? { borderColor: "#C5DED2", background: "#FBFDF9" } : undefined}>
+                    <div onClick={() => setOpen(open === r.w.id ? null : r.w.id)} style={{ cursor: "pointer" }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
+                        <div style={{ fontWeight: 700, fontSize: 15.5, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", minWidth: 0 }}>
+                          <input type="checkbox" checked={selected.has(r.w.id)} onChange={(e) => toggleSelect(r.w.id, e)} onClick={(e) => e.stopPropagation()} style={{ width: 18, height: 18 }} title={tr("Označi za izvoz ili grupnu radnju")} />
+                          <span onClick={(e) => { if (onOpenWorker) { e.stopPropagation(); onOpenWorker(r.w.id); } }} style={{ color: onOpenWorker ? S.blue : "inherit" }}>{r.w.name}</span>
+                          {paid && (paid.approved
+                            ? <Tag color={S.green} bg={S.greenSoft}>{tr("✓ Isplaćeno")}</Tag>
+                            : <Tag color={S.amber} bg={S.amberSoft}>{tr("⏳ Predloženo")}</Tag>)}
                         </div>
-                        {view === "month" && (
-                          <div style={{ marginTop: 6 }}>
-                            <div className="num" style={{ fontSize: 12.5, display: "flex", justifyContent: "space-between" }}>
-                              <span>{tr("uplaćeno:")}{" "}<b style={{ color: S.green }}>{money(paid, bcKey)}</b></span>
-                              <span>{tr("ostaje:")}{" "}<b style={{ color: due > 0 ? S.red : S.green }}>{money(Math.max(due, 0), bcKey)}</b></span>
-                            </div>
-                            {ups.map((p) => (
-                              <div key={p.id} className="num" style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: S.sub, padding: "2px 0" }}>
-                                <span>{fmtDate(p.date)} {tr("· uplata")}{" "}{money(p.amount, bcKey)}</span>
-                                <button onClick={() => api.delInvoicePayment(p, objName(key))} style={{ background: "none", border: "none", color: S.red, cursor: "pointer" }}>✕</button>
-                              </div>
-                            ))}
-                            <div style={{ display: "flex", gap: 6, marginTop: 4 }}>
-                              <input inputMode="decimal" placeholder={bcKey === "CZK" ? tr("iznos uplate Kč") : tr("iznos uplate €")} value={uplata[key] || ""}
-                                onChange={(e) => setUplata({ ...uplata, [key]: e.target.value })} style={{ padding: "7px 9px", fontSize: 13 }} />
-                              <Btn small kind="ghost" onClick={() => {
-                                const a = parseNum(uplata[key]);
-                                if (a) { api.addInvoicePayment(data.objects.find((o) => o.id === key), month, round2(a)); setUplata({ ...uplata, [key]: "" }); }
-                              }}>{tr("+ Uplata")}</Btn>
-                              <Btn small kind="ghost" onClick={() => printInvoiceSpec(key, v)}>{tr("🧾 PDF")}</Btn>
-                            </div>
+                        <div className="num" style={{ textAlign: "right", whiteSpace: "nowrap" }}>
+                          <div style={{ fontWeight: 800, color: main >= 0 ? S.green : S.red, fontSize: 16 }}>{money(main, gc)}</div>
+                          {other !== 0 && <div style={{ fontWeight: 700, color: other >= 0 ? S.green : S.red, fontSize: 12.5 }}>{other > 0 ? "+" : "−"}{money(Math.abs(other), gc === "CZK" ? "EUR" : "CZK")}</div>}
+                        </div>
+                      </div>
+                      <div className="num" style={{ fontSize: 13, color: S.sub, marginTop: 3 }}>
+                        {view === "month" && isHoursSuspicious(r.hours) && <span title={tr("Više od {0}h u mjesecu — provjeri unos", MONTH_HOURS_WARN)} style={{ color: S.red }}>⚠️ </span>}
+                        {fmtH(r.hours)}{r.rateSet.length === 1 ? <> × {money(r.rateSet[0], gc)}</> : r.rateSet.length > 1 ? <> {tr("(više satnica)")}</> : null} = {gc === "CZK" ? czk(r.grossKc) : eur(r.gross)}
+                        {open !== r.w.id && bdHead.items.length > 1 && <span> · {tr("otvori za razradu")}</span>}
+                      </div>
+                    </div>
+                    {open === r.w.id && (() => {
+                      const bd = breakdownOf(r);
+                      const head = { fontSize: 11.5, fontWeight: 700, color: S.sub, textTransform: "uppercase", letterSpacing: 0.5, margin: "12px 0 4px" };
+                      return (
+                      <div style={{ marginTop: 10, borderTop: `1px solid ${S.line}`, paddingTop: 2 }}>
+                        <div style={head}>{tr("Sati")}</div>
+                        {r.logs.sort((a, b) => a.date.localeCompare(b.date)).map((l) => (
+                          <div key={l.id} className="num" style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13.5, padding: "4px 0" }}>
+                            <span style={{ flex: 1 }}>{fmtDate(l.date)} · <LogSpanLabel l={l} />{objName(l.objectId) ? " · " + objName(l.objectId) : ""}</span>
+                            <span style={{ fontWeight: 600 }}>{fmtH(l.hours)}</span>
+                            {(admin || l.createdBy === api.uid()) && (
+                              <button onClick={(e) => { e.stopPropagation(); api.delLog(l, r.w.name); }} title={tr("Obriši")}
+                                style={{ background: "none", border: "none", color: S.red, fontSize: 15, cursor: "pointer", padding: "0 2px" }}>✕</button>
+                            )}
+                          </div>
+                        ))}
+                        {(r.pays.length > 0 || bd.note) && <div style={head}>{tr("Isplate i odbici")}</div>}
+                        {r.pays.map((p) => (
+                          <div key={p.id} className="num" style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13.5, padding: "4px 0",
+                            color: p.type === "bonus" ? S.green : p.type === "racun" ? S.blue : p.deduct ? S.amber : S.sub }}>
+                            <span style={{ flex: 1 }}>{fmtDate(p.date)} · {tr(TYPE_LABEL[p.type] || p.type)}{p.note ? " · " + p.note : ""}</span>
+                            <span style={{ fontWeight: 600 }}>{p.type === "bonus" ? "+" : p.deduct ? "−" : ""}{money(p.amount, p.currency)}</span>
+                            <button onClick={(e) => { e.stopPropagation(); api.delPayment(p, r.w.name); }} title={tr("Obriši")}
+                              style={{ background: "none", border: "none", color: S.red, fontSize: 15, cursor: "pointer", padding: "0 2px" }}>✕</button>
+                          </div>
+                        ))}
+                        {bd.note && (
+                          <div className="num" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 13.5, padding: "4px 0", color: S.blue }}>
+                            <span>{bd.note.note || MZDY_NOTE_LABEL} {tr("(pola zbroja,")}{" "}{czk(bd.note.sourceCzk)})</span>
+                            <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                              <span style={{ fontWeight: 600 }}>−{money(bd.note.amount, bd.note.currency)}</span>
+                              <button onClick={() => api.delPayrollNote(bd.note, r.w.name)} style={{ background: "none", border: "none", color: S.red, fontSize: 15, cursor: "pointer", padding: 2 }}>✕</button>
+                            </span>
                           </div>
                         )}
-                      </>
-                    )}
-                  </div>
-                );
-                    })}
-                  </div>
-                );
-              })}
-            </Card>
-          )}
-
-          {view === "month" && rows.length > 0 && (() => {
-            const selectedUnpaid = unpaidRows.filter((r) => selected.has(r.w.id));
-            const selectedPending = pendingRows.filter((r) => selected.has(r.w.id));
-            return (
-            <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 4px", marginBottom: 4, flexWrap: "wrap" }}>
-              {unpaidRows.length > 0 && (
-                <label style={{ display: "flex", alignItems: "center", gap: 7, fontSize: 13, cursor: "pointer" }}>
-                  <input type="checkbox" checked={allSelected} onChange={toggleSelectAll} style={{ width: 18, height: 18 }} />
-                  {tr("Odaberi sve neisplaćene (")}{unpaidRows.length})
-                </label>
-              )}
-              {pendingRows.length > 0 && (
-                <label style={{ display: "flex", alignItems: "center", gap: 7, fontSize: 13, cursor: "pointer" }}>
-                  <input type="checkbox" checked={allPendingSelected} onChange={toggleSelectAllPending} style={{ width: 18, height: 18 }} />
-                  {tr("Odaberi sve predložene (")}{pendingRows.length})
-                </label>
-              )}
-              <div style={{ display: "flex", gap: 8, marginLeft: "auto", flexWrap: "wrap" }}>
-                {selectedUnpaid.length > 0 && (
-                  <>
-                    <Btn small kind="ghost" onClick={() => payMany(selectedUnpaid)} disabled={bulkBusy}>
-                      {tr("✓ Predloži odabrane (")}{selectedUnpaid.length})
-                    </Btn>
-                    <Btn small onClick={() => payAndPrintMany(selectedUnpaid)} disabled={bulkBusy}>
-                      {tr("🖨✓ Predloži i ispiši (")}{selectedUnpaid.length})
-                    </Btn>
-                  </>
-                )}
-                {unpaidRows.length > 0 && (
-                  <>
-                    <Btn small kind="ghost" onClick={() => payMany(unpaidRows)} disabled={bulkBusy}>
-                      {tr("✓✓ Predloži sve (")}{unpaidRows.length})
-                    </Btn>
-                    <Btn small kind={selectedUnpaid.length > 0 ? "ghost" : "primary"} onClick={() => payAndPrintMany(unpaidRows)} disabled={bulkBusy}>
-                      {bulkBusy ? tr("Spremam…") : tr("🖨✓✓ Predloži i ispiši sve ({0})", unpaidRows.length)}
-                    </Btn>
-                  </>
-                )}
-                {admin && selectedPending.length > 0 && (
-                  <Btn small onClick={() => approveMany(selectedPending)} disabled={bulkBusy}>
-                    {tr("✓ Odobri odabrane (")}{selectedPending.length})
-                  </Btn>
-                )}
-                {admin && pendingRows.length > 0 && (
-                  <Btn small kind={selectedPending.length > 0 ? "ghost" : "primary"} onClick={() => approveMany(pendingRows)} disabled={bulkBusy}>
-                    {bulkBusy ? tr("Spremam…") : tr("✓✓ Odobri sve predložene ({0})", pendingRows.length)}
-                  </Btn>
-                )}
-              </div>
-            </div>
-            );
-          })()}
-
-          {displayRows.length === 0 && <Empty text={tr("Nitko ne odgovara ovom filteru.")} />}
-          {displayRows.map((r) => {
-            const paid = view === "month" ? paidFor(data, r.w.id, month) : null;
-            return (
-              <Card key={r.w.id} style={paid ? { borderColor: "#C5DED2", background: "#FBFDF9" } : undefined}>
-                <div onClick={() => setOpen(open === r.w.id ? null : r.w.id)} style={{ cursor: "pointer" }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                    <div style={{ fontWeight: 700, fontSize: 15.5, display: "flex", alignItems: "center", gap: 8 }}>
-                      <input type="checkbox" checked={selected.has(r.w.id)} onChange={(e) => toggleSelect(r.w.id, e)} onClick={(e) => e.stopPropagation()} style={{ width: 18, height: 18 }} title={tr("Označi za Excel/koverte/PDF ili grupnu radnju")} />
-                      <span onClick={(e) => { if (onOpenWorker) { e.stopPropagation(); onOpenWorker(r.w.id); } }} style={{ color: onOpenWorker ? S.blue : "inherit" }}>{r.w.name}</span>
-                      {paid && (paid.approved
-                        ? <Tag color={S.green} bg={S.greenSoft}>{tr("✓ Isplaćeno")}</Tag>
-                        : <Tag color={S.amber} bg={S.amberSoft}>{tr("⏳ Predloženo")}</Tag>)}
-                    </div>
-                    <div className="num" style={{ textAlign: "right" }}>
-                      <div style={{ fontWeight: 800, color: r.net >= 0 ? S.green : S.red, fontSize: 16 }}>{eur(r.net)}</div>
-                      {r.czk.net !== 0 && <div style={{ fontWeight: 700, color: r.czk.net >= 0 ? S.green : S.red, fontSize: 12.5 }}>{r.czk.net > 0 ? "+" : "−"}{czk(Math.abs(r.czk.net))}</div>}
-                    </div>
-                  </div>
-                  <div className="num" style={{ fontSize: 13, color: S.sub, marginTop: 3 }}>
-                    {view === "month" && isHoursSuspicious(r.hours) && <span title={tr("Više od {0}h u mjesecu — provjeri unos", MONTH_HOURS_WARN)} style={{ color: S.red }}>⚠️ </span>}
-                    {fmtH(r.hours)}{r.rateSet.length === 1 ? <> × {money(r.rateSet[0], wCur(r.w))}</> : r.rateSet.length > 1 ? <> {tr("(više satnica)")}</> : null} = {wCur(r.w) === "CZK" ? czk(r.grossKc) : eur(r.gross)}
-                    {r.extraPay > 0 && <> {tr("· vikend/praznik +")}{eur(r.extraPay)}</>}
-                    {r.bonuses > 0 && <> {tr("· bonus +")}{eur(r.bonuses)}</>}
-                    {r.advances > 0 && <> {tr("· avans −")}{eur(r.advances)}</>}
-                    {r.deductions > 0 && <> {tr("· odbici −")}{eur(r.deductions)}</>}
-                    {r.bank > 0 && <> {tr("· na račun −")}{eur(r.bank)}</>}
-                    {r.czk.advances > 0 && <> {tr("· avans −")}{czk(r.czk.advances)}</>}
-                    {r.czk.bonuses > 0 && <> {tr("· bonus +")}{czk(r.czk.bonuses)}</>}
-                    {r.extraPayKc > 0 && <> {tr("· vikend/praznik +")}{czk(r.extraPayKc)}</>}
-                    {r.czk.deductions > 0 && <> {tr("· odbici −")}{czk(r.czk.deductions)}</>}
-                    {r.czk.bank > 0 && <> {tr("· na račun −")}{czk(r.czk.bank)}</>}
-                  </div>
-                </div>
-                {open === r.w.id && (
-                  <div style={{ marginTop: 12, borderTop: `1px dashed ${S.line}`, paddingTop: 10 }}>
-                    {r.logs.sort((a, b) => a.date.localeCompare(b.date)).map((l) => (
-                      <div key={l.id} className="num" style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13.5, padding: "4px 0" }}>
-                        <span style={{ flex: 1 }}>{fmtDate(l.date)} · <LogSpanLabel l={l} />{objName(l.objectId) ? " · " + objName(l.objectId) : ""}</span>
-                        <span style={{ fontWeight: 600 }}>{fmtH(l.hours)}</span>
-                        {(admin || l.createdBy === api.uid()) && (
-                          <button onClick={(e) => { e.stopPropagation(); api.delLog(l, r.w.name); }} title={tr("Obriši")}
-                            style={{ background: "none", border: "none", color: S.red, fontSize: 15, cursor: "pointer", padding: "0 2px" }}>✕</button>
+                        <div style={head}>{tr("Obračun")}</div>
+                        <div className="num" style={{ background: S.bg, borderRadius: 10, padding: "8px 12px", fontSize: 13.5 }}>
+                          {bd.items.map((it, i) => (
+                            <div key={i} style={{ display: "flex", justifyContent: "space-between", gap: 10, padding: "3px 0" }}>
+                              <span style={{ color: S.sub }}>{tr(it.label)}{it.hint ? ` (${it.hint})` : ""}</span>
+                              <span style={{ fontWeight: 600 }}>{it.sign}{amtText(it.e, it.k, bd.gc)}</span>
+                            </div>
+                          ))}
+                          <div style={{ borderTop: `1px solid ${S.line}`, marginTop: 6, paddingTop: 6, display: "flex", justifyContent: "space-between", fontWeight: 800, fontSize: 15 }}>
+                            <span>{tr("Za isplatu")}</span>
+                            <span style={{ color: bd.netE < 0 || bd.netK < 0 ? S.red : S.green }}>{bd.netText}</span>
+                          </div>
+                        </div>
+                        <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
+                          <Btn small kind="ghost" onClick={() => printPayslip(r)}>{tr("PDF obračun")}</Btn>
+                          <Btn small kind="ghost" onClick={() => shareSummary(r)}>{tr("Podijeli sažetak")}</Btn>
+                          <Btn small kind="ghost" onClick={() => setSigTarget({ id: r.w.id, name: r.w.name })} style={signatures[r.w.id] ? { color: S.green, borderColor: "#C5DED2" } : undefined}>
+                            {signatures[r.w.id] ? tr("✓ Potpisano (promijeni)") : tr("Potpis radnika")}
+                          </Btn>
+                          {view === "month" && !paid && (
+                            <Btn small onClick={() => api.markPaid(r.w, month, r.net, r.czk.net)}>{tr("✓ Predloži isplatu")}</Btn>
+                          )}
+                          {view === "month" && paid && !paid.approved && (
+                            <>
+                              <span className="num" style={{ fontSize: 12.5, color: S.amber, alignSelf: "center", fontWeight: 700 }}>
+                                {tr("⏳ Predloženo")}{" "}{fmtDate(paid.paidAt)} · {[paid.amount ? eur(paid.amount) : "", paid.amountKc ? czk(paid.amountKc) : ""].filter(Boolean).join(" + ") || eur(0)}
+                              </span>
+                              {admin && <Btn small onClick={() => api.approvePayout(paid, r.w.name)}>{tr("✓ Odobri")}</Btn>}
+                              <Btn small kind="danger" onClick={() => api.unmarkPaid(paid, r.w.name)}>{tr("Odbaci")}</Btn>
+                            </>
+                          )}
+                          {view === "month" && paid && !paid.approved && (round2(paid.amount || 0) !== round2(r.net || 0) || round2(paid.amountKc || 0) !== round2(r.czk.net || 0)) && (
+                            <div style={{ width: "100%", display: "flex", alignItems: "center", gap: 8, background: S.redSoft, borderRadius: 8, padding: "6px 10px" }}>
+                              <span style={{ fontSize: 12, color: S.red, fontWeight: 700, flex: 1 }}>
+                                {tr("⚠️ Sati/isplate su se promijenili nakon prijedloga — sad bi iznos bio")}{" "}{[r.net ? eur(r.net) : "", r.czk.net ? czk(r.czk.net) : ""].filter(Boolean).join(" + ") || eur(0)}
+                              </span>
+                              <Btn small onClick={() => api.refreshPayout(paid, r.net, r.czk.net, r.w.name)}>{tr("🔄 Osvježi")}</Btn>
+                            </div>
+                          )}
+                          {view === "month" && paid && paid.approved && (
+                            <>
+                              <span className="num" style={{ fontSize: 12.5, color: S.green, alignSelf: "center", fontWeight: 700 }}>
+                                {tr("✓ Odobreno")}{" "}{fmtDate(paid.approvedAt || paid.paidAt)} · {[paid.amount ? eur(paid.amount) : "", paid.amountKc ? czk(paid.amountKc) : ""].filter(Boolean).join(" + ") || eur(0)}
+                              </span>
+                              {admin && <Btn small kind="danger" onClick={() => api.unmarkPaid(paid, r.w.name)}>{tr("Otključaj")}</Btn>}
+                            </>
+                          )}
+                        </div>
+                        {view === "month" && paid && !paid.approved && (
+                          <div style={{ fontSize: 11.5, color: S.sub, marginTop: 6 }}>{tr("Isplata je predložena, ali još nije odobrena — sati se mogu ispraviti do odobrenja.")}</div>
+                        )}
+                        {view === "month" && paid && paid.approved && (
+                          <div style={{ fontSize: 11.5, color: S.sub, marginTop: 6 }}>{tr("Mjesec je odobren i zaključan — sati i isplate se više ne mogu mijenjati")}{admin ? "" : tr(" (otključava admin)")}.</div>
                         )}
                       </div>
-                    ))}
-                    {r.pays.map((p) => (
-                      <div key={p.id} className="num" style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13.5, padding: "4px 0",
-                        color: p.type === "bonus" ? S.green : p.type === "racun" ? S.blue : p.deduct ? S.amber : S.sub }}>
-                        <span style={{ flex: 1 }}>{fmtDate(p.date)} · {tr(TYPE_LABEL[p.type] || p.type)}{p.note ? " · " + p.note : ""}</span>
-                        <span style={{ fontWeight: 600 }}>{p.type === "bonus" ? "+" : p.deduct ? "−" : ""}{money(p.amount, p.currency)}</span>
-                        <button onClick={(e) => { e.stopPropagation(); api.delPayment(p, r.w.name); }} title={tr("Obriši")}
-                          style={{ background: "none", border: "none", color: S.red, fontSize: 15, cursor: "pointer", padding: "0 2px" }}>✕</button>
+                      );
+                    })()}
+                  </Card>
+                );
+              })}
+
+              {selected.size > 0 && (() => {
+                const selectedUnpaid = unpaidRows.filter((r) => selected.has(r.w.id));
+                const selectedPending = pendingRows.filter((r) => selected.has(r.w.id));
+                return (
+                  <div style={{ position: "sticky", bottom: "calc(72px + env(safe-area-inset-bottom))", zIndex: 15, background: S.ink, color: "#fff", borderRadius: 14,
+                    padding: "10px 12px", display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", boxShadow: "0 8px 24px rgba(28,37,33,.25)", marginTop: 4 }}>
+                    <span style={{ fontWeight: 700, fontSize: 13.5 }}>{tr("Odabrano: {0}", selected.size)}</span>
+                    <div style={{ marginLeft: "auto", display: "flex", gap: 8, flexWrap: "wrap" }}>
+                      {view === "month" && selectedUnpaid.length > 0 && (
+                        <>
+                          <Btn small kind="ghost" onClick={() => payMany(selectedUnpaid)} disabled={bulkBusy}>{tr("Predloži isplatu ({0})", selectedUnpaid.length)}</Btn>
+                          <Btn small onClick={() => payAndPrintMany(selectedUnpaid)} disabled={bulkBusy}>{bulkBusy ? tr("Spremam…") : tr("Predloži i ispiši koverte ({0})", selectedUnpaid.length)}</Btn>
+                        </>
+                      )}
+                      {view === "month" && admin && selectedPending.length > 0 && (
+                        <Btn small onClick={() => approveMany(selectedPending)} disabled={bulkBusy}>{bulkBusy ? tr("Spremam…") : tr("Odobri ({0})", selectedPending.length)}</Btn>
+                      )}
+                      <Btn small kind="ghost" onClick={() => setSelected(new Set())} disabled={bulkBusy}>{tr("Poništi odabir")}</Btn>
+                    </div>
+                  </div>
+                );
+              })()}
+            </>
+          )}
+
+          {section === "objekti" && (byObject.size === 0 ? <Empty text={tr("Nema podataka po objektima.")} /> : (
+            <>
+              {/* po objektima + naplata od hotela */}
+              {byObject.size > 0 && (
+                <Card>
+                  <div style={{ fontWeight: 700, marginBottom: 8 }}>{tr("Po objektima")}</div>
+                  {["HR", "CZ", "__none__"].map((cGroup) => {
+                    const entries = [...byObject.entries()].filter(([key]) => {
+                      if (cGroup === "__none__") return key === "__none__";
+                      const ob = data.objects.find((o) => o.id === key);
+                      return ob && (ob.country || "HR") === cGroup;
+                    }).sort(([ka], [kb]) => objName(ka).localeCompare(objName(kb), "hr"));
+                    if (!entries.length) return null;
+                    const sub = entries.reduce((t, [, v]) => ({
+                      hours: round2(t.hours + v.hours), gross: round2(t.gross + v.gross), grossKc: round2(t.grossKc + (v.grossKc || 0)),
+                      revenue: round2(t.revenue + v.revenue), revenueKc: round2(t.revenueKc + (v.revenueKc || 0)),
+                      costs: round2(t.costs + (v.costs || 0)), costsKc: round2(t.costsKc + (v.costsKc || 0)),
+                    }), { hours: 0, gross: 0, grossKc: 0, revenue: 0, revenueKc: 0, costs: 0, costsKc: 0 });
+                    const subProfitE = round2(sub.revenue - sub.gross - sub.costs);
+                    const subProfitK = round2(sub.revenueKc - sub.grossKc - sub.costsKc);
+                    return (
+                      <div key={cGroup}>
+                        {cGroup !== "__none__" && (
+                          <div className="num" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 0 3px", fontWeight: 800, fontSize: 13.5 }}>
+                            <span>{FLAG[cGroup]} {COUNTRY_NAME[cGroup]}</span>
+                            <span>{fmtH(sub.hours)}{admin ? <> {tr("· dobit")}{" "}{[sub.revenue || sub.gross || sub.costs ? eur(subProfitE) : "", sub.revenueKc || sub.grossKc || sub.costsKc ? czk(subProfitK) : ""].filter(Boolean).join(" · ") || eur(0)}</> : null}</span>
+                          </div>
+                        )}
+                        {entries.map(([key, v]) => {
+                    const ups = view === "month" ? (data.invoicePayments || []).filter((p) => p.objectId === key && p.month === month) : [];
+                    const paid = round2(ups.reduce((s, p) => s + p.amount, 0));
+                    const bcKey = data.objects.find((o) => o.id === key)?.billCur || "EUR";
+                    const due = round2((bcKey === "CZK" ? v.revenueKc : v.revenue) - paid);
+                    return (
+                      <div key={key} style={{ padding: "7px 0", borderBottom: `1px solid ${S.line}` }}>
+                        <div className="num" style={{ display: "flex", justifyContent: "space-between", fontSize: 14 }}>
+                          <span style={{ fontWeight: 600 }}>{key === "__none__" ? tr("Bez objekta") : objName(key)}</span>
+                          <span>{fmtH(v.hours)} · <b>{[v.gross ? eur(v.gross) : "", v.grossKc ? czk(v.grossKc) : ""].filter(Boolean).join(" + ") || eur(0)}</b>{(v.costs > 0 || v.costsKc > 0) ? <span style={{ color: S.red }}> {tr("· troškovi")}{" "}{[v.costs ? eur(v.costs) : "", v.costsKc ? czk(v.costsKc) : ""].filter(Boolean).join(" + ")}</span> : null}</span>
+                        </div>
+                        {admin && key !== "__none__" && (
+                          <>
+                            <div className="num" style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, color: S.sub, fontWeight: 700 }}>
+                              <span>{tr("naplata")}{" "}{[v.revenue ? eur(v.revenue) : "", v.revenueKc ? czk(v.revenueKc) : ""].filter(Boolean).join(" + ") || eur(0)}</span>
+                              <span>{tr("dobit")}{" "}{[
+                                (v.revenue || v.gross || v.costs) ? eur(round2(v.revenue - v.gross - (v.costs || 0))) : "",
+                                (v.revenueKc || v.grossKc || v.costsKc) ? czk(round2((v.revenueKc || 0) - (v.grossKc || 0) - (v.costsKc || 0))) : "",
+                              ].filter(Boolean).join(" · ") || eur(0)}</span>
+                            </div>
+                            {view === "month" && (
+                              <div style={{ marginTop: 6 }}>
+                                <div className="num" style={{ fontSize: 12.5, display: "flex", justifyContent: "space-between" }}>
+                                  <span>{tr("uplaćeno:")}{" "}<b style={{ color: S.green }}>{money(paid, bcKey)}</b></span>
+                                  <span>{tr("ostaje:")}{" "}<b style={{ color: due > 0 ? S.red : S.green }}>{money(Math.max(due, 0), bcKey)}</b></span>
+                                </div>
+                                {ups.map((p) => (
+                                  <div key={p.id} className="num" style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: S.sub, padding: "2px 0" }}>
+                                    <span>{fmtDate(p.date)} {tr("· uplata")}{" "}{money(p.amount, bcKey)}</span>
+                                    <button onClick={() => api.delInvoicePayment(p, objName(key))} style={{ background: "none", border: "none", color: S.red, cursor: "pointer" }}>✕</button>
+                                  </div>
+                                ))}
+                                <div style={{ display: "flex", gap: 6, marginTop: 4, flexWrap: "wrap" }}>
+                                  <input inputMode="decimal" placeholder={bcKey === "CZK" ? tr("iznos uplate Kč") : tr("iznos uplate €")} value={uplata[key] || ""}
+                                    onChange={(e) => setUplata({ ...uplata, [key]: e.target.value })} style={{ padding: "7px 9px", fontSize: 13, flex: "1 1 120px", minWidth: 0 }} />
+                                  <Btn small kind="ghost" onClick={() => {
+                                    const a = parseNum(uplata[key]);
+                                    if (a) { api.addInvoicePayment(data.objects.find((o) => o.id === key), month, round2(a)); setUplata({ ...uplata, [key]: "" }); }
+                                  }}>{tr("+ Uplata")}</Btn>
+                                  <Btn small kind="ghost" onClick={() => printInvoiceSpec(key, v)}>{tr("Specifikacija PDF")}</Btn>
+                                </div>
+                              </div>
+                            )}
+                          </>
+                        )}
                       </div>
-                    ))}
-                    {(() => {
-                      const note = view === "month" ? (data.payrollNotes || []).find((n) => n.workerId === r.w.id && n.month === month) : null;
-                      if (!note) return null;
-                      const noteLabel = note.note || MZDY_NOTE_LABEL;
-                      return (
-                        <div className="num" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 13.5, padding: "4px 0", color: S.blue }}>
-                          <span>📄 {noteLabel} {tr("(pola zbroja,")}{" "}{czk(note.sourceCzk)})</span>
-                          <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                            <span style={{ fontWeight: 600 }}>−{money(note.amount, note.currency)}</span>
-                            <button onClick={() => api.delPayrollNote(note, r.w.name)} style={{ background: "none", border: "none", color: S.red, fontSize: 15, cursor: "pointer", padding: 2 }}>✕</button>
-                          </span>
+                    );
+                        })}
+                      </div>
+                    );
+                  })}
+                </Card>
+              )}
+            </>
+          ))}
+
+          {section === "analiza" && (
+            <>
+              {admin && (
+                <Card>
+                  <div style={{ fontWeight: 700, marginBottom: 8 }}>{tr("Dobit ({0})", periodLabelUi)}</div>
+                  <div className="num" style={{ fontSize: 14 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", padding: "3px 0" }}><span>{tr("Naplata od objekata")}</span><b>{eur(totalRevenue)}{totalRevenueKc !== 0 ? " + " + czk(totalRevenueKc) : ""}</b></div>
+                    <div style={{ display: "flex", justifyContent: "space-between", padding: "3px 0" }}><span>{tr("Plaće + bonusi + svi troškovi")}</span><b>−{eur(totalCost)}{totalCostKc !== 0 ? " − " + czk(totalCostKc) : ""}</b></div>
+                    <div style={{ borderTop: `1px solid ${S.line}`, paddingTop: 6 }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", fontWeight: 800, fontSize: 15.5 }}>
+                        <span>{tr("DOBIT (€)")}</span><span style={{ color: totalProfit >= 0 ? S.green : S.red }}>{eur(totalProfit)}</span>
+                      </div>
+                      {(totalRevenueKc !== 0 || totalCostKc !== 0) && (
+                        <div style={{ display: "flex", justifyContent: "space-between", fontWeight: 800, fontSize: 15.5 }}>
+                          <span>{tr("DOBIT (Kč)")}</span><span style={{ color: totalProfitKc >= 0 ? S.green : S.red }}>{czk(totalProfitKc)}</span>
                         </div>
-                      );
-                    })()}
-                    {(() => {
-                      const note = view === "month" ? (data.payrollNotes || []).find((n) => n.workerId === r.w.id && n.month === month) : null;
-                      const netE = round2(r.net - (note && note.currency === "EUR" ? note.amount : 0));
-                      const netK = round2(r.czk.net - (note && note.currency === "CZK" ? note.amount : 0));
-                      return (
-                        <div style={{ borderTop: `1px dashed ${S.line}`, marginTop: 8, paddingTop: 8, display: "flex", justifyContent: "space-between", fontWeight: 800 }}>
-                          <span>{tr("Za isplatu")}</span>
-                          <span className="num" style={{ color: netE >= 0 ? S.green : S.red, textAlign: "right" }}>
-                            {eur(netE)}{netK !== 0 ? <span style={{ display: "block", fontSize: 13 }}>{netK > 0 ? "+" : "−"}{czk(Math.abs(netK))}</span> : null}
-                          </span>
-                        </div>
-                      );
-                    })()}
-                    <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
-                      <Btn small kind="ghost" onClick={() => printPayslip(r)}>{tr("📄 PDF obračun")}</Btn>
-                      <Btn small kind="ghost" onClick={() => shareSummary(r)}>{tr("📤 Podijeli sažetak")}</Btn>
-                      <Btn small kind="ghost" onClick={() => setSigTarget({ id: r.w.id, name: r.w.name })} style={signatures[r.w.id] ? { color: S.green, borderColor: "#C5DED2" } : undefined}>
-                        {signatures[r.w.id] ? tr("✓ Potpisano (promijeni)") : tr("✍️ Potpis")}
-                      </Btn>
-                      {view === "month" && !paid && (
-                        <Btn small onClick={() => api.markPaid(r.w, month, r.net, r.czk.net)}>{tr("✓ Predloži isplatu")}</Btn>
-                      )}
-                      {view === "month" && paid && !paid.approved && (
-                        <>
-                          <span className="num" style={{ fontSize: 12.5, color: S.amber, alignSelf: "center", fontWeight: 700 }}>
-                            {tr("⏳ Predloženo")}{" "}{fmtDate(paid.paidAt)} · {[paid.amount ? eur(paid.amount) : "", paid.amountKc ? czk(paid.amountKc) : ""].filter(Boolean).join(" + ") || eur(0)}
-                          </span>
-                          {admin && <Btn small onClick={() => api.approvePayout(paid, r.w.name)}>{tr("✓ Odobri")}</Btn>}
-                          <Btn small kind="danger" onClick={() => api.unmarkPaid(paid, r.w.name)}>{tr("Odbaci")}</Btn>
-                        </>
-                      )}
-                      {view === "month" && paid && !paid.approved && (round2(paid.amount || 0) !== round2(r.net || 0) || round2(paid.amountKc || 0) !== round2(r.czk.net || 0)) && (
-                        <div style={{ width: "100%", display: "flex", alignItems: "center", gap: 8, background: S.redSoft, borderRadius: 8, padding: "6px 10px" }}>
-                          <span style={{ fontSize: 12, color: S.red, fontWeight: 700, flex: 1 }}>
-                            {tr("⚠️ Sati/isplate su se promijenili nakon prijedloga — sad bi iznos bio")}{" "}{[r.net ? eur(r.net) : "", r.czk.net ? czk(r.czk.net) : ""].filter(Boolean).join(" + ") || eur(0)}
-                          </span>
-                          <Btn small onClick={() => api.refreshPayout(paid, r.net, r.czk.net, r.w.name)}>{tr("🔄 Osvježi")}</Btn>
-                        </div>
-                      )}
-                      {view === "month" && paid && paid.approved && (
-                        <>
-                          <span className="num" style={{ fontSize: 12.5, color: S.green, alignSelf: "center", fontWeight: 700 }}>
-                            {tr("✓ Odobreno")}{" "}{fmtDate(paid.approvedAt || paid.paidAt)} · {[paid.amount ? eur(paid.amount) : "", paid.amountKc ? czk(paid.amountKc) : ""].filter(Boolean).join(" + ") || eur(0)}
-                          </span>
-                          {admin && <Btn small kind="danger" onClick={() => api.unmarkPaid(paid, r.w.name)}>{tr("Otključaj")}</Btn>}
-                        </>
                       )}
                     </div>
-                    {view === "month" && paid && !paid.approved && (
-                      <div style={{ fontSize: 11.5, color: S.sub, marginTop: 6 }}>{tr("Isplata je predložena, ali još nije odobrena — sati se mogu ispraviti do odobrenja.")}</div>
-                    )}
-                    {view === "month" && paid && paid.approved && (
-                      <div style={{ fontSize: 11.5, color: S.sub, marginTop: 6 }}>{tr("Mjesec je odobren i zaključan — sati i isplate se više ne mogu mijenjati")}{admin ? "" : tr(" (otključava admin)")}.</div>
-                    )}
                   </div>
+                </Card>
+              )}
+              {/* grafovi */}
+              <Card>
+                <div style={{ fontWeight: 700, marginBottom: 4 }}>{tr("Sati — zadnjih 6 mjeseci")}</div>
+                <MiniBars items={last6.map((x) => ({ label: x.label, value: x.hours }))} fmt={(v) => Math.round(v)} color={S.blue} />
+                {admin && (
+                  <>
+                    <div style={{ fontWeight: 700, margin: "12px 0 4px" }}>{tr("Dobit u € — zadnjih 6 mjeseci")}</div>
+                    <MiniBars items={last6.map((x) => ({ label: x.label, value: x.profit }))} fmt={(v) => Math.round(v) + "€"} color={S.green} />
+                    {last6.some((x) => x.profitKc !== 0) && (
+                      <>
+                        <div style={{ fontWeight: 700, margin: "12px 0 4px" }}>{tr("Dobit u Kč — zadnjih 6 mjeseci")}</div>
+                        <MiniBars items={last6.map((x) => ({ label: x.label, value: x.profitKc }))} fmt={(v) => Math.round(v) + " Kč"} color={S.green} />
+                      </>
+                    )}
+                  </>
                 )}
               </Card>
-            );
-          })}
+              {/* rang objekata po dobiti */}
+              {admin && byObject.size > 1 && (() => {
+                const ranked = [...byObject.entries()]
+                  .filter(([key]) => key !== "__none__")
+                  .map(([key, v]) => {
+                    const profitE = round2(v.revenue - v.gross - (v.costs || 0));
+                    const profitK = round2((v.revenueKc || 0) - (v.grossKc || 0) - (v.costsKc || 0));
+                    return { key, name: objName(key), profitE, profitK, combined: round2(profitE + profitK / czkRate) };
+                  })
+                  .sort((a, b) => b.combined - a.combined);
+                if (!ranked.length) return null;
+                return (
+                  <Card>
+                    <div style={{ fontWeight: 700, marginBottom: 8 }}>{tr("Rang objekata po dobiti")}</div>
+                    {ranked.map((r, i) => (
+                      <div key={r.key} className="num" style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 0", borderBottom: `1px solid ${S.line}`, fontSize: 13.5 }}>
+                        <span style={{ color: S.sub, width: 18 }}>{i + 1}.</span>
+                        <span style={{ flex: 1, fontWeight: 600 }}>{r.name}</span>
+                        <span style={{ fontWeight: 700, color: r.combined >= 0 ? S.green : S.red }}>
+                          {r.profitE !== 0 && eur(r.profitE)}{r.profitE !== 0 && r.profitK !== 0 ? " + " : ""}{r.profitK !== 0 && czk(r.profitK)}
+                          {r.profitE === 0 && r.profitK === 0 && eur(0)}
+                        </span>
+                      </div>
+                    ))}
+                    <div style={{ fontSize: 11, color: S.sub, marginTop: 6 }}>{tr("Poredano po zbroju u €+Kč (po tečaju iz postavki, samo za rang — knjiži se odvojeno).")}</div>
+                  </Card>
+                );
+              })()}
+              {admin && (
+            <Card style={{ marginBottom: 12 }}>
+              <div onClick={() => setShowPayoutCal(!showPayoutCal)} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", cursor: "pointer" }}>
+                <div style={{ fontWeight: 700 }}>{tr("Pregled isplata (zadnjih 6 mjeseci)")}</div>
+                <span style={{ fontWeight: 700, color: S.sub }}>{showPayoutCal ? "▲" : "▼"}</span>
+              </div>
+              {showPayoutCal && (() => {
+                const months = [];
+                for (let i = 5; i >= 0; i--) { const d = new Date(y, m - 1 - i, 1); months.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`); }
+                const relevantIds = new Set(data.logs.filter((l) => months.includes(monthKey(l.date))).map((l) => l.workerId));
+                const ws = sortedWorkers(data.workers.filter((w) => relevantIds.has(w.id)));
+                return ws.length === 0 ? (
+                  <div style={{ fontSize: 12.5, color: S.sub, marginTop: 8 }}>{tr("Nema radnika sa satima u zadnjih 6 mjeseci.")}</div>
+                ) : (
+                  <div style={{ overflowX: "auto", marginTop: 10 }}>
+                    <table className="num" style={{ borderCollapse: "collapse", width: "100%", fontSize: 12 }}>
+                      <thead>
+                        <tr>
+                          <th style={{ textAlign: "left", padding: "3px 6px", position: "sticky", left: 0, background: S.card }}>{tr("Radnik")}</th>
+                          {months.map((mo) => <th key={mo} style={{ padding: "3px 4px", fontWeight: 700 }}>{mShort(Number(mo.slice(5, 7)) - 1)}</th>)}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {ws.map((w) => (
+                          <tr key={w.id}>
+                            <td onClick={() => onOpenWorker && onOpenWorker(w.id)} style={{
+                              padding: "3px 6px", fontWeight: 600, cursor: onOpenWorker ? "pointer" : "default", color: onOpenWorker ? S.blue : "inherit",
+                              position: "sticky", left: 0, background: S.card, whiteSpace: "nowrap" }}>{w.name}</td>
+                            {months.map((mo) => {
+                              const hadHours = data.logs.some((l) => l.workerId === w.id && monthKey(l.date) === mo);
+                              const paid = paidFor(data, w.id, mo);
+                              const bg = !hadHours ? "transparent" : paid?.approved ? S.greenSoft : paid ? S.amberSoft : S.redSoft;
+                              const color = !hadHours ? S.line : paid?.approved ? S.green : paid ? S.amber : S.red;
+                              return (
+                                <td key={mo} style={{ textAlign: "center", padding: "3px 2px" }}>
+                                  <span style={{ display: "inline-block", width: 20, height: 20, lineHeight: "20px", borderRadius: 5, background: bg, color, fontWeight: 800 }}>
+                                    {hadHours ? (paid?.approved ? "✓" : paid ? "⏳" : "✕") : ""}
+                                  </span>
+                                </td>
+                              );
+                            })}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                    <div style={{ fontSize: 11.5, color: S.sub, marginTop: 8 }}>{tr("✓ zeleno = odobreno i zaključano · ⏳ žuto = predloženo, čeka odobrenje · ✕ crveno = ima sati, ništa predloženo · prazno = nema sati taj mjesec")}</div>
+                  </div>
+                );
+              })()}
+            </Card>
+              )}
+            </>
+          )}
         </>
       )}
 
