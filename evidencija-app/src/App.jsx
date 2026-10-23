@@ -6,7 +6,7 @@ import { supabase } from "./supabase.js";
 import { exportUnpaidXlsx } from "./unpaidExport.js";
 import { downloadStyledXlsx, XC, xDate } from "./xlsxStyled.js";
 import { TR_UK } from "./i18n_uk.js";
-import { FIN_CATS, CZ_CIT, CZ_DIVIDEND, catLabel, catKind, suggestCategory, ruleMatches, txText, fold, decodeText, parseCsv, findHeader, guessMapping, FIELDS, rowsToTxs, finYear, taxEstimate, vatOf, toCzkAmt } from "./finance.js";
+import { FIN_CATS, CZ_CIT, CZ_DIVIDEND, catLabel, catKind, suggestCategory, ruleMatches, txText, fold, decodeText, parseCsv, findHeader, guessMapping, FIELDS, rowsToTxs, finYear, taxEstimate, vatOf, toCzkAmt, payrollLevies, citAdvances, CZ_SOC_FIRM, CZ_SOC_EMP, CZ_ZDR_FIRM, CZ_ZDR_EMP } from "./finance.js";
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorkerUrl;
 
@@ -2101,7 +2101,7 @@ function FinancePanel({ data, api }) {
   const [imports, setImports] = useState([]);
   const [rules, setRules] = useState([]);
   const [loadErr, setLoadErr] = useState("");
-  const [view, setView] = useState("pregled"); // pregled | transakcije | uvoz | pravila
+  const [view, setView] = useState("pregled"); // pregled | obveze | transakcije | uvoz | pravila
   const [fMonth, setFMonth] = useState("");
   const [fCat, setFCat] = useState("all");
   const [q, setQ] = useState("");
@@ -2175,6 +2175,10 @@ function FinancePanel({ data, api }) {
   const vatOwed = vatRows.reduce((s, r) => s + r.v.payable, 0);
   const vatPaid = sumM("vatPaid");
   const nextVat = vatRows.find((r) => r.v.payable > 0 && daysUntil(r.v.due) >= 0);
+  const lev = payrollLevies({ txs, reminders: data.reminders || [], year, rate });
+  const envelopeSocZdr = (data.payrollNotes || []).filter((n) => n.month?.startsWith(`${year}-`))
+    .reduce((s, n) => s + (n.currency === "CZK" ? n.amount : n.sourceCzk || n.amount * rate), 0);
+  const adv = citAdvances(est.yCit);
   const Kc = (n) => czk(Math.round(n));
 
   const filtered = txs.filter((t) => (!fMonth || t.tx_date.startsWith(fMonth))
@@ -2309,7 +2313,7 @@ function FinancePanel({ data, api }) {
     <div style={{ marginTop: 8 }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, marginBottom: 10, flexWrap: "wrap" }}>
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-          {[["pregled", "📊 Pregled"], ["transakcije", "📋 Transakcije"], ["uvoz", "📥 Uvoz izvoda"], ["pravila", "⚙️ Pravila"]].map(([id, label]) => (
+          {[["pregled", "📊 Pregled"], ["obveze", "🧮 Kraj godine"], ["transakcije", "📋 Transakcije"], ["uvoz", "📥 Uvoz izvoda"], ["pravila", "⚙️ Pravila"]].map(([id, label]) => (
             <button key={id} onClick={() => setView(id)} style={chip(view === id)}>{label}</button>
           ))}
         </div>
@@ -2413,6 +2417,94 @@ function FinancePanel({ data, api }) {
           </Card>
         </>
       )}
+
+      {view === "obveze" && (() => {
+        const pct = (n) => `${String(Math.round(n * 1000) / 10).replace(".", ",")} %`;
+        const col = { width: 100, textAlign: "right" };
+        const line = (label, now, full, opt = {}) => (
+          <div style={{ ...row, ...(opt.bold ? { fontSize: 14.5 } : {}), ...(opt.last ? { borderBottom: "none" } : {}) }}>
+            <span style={{ flex: 1 }}>{opt.bold ? <b>{label}</b> : label}{opt.hint && <div style={{ fontSize: 11.5, color: S.sub }}>{opt.hint}</div>}</span>
+            <span className="num" style={{ ...col, color: S.sub }}>{now == null ? "—" : Kc(now)}</span>
+            <b className="num" style={{ ...col, color: opt.color || S.ink }}>{full == null ? "—" : Kc(full)}</b>
+          </div>
+        );
+        const t = lev.total, y12 = lev.year12;
+        const stateNow = t.soc + t.zdr + t.mix + t.dan + est.cit;
+        const stateYear = y12.soc + y12.zdr + y12.mix + y12.dan + est.yCit;
+        const paidBank = -txs.filter((x) => ["odvodi", "porez_place", "dph", "porez_dobit"].includes(x.category) && x.amount < 0).reduce((s, x) => s + toCzkAmt(x, rate), 0);
+        const noLevies = !lev.covered;
+        return (
+          <>
+            {noLevies && (
+              <Card style={{ background: S.amberSoft, borderColor: S.amberSoft, fontSize: 13.5 }}>
+                Za {year}. još nemam podatke o soc. i zdrav. osiguranju. Učitaj <b>Mzdy PDF</b> s příkazima k úhradě u Obračunu (spremi podsjetnike) ili uvezi izvode i razvrstaj uplate ČSSZ / VZP / poreznom uredu.
+              </Card>
+            )}
+            <Card>
+              <div style={{ fontWeight: 700, marginBottom: 2 }}>🧮 Što firma plaća državi za {year}.</div>
+              <div style={{ fontSize: 12, color: S.sub, marginBottom: 8 }}>
+                {lev.covered ? `Odvodi iz plaća: ${lev.covered} mj. s podacima${lev.factor > 1 ? " → procjena za 12 mjeseci" : ""}.` : ""} Procjena — konačne iznose potvrđuje knjigovođa.
+              </div>
+              <div style={{ ...row, color: S.sub, fontSize: 12, fontWeight: 700 }}><span style={{ flex: 1 }}></span><span style={col}>do sada</span><span style={col}>cijela godina</span></div>
+              {line("🏛 Socijalno osiguranje (ČSSZ)", t.soc, y12.soc, { hint: `firma ${pct(CZ_SOC_FIRM)} + zaposlenik ${pct(CZ_SOC_EMP)} bruto plaće` })}
+              {line("🏥 Zdravstveno osiguranje (VZP…)", t.zdr, y12.zdr, { hint: `firma ${pct(CZ_ZDR_FIRM)} + zaposlenik ${pct(CZ_ZDR_EMP)} bruto plaće` })}
+              {t.mix > 0 && line("Soc./zdr. — primatelj nije prepoznat", t.mix, y12.mix)}
+              {line("🧾 Porez iz plaća (záloha na daň)", t.dan, y12.dan, { hint: "15 % — odbija se radnicima, firma ga uplaćuje" })}
+              {line(`🏢 Porez na dobit (${Math.round(CZ_CIT * 100)} %)`, est.cit, est.yCit, { hint: `dobit ${Kc(est.profit)} do sada${est.factor > 1 ? `, ${Kc(est.yProfit)} za cijelu godinu` : ""}` })}
+              <div style={{ ...row, fontSize: 15, background: S.amberSoft, borderRadius: 10, padding: "8px 10px", margin: "6px 0", borderBottom: "none" }}>
+                <b style={{ flex: 1 }}>Ukupno državi</b>
+                <b className="num" style={{ ...col, color: S.sub }}>{Kc(stateNow)}</b>
+                <b className="num" style={{ ...col, color: S.amber }}>{Kc(stateYear)}</b>
+              </div>
+              {line("🧾 DPH (od klijenata, prosljeđuješ državi)", vatOwed, null, { hint: "nije trošak firme — naplaćen je na fakturama", color: S.sub })}
+              {line(`👤 Porez na dividendu (${Math.round(CZ_DIVIDEND * 100)} %), ako isplatiš dobit`, null, est.dividendTax, { hint: `od ${Kc(est.afterTax)} dobiti nakon poreza tebi ostaje ${Kc(est.afterTax - est.dividendTax)}`, last: true })}
+              {paidBank > 0 && <div style={{ fontSize: 12.5, color: S.sub, marginTop: 6 }}>S izvoda je ove godine već plaćeno (odvodi, porez iz plaća, DPH, zálohe): <b>{Kc(paidBank)}</b></div>}
+            </Card>
+
+            <Card>
+              <div style={{ fontWeight: 700, marginBottom: 8 }}>👷 Soc. + zdrav. + porez iz plaća — tko to plaća</div>
+              <div style={{ ...row, color: S.sub, fontSize: 12, fontWeight: 700 }}><span style={{ flex: 1 }}></span><span style={col}>do sada</span><span style={col}>cijela godina</span></div>
+              {line("Trošak firme (dio poslodavca)", lev.split.firm, lev.split12.firm, { hint: "ide preko bruto plaće — to je stvarni dodatni trošak firme", color: S.red })}
+              {line("Dio zaposlenika (odbija se od bruto) + porez", lev.split.employees, lev.split12.employees)}
+              {line("Ukupno uplaćeno ČSSZ, zdrav. i poreznom uredu", lev.split.all, lev.split12.all, { bold: true })}
+              {envelopeSocZdr > 0 && line("Radnicima odbijeno na koverti (soc.-zdr.)", envelopeSocZdr, null, { hint: "zbroj napomena iz Mzdy PDF-a / ručnih soc.-zdr. odbitaka", color: S.green })}
+              <div style={{ fontSize: 11.5, color: S.sub, marginTop: 6, marginBottom: 8 }}>
+                Podjela firma / zaposlenik je izračunata po zakonskim stopama. Kao vlasnik od dividende ne plaćaš ni socijalno ni zdravstveno, samo 15 % poreza. Ako si i sam na plaći (ili primaš odměnu jednatele), tvoji odvodi su već u ovim brojkama.
+              </div>
+              <div style={{ ...row, color: S.sub, fontSize: 12, fontWeight: 700 }}><span style={{ flex: 1 }}>Plaće za</span><span style={{ width: 80, textAlign: "right" }}>Soc.</span><span style={{ width: 80, textAlign: "right" }}>Zdr.</span><span style={{ width: 80, textAlign: "right" }}>Porez</span></div>
+              {lev.months.map((m, i) => m.source ? (
+                <div key={i} style={row}>
+                  <span style={{ flex: 1 }}>{mName(i)} <span style={{ fontSize: 11, color: S.sub }}>{m.source === "pdf" ? "Mzdy PDF" : "izvod"}</span></span>
+                  <span className="num" style={{ width: 80, textAlign: "right" }}>{Kc(m.soc + (m.mix || 0))}</span>
+                  <span className="num" style={{ width: 80, textAlign: "right" }}>{Kc(m.zdr)}</span>
+                  <span className="num" style={{ width: 80, textAlign: "right" }}>{Kc(m.dan)}</span>
+                </div>
+              ) : null)}
+            </Card>
+
+            <Card>
+              <div style={{ fontWeight: 700, marginBottom: 8 }}>📅 Rokovi i zálohe</div>
+              {[
+                ["svaki mjesec do 20.", "Soc. i zdrav. osiguranje + porez iz plaća za prošli mjesec (ČSSZ, zdravstvena, porezni ured)"],
+                ["svaki mjesec do 25.", "DPH prijava, kontrolní hlášení i uplata DPH za prošli mjesec"],
+                ["svaka 3 mj.", "Zákonné pojištění odpovědnosti zaměstnavatele (Kooperativa / ČPP) — mali iznos od bruto plaća"],
+                [`ožujak ${year + 1}.`, "Vyúčtování daně ze závislé činnosti (godišnji obračun poreza iz plaća — radi knjigovođa)"],
+                [`1. 4. ${year + 1}.`, "Prijava poreza na dobit (DPPO) na papiru — elektronički do 1. 5., preko poreznog savjetnika 1. 7.; do istog roka se plaća razlika poreza"],
+                [`uz prijavu`, "Účetní závěrka (bilanca i račun dobiti) u Sbírku listin"],
+                ["nakon odluke valne hromade", `Isplata dividende — porez ${Math.round(CZ_DIVIDEND * 100)} % firma uplaćuje do kraja idućeg mjeseca`],
+              ].map(([when, what]) => (
+                <div key={when} style={{ ...row, justifyContent: "flex-start" }}><b style={{ width: 140, flexShrink: 0 }}>{when}</b><span>{what}</span></div>
+              ))}
+              <div style={{ marginTop: 10, fontSize: 13.5 }}>
+                {adv.count
+                  ? <>Ako porez na dobit za {year}. bude oko <b>{Kc(est.yCit)}</b>, nakon prijave plaćaš zálohe <b>{adv.count}× {Kc(adv.amount)}</b> ({adv.dates.join(", ")}) — to je predujam za porez iduće godine.</>
+                  : <>Uz procijenjeni porez {Kc(est.yCit)} (do 30 000 Kč) iduće godine nema záloha na porez na dobit.</>}
+              </div>
+              <div style={{ fontSize: 11.5, color: S.sub, marginTop: 6 }}>Silniční daň se plaća samo za kamione iznad 3,5 t (do 31. 1.). Ako firma ima nekretninu, daň z nemovitých věcí se plaća do 31. 5.</div>
+            </Card>
+          </>
+        );
+      })()}
 
       {view === "transakcije" && (
         <Card>
