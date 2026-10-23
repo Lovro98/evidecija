@@ -6,6 +6,8 @@
 // Stope za Češku (2026.). Procjena — konačan iznos uvijek potvrdi s knjigovođom.
 export const CZ_CIT = 0.21;        // daň z příjmů právnických osob
 export const CZ_DIVIDEND = 0.15;   // srážková daň z dividend (fizička osoba, rezident)
+// odvodi iz plaće (2026.): sociální 24,8 % firma + 7,1 % zaposlenik, zdravotní 9 % firma + 4,5 % zaposlenik
+export const CZ_SOC_FIRM = 0.248, CZ_SOC_EMP = 0.071, CZ_ZDR_FIRM = 0.09, CZ_ZDR_EMP = 0.045;
 
 // [ključ, naziv, vrsta, zadana stopa DPH u %]
 // vrsta: in = prihod, cost = porezno priznat trošak, tax = plaćeni porezi (nisu trošak),
@@ -38,6 +40,7 @@ export const DEFAULT_RULES = [
   ["poplatek", "banka"], ["vedeni uctu", "banka"], ["vedení účtu", "banka"], ["bank fee", "banka"], ["urok", "prihod_ostalo"],
   ["financni urad", "dph"], ["fu pro", "dph"],
   ["cssz", "odvodi"], ["ossz", "odvodi"], ["socialni zabezpeceni", "odvodi"], ["vzp", "odvodi"], ["zdravotni pojistovna", "odvodi"],
+  ["ozp", "odvodi"], ["cpzp", "odvodi"], ["vozp", "odvodi"], ["zpmv", "odvodi"], ["zp mv", "odvodi"], ["rbp", "odvodi"],
   ["mzda", "place"], ["mzdy", "place"], ["vyplata", "place"], ["plat", "place"],
   ["benzina", "gorivo"], ["shell", "gorivo"], ["omv", "gorivo"], ["orlen", "gorivo"], ["mol", "gorivo"], ["eurooil", "gorivo"], ["tank ono", "gorivo"],
   ["najem", "najam"], ["ubytovani", "smjestaj"], ["ubytovna", "smjestaj"],
@@ -260,4 +263,70 @@ export function taxEstimate({ income, cost, monthsCovered }) {
   const yCit = Math.round(yBase * CZ_CIT);
   const afterTax = Math.max(0, yProfit - yCit);
   return { profit, base, cit, factor, yProfit, yBase, yCit, afterTax, dividendTax: Math.round(afterTax * CZ_DIVIDEND) };
+}
+
+/* ---------- godišnji obračun obveza (odvodi iz plaća, rokovi, zálohy) ---------- */
+// vrsta odvoda s izvoda: soc = ČSSZ, zdr = zdravstveno osiguranje, dan = porez iz plaća, mix = "odvodi" bez prepoznatog primatelja
+export function levyKind(tx) {
+  if (tx.category === "porez_place") return "dan";
+  if (tx.category !== "odvodi") return "";
+  const t = txText(tx);
+  if (/cssz|ossz|socialn|zabezpeceni/.test(t)) return "soc";
+  if (/vzp|ozp|cpzp|vozp|zpmv|zp mv|rbp|zdravotn|pojistovn/.test(t)) return "zdr";
+  return "mix";
+}
+
+// podsjetnik iz Mzdy PDF-a ("Platiti … 12 345 Kč – sociální pojištění 05/2026") → { kind, month, amount }
+export function parseLevyReminder(text) {
+  const m = String(text || "").replace(/\s+/g, " ").match(/^Platiti .*?(?<!\d)(\d{1,3}(?: \d{3})*(?:,\d+)?) Kč – (.+) (\d{2})\/(\d{4})$/);
+  if (!m) return null;
+  const label = fold(m[2]);
+  const kind = /zdrav/.test(label) ? "zdr" : /soci/.test(label) ? "soc" : /dan/.test(label) ? "dan" : "";
+  if (!kind) return null;
+  return { kind, month: `${m[4]}-${m[3]}`, amount: Number(m[1].replace(/ /g, "").replace(",", ".")) };
+}
+
+// Odvodi iz plaća po mjesecu obračuna plaće. Izvor po mjesecu: příkazy iz Mzdy PDF-a (podsjetnici),
+// a ako ih za taj mjesec nema, uplate s izvoda (plaćaju se do 20. idućeg mjeseca → mjesec ranije).
+export function payrollLevies({ txs = [], reminders = [], year, rate = 25 }) {
+  const KINDS = ["soc", "zdr", "dan", "mix"];
+  const empty = () => Object.fromEntries(KINDS.map((k) => [k, Array(12).fill(0)]));
+  const pdf = empty(), bank = empty();
+  for (const r of reminders) {
+    const p = parseLevyReminder(r.text);
+    if (p && p.month.startsWith(`${year}-`)) pdf[p.kind][Number(p.month.slice(5, 7)) - 1] += p.amount;
+  }
+  for (const tx of txs) {
+    const k = levyKind(tx);
+    if (!k || !tx.tx_date?.startsWith(String(year)) || tx.amount > 0) continue;
+    const mi = Number(tx.tx_date.slice(5, 7)) - 2; // uplata u veljači = plaće za siječanj
+    if (mi >= 0) bank[k][mi] -= toCzkAmt(tx, rate);
+  }
+  const months = Array.from({ length: 12 }, (_, i) => {
+    const usePdf = KINDS.some((k) => pdf[k][i]);
+    const src = usePdf ? pdf : bank;
+    const row = Object.fromEntries(KINDS.map((k) => [k, src[k][i]]));
+    row.source = usePdf ? "pdf" : KINDS.some((k) => bank[k][i]) ? "banka" : "";
+    return row;
+  });
+  const covered = months.filter((m) => m.source).length;
+  const total = Object.fromEntries(KINDS.map((k) => [k, months.reduce((s, m) => s + m[k], 0)]));
+  const factor = covered > 0 && covered < 12 ? 12 / covered : 1;
+  const year12 = Object.fromEntries(KINDS.map((k) => [k, total[k] * factor]));
+  // podjela na dio firme i dio zaposlenika (po zakonskim stopama; "mix" se dijeli kao prosjek soc. i zdr.)
+  const socFirmShare = CZ_SOC_FIRM / (CZ_SOC_FIRM + CZ_SOC_EMP), zdrFirmShare = CZ_ZDR_FIRM / (CZ_ZDR_FIRM + CZ_ZDR_EMP);
+  const mixFirmShare = (CZ_SOC_FIRM + CZ_ZDR_FIRM) / (CZ_SOC_FIRM + CZ_SOC_EMP + CZ_ZDR_FIRM + CZ_ZDR_EMP);
+  const split = (t) => {
+    const firm = t.soc * socFirmShare + t.zdr * zdrFirmShare + t.mix * mixFirmShare;
+    const all = t.soc + t.zdr + t.mix + t.dan;
+    return { firm, employees: all - firm, all };
+  };
+  return { months, covered, factor, total, year12, split: split(total), split12: split(year12) };
+}
+
+// Zálohe na porez na dobit prema zadnjoj poznatoj poreznoj obvezi (§ 38a ZDP)
+export function citAdvances(lastTax) {
+  if (lastTax <= 30000) return { count: 0, amount: 0, dates: [] };
+  if (lastTax <= 150000) return { count: 2, amount: Math.ceil(lastTax * 0.4), dates: ["15. 6.", "15. 12."] };
+  return { count: 4, amount: Math.ceil(lastTax * 0.25), dates: ["15. 3.", "15. 6.", "15. 9.", "15. 12."] };
 }
