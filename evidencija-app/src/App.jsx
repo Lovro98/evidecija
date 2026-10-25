@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import * as XLSX from "xlsx";
 import * as pdfjsLib from "pdfjs-dist/build/pdf.mjs";
 import pdfjsWorkerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
@@ -677,12 +677,12 @@ async function fetchAll(isAdmin) {
   const err = [workers, objects, logs, payments, assignments, rateChanges, profiles, payouts].find((r) => r.error);
   if (err) throw err.error;
 
-  let billing = [], audit = [], trash = [], members = [], invoicePayments = [], settings = {}, objectInvoices = [], payrollNotes = [], positionBilling = [], reminders = [], loginLog = [], errorLog = [], commissionRates = [], commissionPayouts = [], brigadeCosts = [], purchaseInvoices = [], monthClose = [];
+  let billing = [], audit = [], trash = [], members = [], invoicePayments = [], settings = {}, objectInvoices = [], payrollNotes = [], positionBilling = [], reminders = [], loginLog = [], errorLog = [], commissionRates = [], commissionPayouts = [], brigadeCosts = [], purchaseInvoices = [], monthClose = [], cashAdvances = [];
   let bankMap = {};
   if (isAdmin) {
     const wb = await supabase.from("worker_bank").select("worker_id, bank_account");
     if (!wb.error) (wb.data || []).forEach((r) => { bankMap[r.worker_id] = r.bank_account || ""; });
-    const [b, a, tw, tl, tp, om, ip, st, oi, pn, pb, rm, ll, el, cr, cp, bg, pi, mc] = await Promise.all([
+    const [b, a, tw, tl, tp, om, ip, st, oi, pn, pb, rm, ll, el, cr, cp, bg, pi, mc, ca] = await Promise.all([
       supabase.from("object_billing").select("*"),
       supabase.from("audit_log").select("*").order("at", { ascending: false }).limit(80),
       supabase.from("workers").select("*").not("deleted_at", "is", null),
@@ -702,10 +702,11 @@ async function fetchAll(isAdmin) {
       live(supabase.from("brigade_costs").select("*")),
       live(supabase.from("purchase_invoices").select("*")).order("duzp", { ascending: false }),
       supabase.from("month_close").select("*"),
+      live(supabase.from("cash_advances").select("*")),
     ]);
     billing = b.data || []; audit = a.data || []; members = om.data || [];
     invoicePayments = ip.data || []; settings = st.data || {}; objectInvoices = oi.data || []; payrollNotes = pn.data || [];
-    positionBilling = pb.data || []; reminders = rm.data || []; loginLog = ll.data || []; errorLog = el.data || []; commissionRates = cr.data || []; commissionPayouts = cp.data || []; brigadeCosts = bg.data || []; purchaseInvoices = pi.data || []; monthClose = mc.data || [];
+    positionBilling = pb.data || []; reminders = rm.data || []; loginLog = ll.data || []; errorLog = el.data || []; commissionRates = cr.data || []; commissionPayouts = cp.data || []; brigadeCosts = bg.data || []; purchaseInvoices = pi.data || []; monthClose = mc.data || []; cashAdvances = ca.data || [];
     trash = [
       ...(tw.data || []).map((r) => ({ table: "workers", row: r, label: `Radnik: ${r.name}` })),
       ...(tl.data || []).map((r) => ({ table: "work_logs", row: r, label: `Sati: ${fmtH(r.hours)} (${fmtDate(r.work_date)})` })),
@@ -767,6 +768,12 @@ async function fetchAll(isAdmin) {
       id: b.id, objectId: b.object_id, date: b.work_date, hours: Number(b.hours) || 0,
       amount: Number(b.amount) || 0, currency: b.currency === "EUR" ? "EUR" : "CZK", note: b.note || "",
       billRate: Number(b.bill_rate) || 0, billCur: b.bill_currency === "CZK" ? "CZK" : "EUR",
+      people: Number(b.people) || 1, names: b.names || "", paidBy: b.paid_by || null,
+    })),
+    // gotovina koju admin da koordinatoru (given) ili mu ovaj vrati višak (returned)
+    cashAdvances: cashAdvances.map((c) => ({
+      id: c.id, profileId: c.profile_id, kind: c.kind === "returned" ? "returned" : "given", date: c.pay_date,
+      amount: Number(c.amount) || 0, currency: c.currency === "EUR" ? "EUR" : "CZK", note: c.note || "",
     })),
     purchaseInvoices: purchaseInvoices.map((p) => ({
       id: p.id, supplier: p.supplier || "", number: p.number || "", duzp: p.duzp, base: Number(p.base_amount) || 0,
@@ -1191,12 +1198,18 @@ export default function App() {
       `Isplatio proviziju ${p.name}: ${money(amount, cur)}${note ? " (" + note + ")" : ""}`),
     delCommissionPayout: (cp, pName) => act(() => softDel("commission_payouts", cp.id),
       `Obrisao isplatu provizije za ${pName}: ${money(cp.amount, cp.currency)}`),
-    addBrigadeCost: (object, date, hours, amount, cur, note, billRate, billCur) => act(() => ins("brigade_costs",
-      { object_id: object.id, work_date: date, hours, amount, currency: cur || "CZK", note: note || "",
-        bill_rate: billRate || 0, bill_currency: billCur || "EUR", created_by: session.user.id }),
-      `Upisao brigadu na ${object.name}: ${fmtH(hours)} za ${money(amount, cur)} (${fmtDate(date)})${billRate > 0 ? ` — posebna cijena naplate ${money(billRate, billCur)}/h` : ""}`),
+    addBrigadeCost: (object, b, payerName) => act(() => ins("brigade_costs",
+      { object_id: object.id, work_date: b.date, hours: b.hours, amount: b.amount, currency: b.cur || "CZK", note: b.note || "",
+        bill_rate: b.billRate || 0, bill_currency: b.billCur || "EUR", people: b.people || 1, names: b.names || "",
+        paid_by: b.paidBy || null, created_by: session.user.id }),
+      `Upisao brigadu na ${object.name}: ${b.people > 1 ? b.people + " os. · " : ""}${fmtH(b.hours)} za ${money(b.amount, b.cur)} (${fmtDate(b.date)})${b.paidBy ? ` — platio ${payerName} iz gotovine` : ""}${b.billRate > 0 ? ` — posebna cijena naplate ${money(b.billRate, b.billCur)}/h` : ""}`),
     delBrigadeCost: (b, objName) => act(() => softDel("brigade_costs", b.id),
       `Obrisao brigadu na ${objName}: ${fmtH(b.hours)} / ${money(b.amount, b.currency)} (${fmtDate(b.date)})`),
+    addCashAdvance: (p, kind, amount, cur, date, note) => act(() => ins("cash_advances",
+      { profile_id: p.id, kind, amount, currency: cur || "CZK", pay_date: date || todayISO(), note: note || "", created_by: session.user.id }),
+      `${kind === "returned" ? "Koordinator " + p.name + " vratio gotovinu" : "Dao gotovinu koordinatoru " + p.name}: ${money(amount, cur)} (${fmtDate(date)})${note ? " — " + note : ""}`),
+    delCashAdvance: (c, pName) => act(() => softDel("cash_advances", c.id),
+      `Obrisao zapis gotovine (${pName}): ${money(c.amount, c.currency)} (${fmtDate(c.date)})`),
     toggleMember: (object, p, on) => act(() =>
       (on ? supabase.from("object_members").insert({ object_id: object.id, user_id: p.id })
           : supabase.from("object_members").delete().eq("object_id", object.id).eq("user_id", p.id)
@@ -1687,7 +1700,7 @@ function exportAllData(data) {
 /*  ADMIN PANELI                                                       */
 /* ================================================================== */
 const ADMIN_MENU = [
-  ["approvals", "⏳", "Odobravanje isplata"], ["finance", "💼", "Financije (banka i porezi)"], ["unpaid", "💰", "Neisplaćeno (dugovi radnicima)"], ["vat", "🧾", "DPH"], ["users", "👥", "Korisnici i provizije"],
+  ["approvals", "⏳", "Odobravanje isplata"], ["cash", "💵", "Gotovina kod koordinatora"], ["finance", "💼", "Financije (banka i porezi)"], ["unpaid", "💰", "Neisplaćeno (dugovi radnicima)"], ["vat", "🧾", "DPH"], ["users", "👥", "Korisnici i provizije"],
   ["firm", "🏢", "Podaci firme i postavke"], ["audit", "📜", "Povijest radnji"], ["logins", "🔐", "Prijave"],
   ["errors", "🐛", "Greške aplikacije"], ["trash", "🗑", "Koš (obrisano)"],
 ];
@@ -2770,6 +2783,7 @@ function AdminPanels({ data, api, panel, setPanel, onOpenWorker, onOpenProfile }
 
       {panel === "unpaid" && <UnpaidPanel data={data} api={api} onOpenWorker={onOpenWorker} />}
       {panel === "finance" && <FinancePanel data={data} api={api} />}
+      {panel === "cash" && <CashPanel data={data} api={api} />}
 
       {panel === "users" && (
         <Card style={{ marginTop: 8 }}>
@@ -5118,6 +5132,287 @@ function WorkerDetail({ worker, data, api, onBack }) {
 /* ================================================================== */
 /*  OBJEKT — BRZI UNOS + kopiranje dana                                */
 /* ================================================================== */
+/* ================================================================== */
+/*  BRIGADA (jednodnevni ljudi plaćeni u gotovini) + GOTOVINA KOD      */
+/*  KOORDINATORA. Tablice: brigade_costs (paid_by = koordinator koji  */
+/*  je platio iz gotovine, null = admin), cash_advances (dano/vraćeno) */
+/* ================================================================== */
+// saldo gotovine po koordinatoru i valuti: dano − vraćeno − isplaćeno brigadama
+// plus = koordinator još drži tvoj novac, minus = ti njemu duguješ
+function cashBalances(data) {
+  const m = new Map();
+  const get = (pid, cur) => {
+    if (!m.has(pid)) m.set(pid, { EUR: { given: 0, returned: 0, paid: 0, bal: 0 }, CZK: { given: 0, returned: 0, paid: 0, bal: 0 } });
+    return m.get(pid)[cur === "EUR" ? "EUR" : "CZK"];
+  };
+  (data.cashAdvances || []).forEach((c) => { const r = get(c.profileId, c.currency); r[c.kind] = round2(r[c.kind] + c.amount); });
+  (data.brigadeCosts || []).filter((b) => b.paidBy).forEach((b) => { const r = get(b.paidBy, b.currency); r.paid = round2(r.paid + b.amount); });
+  m.forEach((v) => ["EUR", "CZK"].forEach((c) => { v[c].bal = round2(v[c].given - v[c].returned - v[c].paid); }));
+  return m;
+}
+const cashBalFor = (data, pid) => cashBalances(data).get(pid) || null;
+// koliko hotel plati za tu brigadu (posebna cijena ili zadana cijena objekta)
+const brigadeRevenue = (object, b) => {
+  const rate = b.billRate > 0 ? b.billRate : (object?.billRate || 0);
+  return { amount: round2(b.hours * rate), cur: b.billRate > 0 ? b.billCur : (object?.billCur || "EUR") };
+};
+// zarada brigade u valuti troška (preračun po tečaju iz postavki ako hotel plaća u drugoj valuti)
+const brigadeProfit = (data, object, b) => {
+  const rv = brigadeRevenue(object, b);
+  const kurs = Number(data.settings?.czk_rate) || 25;
+  const rev = rv.cur === b.currency ? rv.amount : b.currency === "CZK" ? rv.amount * kurs : rv.amount / kurs;
+  return round2(rev - b.amount);
+};
+
+function BrigadeCard({ object, data, api, monthBrigade, defaultDate }) {
+  const coordinators = useMemo(() => {
+    const onObj = new Set((data.objectMembers || []).filter((m) => m.object_id === object.id).map((m) => m.user_id));
+    return [...(data.profiles || [])].filter((p) => p.role !== "admin")
+      .sort((a, b) => (onObj.has(b.id) - onObj.has(a.id)) || (a.name || "").localeCompare(b.name || "", "hr"));
+  }, [data.profiles, data.objectMembers, object.id]);
+  // zadana cash satnica = satnica zadnje brigade na ovom objektu (koliko si dao po satu)
+  const last = useMemo(() => [...(data.brigadeCosts || [])].filter((b) => b.objectId === object.id && b.hours > 0)
+    .sort((a, b) => b.date.localeCompare(a.date))[0], [data.brigadeCosts, object.id]);
+  const blank = () => ({
+    date: defaultDate || todayISO(), people: "1", hoursPer: "", payRate: last ? String(round2(last.amount / last.hours)) : "",
+    amount: "", amountTouched: false, cur: last ? last.currency : (object.billCur === "EUR" ? "EUR" : "CZK"),
+    names: "", note: "", billRate: "", billCur: object.billCur || "EUR", paidBy: "", more: false,
+  });
+  const [f, setF] = useState(blank);
+  useEffect(() => { setF((p) => ({ ...p, date: defaultDate || p.date })); }, [defaultDate]);
+  const people = Math.max(1, Math.round(parseNum(f.people) || 1));
+  const hours = round2(people * (parseNum(f.hoursPer) || 0));
+  const autoAmount = round2(hours * (parseNum(f.payRate) || 0));
+  const amount = f.amountTouched ? round2(parseNum(f.amount) || 0) : autoAmount;
+  const preview = { hours, amount, currency: f.cur, billRate: round2(parseNum(f.billRate) || 0), billCur: f.billCur };
+  const rv = brigadeRevenue(object, preview);
+  const profit = brigadeProfit(data, object, preview);
+  const payer = coordinators.find((p) => p.id === f.paidBy);
+  const payerBal = payer ? (cashBalFor(data, payer.id) || { EUR: { bal: 0 }, CZK: { bal: 0 } })[f.cur].bal : 0;
+
+  const save = async () => {
+    if (!f.date || hours <= 0 || amount <= 0) return;
+    const ok = await api.addBrigadeCost(object, { date: f.date, hours, amount, cur: f.cur, note: f.note.trim(), names: f.names.trim(),
+      people, billRate: preview.billRate, billCur: f.billCur, paidBy: f.paidBy || null }, payer?.name || "");
+    if (ok) setF((p) => ({ ...blank(), date: p.date, payRate: p.payRate, cur: p.cur, paidBy: p.paidBy, people: p.people, hoursPer: p.hoursPer }));
+  };
+  // "Ponovi": ista brigada (ljudi, sati, iznos, tko plaća) — samo promijeniš datum i spremiš
+  const repeat = (bg) => setF({
+    ...blank(), date: defaultDate || todayISO(), people: String(bg.people || 1), hoursPer: String(round2(bg.hours / (bg.people || 1))),
+    payRate: String(round2(bg.amount / bg.hours)), amount: String(bg.amount), amountTouched: false, cur: bg.currency,
+    names: bg.names, note: bg.note, billRate: bg.billRate > 0 ? String(bg.billRate) : "", billCur: bg.billCur, paidBy: bg.paidBy || "", more: bg.billRate > 0,
+  });
+  const pName = (id) => (data.profiles || []).find((p) => p.id === id)?.name || tr("(obrisan)");
+  const list = [...monthBrigade].sort((a, b) => b.date.localeCompare(a.date));
+  const totE = round2(list.filter((b) => b.currency === "EUR").reduce((s, b) => s + b.amount, 0));
+  const totK = round2(list.filter((b) => b.currency === "CZK").reduce((s, b) => s + b.amount, 0));
+  const totH = round2(list.reduce((s, b) => s + b.hours, 0));
+
+  return (
+    <Card>
+      <div style={{ fontWeight: 800, fontSize: 15, marginBottom: 4 }}>{tr("👷 Brigada (bez imena)")}</div>
+      <div style={{ fontSize: 11.5, color: S.sub, marginBottom: 10 }}>
+        {tr("Ljudi koje pošalješ na dan i odmah platiš u gotovini. Sati se naplaćuju hotelu, a iznos ide kao trošak objekta.")}
+      </div>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 6 }}>
+        <div style={{ flex: "1 1 130px" }}><Field label={tr("Datum")}>
+          <input type="date" value={f.date} onChange={(e) => setF({ ...f, date: e.target.value })} />
+        </Field></div>
+        <div style={{ flex: "0 1 80px" }}><Field label={tr("Ljudi")}>
+          <input inputMode="numeric" value={f.people} onChange={(e) => setF({ ...f, people: e.target.value })} placeholder="1" />
+        </Field></div>
+        <div style={{ flex: "0 1 90px" }}><Field label={tr("Sati / osobi")}>
+          <input inputMode="decimal" value={f.hoursPer} onChange={(e) => setF({ ...f, hoursPer: e.target.value })} placeholder="8" />
+        </Field></div>
+      </div>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 6, alignItems: "flex-end" }}>
+        <div style={{ flex: "1 1 110px" }}><Field label={tr("Daješ po satu")}>
+          <input inputMode="decimal" value={f.payRate} onChange={(e) => setF({ ...f, payRate: e.target.value, amountTouched: false })} placeholder="0" />
+        </Field></div>
+        <div style={{ flex: "1 1 110px" }}><Field label={tr("Ukupno isplaćeno")}>
+          <input inputMode="decimal" value={f.amountTouched ? f.amount : (autoAmount ? String(autoAmount) : "")}
+            onChange={(e) => setF({ ...f, amount: e.target.value, amountTouched: true })} placeholder={tr("iznos")} />
+        </Field></div>
+        <div style={{ marginBottom: 10 }}><CurChips small value={f.cur} onChange={(v) => setF({ ...f, cur: v })} /></div>
+      </div>
+      <Field label={tr("Tko je platio")}>
+        <select value={f.paidBy} onChange={(e) => setF({ ...f, paidBy: e.target.value })}>
+          <option value="">{tr("Ja (iz svog džepa)")}</option>
+          {coordinators.map((p) => <option key={p.id} value={p.id}>{tr("Koordinator: {0}", p.name || tr("(bez imena)"))}</option>)}
+        </select>
+      </Field>
+      {payer && (
+        <div className="num" style={{ fontSize: 12, margin: "-4px 0 10px", fontWeight: 600, color: payerBal - amount < 0 ? S.red : S.sub }}>
+          {tr("Kod {0} sad: {1} → nakon ove brigade: {2}", payer.name, money(payerBal, f.cur), money(round2(payerBal - amount), f.cur))}
+          {payerBal - amount < 0 && <> · {tr("ti ćeš mu dugovati")}</>}
+        </div>
+      )}
+      <div style={{ display: "flex", gap: 8, marginBottom: 6 }}>
+        <input value={f.names} onChange={(e) => setF({ ...f, names: e.target.value })} placeholder={tr("Imena (opcionalno, npr. Ivan, Petar)")} style={{ flex: 1 }} />
+      </div>
+      <div style={{ display: "flex", gap: 8, marginBottom: 6 }}>
+        <input value={f.note} onChange={(e) => setF({ ...f, note: e.target.value })} placeholder={tr("Napomena (opcionalno)")} style={{ flex: 1 }} />
+      </div>
+      {f.more ? (
+        <>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 6, alignItems: "center" }}>
+            <div style={{ flex: "1 1 160px" }}>
+              <input inputMode="decimal" value={f.billRate} onChange={(e) => setF({ ...f, billRate: e.target.value })}
+                placeholder={tr("cijena/sat (zadano {0})", object.billRate || 0)} />
+            </div>
+            <CurChips small value={f.billCur} onChange={(v) => setF({ ...f, billCur: v })} />
+          </div>
+          <div style={{ fontSize: 11, color: S.sub, margin: "-2px 0 8px" }}>
+            {tr("Ostavi prazno da koristi zadanu cijenu objekta (")}{money(object.billRate || 0, object.billCur || "EUR")}{tr("/h) — upiši samo ako hotel ovu brigadu plaća drugačije.")}
+          </div>
+        </>
+      ) : (
+        <button onClick={() => setF({ ...f, more: true })} style={{ background: "none", border: "none", color: S.blue, fontSize: 12, cursor: "pointer", padding: "0 0 8px" }}>
+          {tr("+ posebna cijena za hotel")}
+        </button>
+      )}
+      {hours > 0 && (
+        <div className="num" style={{ fontSize: 12.5, background: S.greenSoft, borderRadius: 8, padding: "7px 10px", marginBottom: 8 }}>
+          {people > 1 ? `${people} × ${fmtH(round2(hours / people))} = ` : ""}<b>{fmtH(hours)}</b>
+          {" · "}{tr("hotel plaća")} <b>{money(rv.amount, rv.cur)}</b>
+          {amount > 0 && <> · {tr("isplaćeno")} <b>{money(amount, f.cur)}</b> · {tr("zarada")} <b style={{ color: profit < 0 ? S.red : S.green }}>{money(profit, f.cur)}</b></>}
+        </div>
+      )}
+      <Btn small onClick={save} disabled={hours <= 0 || amount <= 0} style={{ width: "100%", marginBottom: 10 }}>{tr("Spremi brigadu")}</Btn>
+
+      {list.length > 0 && (
+        <div>
+          <div className="num" style={{ fontSize: 12, color: S.sub, fontWeight: 700, marginBottom: 4 }}>
+            {tr("Ovaj mjesec: {0} upisa · {1}", list.length, fmtH(totH))}{totE ? " · " + eur(totE) : ""}{totK ? " · " + czk(totK) : ""}
+          </div>
+          {list.map((bg) => {
+            const pr = brigadeProfit(data, object, bg);
+            return (
+              <div key={bg.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 0", fontSize: 12.5, borderBottom: "1px dashed #EBD9B4" }}>
+                <span style={{ flex: 1, minWidth: 0 }}>
+                  <b>{fmtDate(bg.date)}</b> · {bg.people > 1 ? `${bg.people} × ${fmtH(round2(bg.hours / bg.people))}` : fmtH(bg.hours)}
+                  {bg.names ? " · " + bg.names : ""}{bg.note ? " · " + bg.note : ""}
+                  {bg.billRate > 0 && <span style={{ color: S.blue, fontWeight: 700 }}> · {money(bg.billRate, bg.billCur)}{tr("/h posebno")}</span>}
+                  <div style={{ fontSize: 11, color: S.sub }}>
+                    {bg.paidBy ? tr("platio {0} iz gotovine", pName(bg.paidBy)) : tr("platio ja")}
+                    {" · "}{tr("zarada")} <span className="num" style={{ color: pr < 0 ? S.red : S.green, fontWeight: 700 }}>{money(pr, bg.currency)}</span>
+                  </div>
+                </span>
+                <span className="num" style={{ fontWeight: 700 }}>{money(bg.amount, bg.currency)}</span>
+                <button title={tr("Ponovi")} onClick={() => repeat(bg)} style={{ background: "none", border: "none", color: S.blue, fontSize: 14, cursor: "pointer", padding: 2 }}>↻</button>
+                <button onClick={() => window.confirm(tr("Obrisati ovu brigadu?")) && api.delBrigadeCost(bg, object.name)} style={{ background: "none", border: "none", color: S.red, fontSize: 14, cursor: "pointer", padding: 2 }}>✕</button>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </Card>
+  );
+}
+
+function CashPanel({ data, api }) {
+  const coordinators = [...(data.profiles || [])].filter((p) => p.role !== "admin").sort((a, b) => (a.name || "").localeCompare(b.name || "", "hr"));
+  const bal = cashBalances(data);
+  const [form, setForm] = useState({ profileId: "", kind: "given", amount: "", cur: "CZK", date: todayISO(), note: "" });
+  const [open, setOpen] = useState(null);
+  const oName = (id) => data.objects.find((o) => o.id === id)?.name || "";
+  const save = async () => {
+    const p = coordinators.find((x) => x.id === form.profileId);
+    const amt = round2(parseNum(form.amount) || 0);
+    if (!p || amt <= 0) return;
+    if (await api.addCashAdvance(p, form.kind, amt, form.cur, form.date, form.note.trim())) setForm({ ...form, amount: "", note: "" });
+  };
+  const active = coordinators.filter((p) => bal.has(p.id));
+  const balLine = (b, c) => {
+    const v = b[c].bal;
+    if (!b[c].given && !b[c].returned && !b[c].paid) return null;
+    return (
+      <div key={c} className="num" style={{ fontSize: 13, fontWeight: 700, color: v > 0 ? S.amber : v < 0 ? S.red : S.green }}>
+        {v > 0 ? tr("Kod njega: {0}", money(v, c)) : v < 0 ? tr("Ti mu duguješ: {0}", money(-v, c)) : tr("Na nuli ({0})", c === "CZK" ? "Kč" : "€")}
+      </div>
+    );
+  };
+
+  return (
+    <div style={{ marginTop: 8 }}>
+      <Card>
+        <div style={{ fontWeight: 700, marginBottom: 4 }}>{tr("💵 Dao sam / vratio mi gotovinu")}</div>
+        <div style={{ fontSize: 11.5, color: S.sub, marginBottom: 10 }}>
+          {tr("Kad koordinatoru na hotelu daš novac za brigade, upiši ga ovdje. Brigade koje on plati (\"Tko je platio\" kod brigade) skidaju se s tog iznosa.")}
+        </div>
+        {coordinators.length === 0 ? <div style={{ fontSize: 12.5, color: S.sub }}>{tr("Još nema zaposlenika.")}</div> : (<>
+          <Field label={tr("Koordinator")}>
+            <select value={form.profileId} onChange={(e) => setForm({ ...form, profileId: e.target.value })}>
+              <option value="">{tr("— odaberi —")}</option>
+              {coordinators.map((p) => <option key={p.id} value={p.id}>{p.name || tr("(bez imena)")}</option>)}
+            </select>
+          </Field>
+          <div style={{ display: "flex", gap: 6, marginBottom: 8 }}>
+            {[["given", tr("Dao sam mu")], ["returned", tr("Vratio mi je")]].map(([k, l]) => (
+              <button key={k} onClick={() => setForm({ ...form, kind: k })} style={{ flex: 1, padding: "7px 8px", borderRadius: 8, fontWeight: 700, fontSize: 13, cursor: "pointer",
+                background: form.kind === k ? S.green : "#fff", color: form.kind === k ? "#fff" : S.sub, border: `1px solid ${form.kind === k ? S.green : S.line}` }}>{l}</button>
+            ))}
+          </div>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginBottom: 8 }}>
+            <input inputMode="decimal" value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} placeholder={tr("iznos")} style={{ flex: "1 1 110px" }} />
+            <CurChips small value={form.cur} onChange={(v) => setForm({ ...form, cur: v })} />
+            <input type="date" value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} style={{ flex: "1 1 130px" }} />
+          </div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <input value={form.note} onChange={(e) => setForm({ ...form, note: e.target.value })} placeholder={tr("Napomena (opcionalno)")} style={{ flex: 1 }} />
+            <Btn small onClick={save} disabled={!form.profileId || !(parseNum(form.amount) > 0)}>{tr("Spremi")}</Btn>
+          </div>
+        </>)}
+      </Card>
+
+      {active.length === 0 ? <Empty text={tr("Još nema gotovine kod koordinatora.")} /> : active.map((p) => {
+        const b = bal.get(p.id);
+        const isOpen = open === p.id;
+        const events = [
+          ...(data.cashAdvances || []).filter((c) => c.profileId === p.id).map((c) => ({ id: "c" + c.id, date: c.date, cur: c.currency,
+            delta: c.kind === "given" ? c.amount : -c.amount, label: c.kind === "given" ? tr("Dao sam mu") : tr("Vratio mi je"), note: c.note, rec: c })),
+          ...(data.brigadeCosts || []).filter((bg) => bg.paidBy === p.id).map((bg) => ({ id: "b" + bg.id, date: bg.date, cur: bg.currency, delta: -bg.amount,
+            label: tr("Brigada {0}", oName(bg.objectId)) + " · " + (bg.people > 1 ? `${bg.people} × ${fmtH(round2(bg.hours / bg.people))}` : fmtH(bg.hours)), note: bg.names || bg.note })),
+        ].sort((x, y) => x.date.localeCompare(y.date) || (y.delta - x.delta));
+        const run = { EUR: 0, CZK: 0 };
+        events.forEach((e) => { run[e.cur] = round2(run[e.cur] + e.delta); e.after = run[e.cur]; });
+        return (
+          <Card key={p.id} style={{ cursor: "pointer" }} onClick={() => setOpen(isOpen ? null : p.id)}>
+            <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontWeight: 800 }}>{p.name || tr("(bez imena)")}</div>
+                {["CZK", "EUR"].map((c) => (b[c].given || b[c].returned || b[c].paid) ? (
+                  <div key={c} className="num" style={{ fontSize: 11.5, color: S.sub }}>
+                    {tr("dano {0} · brigade {1} · vraćeno {2}", money(b[c].given, c), money(b[c].paid, c), money(b[c].returned, c))}
+                  </div>
+                ) : null)}
+              </div>
+              <div style={{ textAlign: "right" }}>{["CZK", "EUR"].map((c) => balLine(b, c))}</div>
+            </div>
+            {isOpen && (
+              <div style={{ marginTop: 10 }} onClick={(e) => e.stopPropagation()}>
+                {[...events].reverse().map((e) => (
+                  <div key={e.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 0", fontSize: 12.5, borderTop: `1px dashed ${S.line}` }}>
+                    <span style={{ flex: 1, minWidth: 0 }}>
+                      <b>{fmtDate(e.date)}</b> · {e.label}{e.note ? " · " + e.note : ""}
+                      <div className="num" style={{ fontSize: 11, color: S.sub }}>{tr("stanje nakon: {0}", money(e.after, e.cur))}</div>
+                    </span>
+                    <span className="num" style={{ fontWeight: 700, color: e.delta >= 0 ? S.green : S.red }}>{e.delta >= 0 ? "+" : "−"}{money(Math.abs(e.delta), e.cur)}</span>
+                    {e.rec ? (
+                      <button onClick={() => window.confirm(tr("Obrisati ovaj zapis?")) && api.delCashAdvance(e.rec, p.name)} style={{ background: "none", border: "none", color: S.red, fontSize: 14, cursor: "pointer", padding: 2 }}>✕</button>
+                    ) : <span style={{ width: 18 }} />}
+                  </div>
+                ))}
+                <div style={{ fontSize: 11, color: S.sub, marginTop: 6 }}>{tr("Brigade se brišu i mijenjaju na objektu (kartica Sati).")}</div>
+              </div>
+            )}
+          </Card>
+        );
+      })}
+    </div>
+  );
+}
+
 function ObjectDetail({ object, data, api, onBack, onOpenWorker }) {
   const [mode, setMode] = useState("day");
   const [section, setSection] = useState(api.admin ? "pregled" : "sati"); // pregled | sati | fakture | postavke
@@ -5143,7 +5438,6 @@ function ObjectDetail({ object, data, api, onBack, onOpenWorker }) {
   const [budgetEdit, setBudgetEdit] = useState(String(object.monthlyBudget || ""));
   const [posRateForm, setPosRateForm] = useState({ position: "", mode: "fixed", value: "", currency: object.billCur || "EUR" });
   const [posRateEditing, setPosRateEditing] = useState(null); // pozicija koja se trenutno uređuje, ili null za novu
-  const [brigForm, setBrigForm] = useState({ date: todayISO(), hours: "", amount: "", cur: object.billCur === "EUR" ? "EUR" : "CZK", note: "", billRate: "", billCur: object.billCur || "EUR" });
   const [invoices, setInvoices] = useState(null);
   const [invErr, setInvErr] = useState("");
   const [invViewer, setInvViewer] = useState(null);
@@ -5362,15 +5656,6 @@ function ObjectDetail({ object, data, api, onBack, onOpenWorker }) {
     if (await api.setPositionRate(object, pos, { mode: posRateForm.mode, value: val, currency: posRateForm.currency })) resetPositionForm();
   };
 
-  const addBrigade = async () => {
-    const hours = round2(parseNum(brigForm.hours) || 0);
-    const amount = round2(parseNum(brigForm.amount) || 0);
-    const billRate = round2(parseNum(brigForm.billRate) || 0);
-    if (!brigForm.date || hours <= 0 || amount <= 0) return;
-    if (await api.addBrigadeCost(object, brigForm.date, hours, amount, brigForm.cur, brigForm.note, billRate, brigForm.billCur)) {
-      setBrigForm({ date: brigForm.date, hours: "", amount: "", cur: brigForm.cur, note: "", billRate: "", billCur: brigForm.billCur });
-    }
-  };
 
   const commitDay = (w) => {
     const v = inputs[w.id] || {};
@@ -5492,6 +5777,7 @@ function ObjectDetail({ object, data, api, onBack, onOpenWorker }) {
         const extraCostKc = round2(oPays.filter((pp) => pp.currency === "CZK").reduce((s, pp) => s + pp.amount, 0));
         return (
           <>
+          {section === "sati" && <BrigadeCard object={object} data={data} api={api} monthBrigade={objBrigade} defaultDate={mode === "day" ? date : todayISO()} />}
           {section === "pregled" && (
           <Card style={{ background: S.amberSoft, borderColor: "#EBD9B4" }}>
             <div style={{ fontWeight: 800, fontSize: 15, marginBottom: 10 }}>{tr("💶 Naplata i dobit —")}{" "}{mName(mm - 1)} {my}.</div>
@@ -5619,56 +5905,6 @@ function ObjectDetail({ object, data, api, onBack, onOpenWorker }) {
                   {posRateEditing && <Btn small kind="ghost" onClick={resetPositionForm}>{tr("Odustani")}</Btn>}
                 </div>
               </div>
-            </div>
-
-          </Card>
-          <Card>
-            <div style={{ fontWeight: 800, fontSize: 15, marginBottom: 10 }}>{tr("👷 Brigada (bez imena)")}</div>
-            <div style={{ marginTop: 0 }}>
-              
-              <div style={{ fontSize: 11.5, color: S.sub, marginBottom: 8 }}>
-                {tr("Za kad pošalješ dodatnu osobu na dan i odmah je platiš. Sati se naplaćuju hotelu po zadanoj cijeni objekta, a iznos ide kao trošak.")}
-              </div>
-              <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 6 }}>
-                <div style={{ flex: "1 1 130px" }}>
-                  <input type="date" value={brigForm.date} onChange={(e) => setBrigForm({ ...brigForm, date: e.target.value })} />
-                </div>
-                <div style={{ flex: "1 1 90px" }}>
-                  <input inputMode="decimal" value={brigForm.hours} onChange={(e) => setBrigForm({ ...brigForm, hours: e.target.value })} placeholder={tr("sati")} />
-                </div>
-                <div style={{ flex: "1 1 110px" }}>
-                  <input inputMode="decimal" value={brigForm.amount} onChange={(e) => setBrigForm({ ...brigForm, amount: e.target.value })} placeholder={tr("dao (iznos)")} />
-                </div>
-                <CurChips small value={brigForm.cur} onChange={(v) => setBrigForm({ ...brigForm, cur: v })} />
-              </div>
-              <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 6, alignItems: "center" }}>
-                <div style={{ flex: "1 1 160px" }}>
-                  <input inputMode="decimal" value={brigForm.billRate} onChange={(e) => setBrigForm({ ...brigForm, billRate: e.target.value })}
-                    placeholder={tr("cijena/sat (zadano {0})", object.billRate || 0)} />
-                </div>
-                <CurChips small value={brigForm.billCur} onChange={(v) => setBrigForm({ ...brigForm, billCur: v })} />
-              </div>
-              <div style={{ fontSize: 11, color: S.sub, margin: "-4px 0 10px" }}>
-                {tr("Ostavi prazno da koristi zadanu cijenu objekta (")}{money(object.billRate || 0, object.billCur || "EUR")}{tr("/h) — upiši samo ako hotel ovu brigadu plaća drugačije.")}
-              </div>
-              <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
-                <input value={brigForm.note} onChange={(e) => setBrigForm({ ...brigForm, note: e.target.value })} placeholder={tr("Napomena (opcionalno)")} style={{ flex: 1 }} />
-                <Btn small onClick={addBrigade}>{tr("Spremi")}</Btn>
-              </div>
-              {objBrigade.length > 0 && (
-                <div style={{ marginBottom: 4 }}>
-                  {[...objBrigade].sort((a, b) => b.date.localeCompare(a.date)).map((bg) => (
-                    <div key={bg.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 0", fontSize: 12.5, borderBottom: "1px dashed #EBD9B4" }}>
-                      <span style={{ flex: 1 }}>
-                        {fmtDate(bg.date)} · {fmtH(bg.hours)}{bg.note ? " · " + bg.note : ""}
-                        {bg.billRate > 0 && <span style={{ color: S.blue, fontWeight: 700 }}> · {money(bg.billRate, bg.billCur)}{tr("/h posebno")}</span>}
-                      </span>
-                      <span className="num" style={{ fontWeight: 700 }}>{money(bg.amount, bg.currency)}</span>
-                      <button onClick={() => api.delBrigadeCost(bg, object.name)} style={{ background: "none", border: "none", color: S.red, fontSize: 14, cursor: "pointer", padding: 2 }}>✕</button>
-                    </div>
-                  ))}
-                </div>
-              )}
             </div>
 
           </Card>
