@@ -635,6 +635,31 @@ create policy "brigade_admin_all" on brigade_costs for all to authenticated
 alter table brigade_costs add column if not exists bill_rate numeric default 0;
 alter table brigade_costs add column if not exists bill_currency text default 'EUR';
 
+-- Brigada: broj ljudi, imena (opcionalno) i tko je platio — null = admin, inače koordinator
+-- (profil) koji je platio iz gotovine koju mu je admin dao (vidi cash_advances)
+alter table brigade_costs add column if not exists people integer default 1;
+alter table brigade_costs add column if not exists names text default '';
+alter table brigade_costs add column if not exists paid_by uuid references profiles;
+
+-- GOTOVINA KOD KOORDINATORA: admin mu da novac (given) ili mu ovaj vrati višak (returned).
+-- Saldo = dano − vraćeno − brigade koje je on platio (brigade_costs.paid_by)
+create table if not exists cash_advances (
+  id uuid primary key default gen_random_uuid(),
+  profile_id uuid not null references profiles on delete cascade,
+  kind text not null default 'given' check (kind in ('given', 'returned')),
+  amount numeric not null default 0,
+  currency text not null default 'CZK',
+  pay_date date not null default current_date,
+  note text default '',
+  created_by uuid references profiles,
+  created_at timestamptz default now(),
+  deleted_at timestamptz
+);
+alter table cash_advances enable row level security;
+drop policy if exists "cash_advances_admin_all" on cash_advances;
+create policy "cash_advances_admin_all" on cash_advances for all to authenticated
+  using (is_admin()) with check (is_admin());
+
 -- ============================================================
 -- PDV NA IZLAZNIM FAKTURAMA (hotelima) + PDF faktura spremljen uz zapis
 -- vat_amount se upisuje ručno (onoliko koliko admin vidi na stvarnoj fakturi/PDF-u)
