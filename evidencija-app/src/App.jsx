@@ -5184,6 +5184,8 @@ function BrigadeCard({ object, data, api, monthBrigade, defaultDate }) {
   const hours = round2(people * (parseNum(f.hoursPer) || 0));
   const autoAmount = round2(hours * (parseNum(f.payRate) || 0));
   const amount = f.amountTouched ? round2(parseNum(f.amount) || 0) : autoAmount;
+  // upisan ukupni iznos → satnica se računa iz njega (iznos / sati)
+  const effRate = f.amountTouched ? (hours > 0 ? round2(amount / hours) : 0) : round2(parseNum(f.payRate) || 0);
   const preview = { hours, amount, currency: f.cur, billRate: round2(parseNum(f.billRate) || 0), billCur: f.billCur };
   const rv = brigadeRevenue(object, preview);
   const profit = brigadeProfit(data, object, preview);
@@ -5194,7 +5196,7 @@ function BrigadeCard({ object, data, api, monthBrigade, defaultDate }) {
     if (!f.date || hours <= 0 || amount <= 0) return;
     const ok = await api.addBrigadeCost(object, { date: f.date, hours, amount, cur: f.cur, note: f.note.trim(), names: f.names.trim(),
       people, billRate: preview.billRate, billCur: f.billCur, paidBy: f.paidBy || null }, payer?.name || "");
-    if (ok) setF((p) => ({ ...blank(), date: p.date, payRate: p.payRate, cur: p.cur, paidBy: p.paidBy, people: p.people, hoursPer: p.hoursPer }));
+    if (ok) setF((p) => ({ ...blank(), date: p.date, payRate: effRate ? String(effRate) : p.payRate, cur: p.cur, paidBy: p.paidBy, people: p.people, hoursPer: p.hoursPer }));
   };
   // "Ponovi": ista brigada (ljudi, sati, iznos, tko plaća) — samo promijeniš datum i spremiš
   const repeat = (bg) => setF({
@@ -5227,7 +5229,8 @@ function BrigadeCard({ object, data, api, monthBrigade, defaultDate }) {
       </div>
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 6, alignItems: "flex-end" }}>
         <div style={{ flex: "1 1 110px" }}><Field label={tr("Daješ po satu")}>
-          <input inputMode="decimal" value={f.payRate} onChange={(e) => setF({ ...f, payRate: e.target.value, amountTouched: false })} placeholder="0" />
+          <input inputMode="decimal" value={f.amountTouched ? (effRate ? String(effRate) : "") : f.payRate}
+            onChange={(e) => setF({ ...f, payRate: e.target.value, amountTouched: false })} placeholder="0" />
         </Field></div>
         <div style={{ flex: "1 1 110px" }}><Field label={tr("Ukupno isplaćeno")}>
           <input inputMode="decimal" value={f.amountTouched ? f.amount : (autoAmount ? String(autoAmount) : "")}
@@ -5275,7 +5278,7 @@ function BrigadeCard({ object, data, api, monthBrigade, defaultDate }) {
         <div className="num" style={{ fontSize: 12.5, background: S.greenSoft, borderRadius: 8, padding: "7px 10px", marginBottom: 8 }}>
           {people > 1 ? `${people} × ${fmtH(round2(hours / people))} = ` : ""}<b>{fmtH(hours)}</b>
           {" · "}{tr("hotel plaća")} <b>{money(rv.amount, rv.cur)}</b>
-          {amount > 0 && <> · {tr("isplaćeno")} <b>{money(amount, f.cur)}</b> · {tr("zarada")} <b style={{ color: profit < 0 ? S.red : S.green }}>{money(profit, f.cur)}</b></>}
+          {amount > 0 && <> · {tr("isplaćeno")} <b>{money(amount, f.cur)}</b>{effRate ? ` (${money(effRate, f.cur)}/h)` : ""} · {tr("zarada")} <b style={{ color: profit < 0 ? S.red : S.green }}>{money(profit, f.cur)}</b></>}
         </div>
       )}
       <Btn small onClick={save} disabled={hours <= 0 || amount <= 0} style={{ width: "100%", marginBottom: 10 }}>{tr("Spremi brigadu")}</Btn>
@@ -5295,6 +5298,7 @@ function BrigadeCard({ object, data, api, monthBrigade, defaultDate }) {
                   {bg.billRate > 0 && <span style={{ color: S.blue, fontWeight: 700 }}> · {money(bg.billRate, bg.billCur)}{tr("/h posebno")}</span>}
                   <div style={{ fontSize: 11, color: S.sub }}>
                     {bg.paidBy ? tr("platio {0} iz gotovine", pName(bg.paidBy)) : tr("platio ja")}
+                    {bg.hours > 0 ? ` · ${money(round2(bg.amount / bg.hours), bg.currency)}/h` : ""}
                     {" · "}{tr("zarada")} <span className="num" style={{ color: pr < 0 ? S.red : S.green, fontWeight: 700 }}>{money(pr, bg.currency)}</span>
                   </div>
                 </span>
