@@ -795,5 +795,19 @@ export const TR_UK = {
  "čeka dulje od 24 h — javi im se danas.": "чекають понад 24 год — зв'яжіться з ними сьогодні.",
  "— odaberi radnika —": "— виберіть працівника —",
  "➕ Prebaci u radnike": "➕ Перевести у працівники",
- "🎁 Link za preporuke": "🎁 Посилання для рекомендацій"
+ "🎁 Link za preporuke": "🎁 Посилання для рекомендацій",
+ "📣 Tekstovi za oglase": "📣 Тексти оголошень",
+ "Odaberi tekst, upiši ime grupe i kopiraj. Link s oznakom grupe je već na kraju teksta.": "Виберіть текст, впишіть назву групи і скопіюйте. Посилання з позначкою групи вже в кінці тексту.",
+ "Sve pozicije (UA)": "Усі посади (UA)",
+ "Kratko (UA)": "Коротко (UA)",
+ "Sobarice (UA)": "Покоївки (UA)",
+ "Kuhinja (UA)": "Кухня (UA)",
+ "Radnicima – preporuka (UA)": "Працівникам – рекомендація (UA)",
+ "Češki (CZ)": "Чеською (CZ)",
+ "Grupa (FB ili Viber) — da znaš odakle dolaze ljudi": "Група (FB або Viber) — щоб знати, звідки приходять люди",
+ "npr. fb robota praha": "напр. fb robota praha",
+ "📋 Kopiraj tekst s linkom": "📋 Копіювати текст із посиланням",
+ "Samo tekst": "Тільки текст",
+ "Samo link": "Тільки посилання",
+ "Grupa ne dopušta linkove? Objavi samo tekst, a link stavi u prvi komentar.": "Група не дозволяє посилання? Опублікуйте тільки текст, а посилання додайте в перший коментар."
 };

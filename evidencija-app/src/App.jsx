@@ -1716,6 +1716,15 @@ function exportAllData(data) {
 /*  KANDIDATI — prijave s javne prijavnice /prijava                   */
 /*  Tablica: candidates (unos kroz funkciju submit_application)       */
 /* ================================================================== */
+// Gotovi tekstovi oglasa za FB i Viber grupe; link s oznakom grupe dodaje se na kraj.
+const AD_TEXTS = [
+  { id: "sve", label: "Sve pozicije (UA)", text: "🏨 Робота в готелях Праги\n\nШукаємо:\n🔹 покоївок\n🔹 кухарів і помічників кухаря\n🔹 мийників посуду\n🔹 працівників на прибирання\n\n✅ Стабільна робота, зміни за домовленістю\n📍 Прага\n\n👉 Залиште заявку за 1 хвилину – ми вам зателефонуємо:" },
+  { id: "kratko", label: "Kratko (UA)", text: "Робота в готелях Праги – покоївки, кухня, мийники посуду.\nЗалиште ім'я і телефон, ми зателефонуємо 👇" },
+  { id: "hsk", label: "Sobarice (UA)", text: "🛏 Шукаємо покоївок у готелі Праги\n\n✅ Стабільні зміни, графік за домовленістю\n✅ Досвід бажаний, але можемо навчити\n📍 Прага\n\nЗалиште ім'я і телефон – ми вам зателефонуємо 👇" },
+  { id: "kuhinja", label: "Kuhinja (UA)", text: "👨‍🍳 Робота на кухні в готелях Праги\n\nШукаємо:\n🔹 кухарів\n🔹 помічників кухаря\n🔹 мийників посуду\n\n✅ Готельні ресторани, стабільні зміни\n📍 Прага\n\nЗалиште заявку за 1 хвилину 👇" },
+  { id: "preporuka", label: "Radnicima – preporuka (UA)", text: "Привіт! Нам потрібні люди на кухню та покоївки в готелі. Якщо знаєте когось, хто шукає роботу, перешліть їм це посилання – вони залишать номер, і ми зателефонуємо 🙏" },
+  { id: "cz", label: "Češki (CZ)", text: "🏨 Práce v hotelech v Praze\n\nHledáme pokojské, kuchaře, pomocné síly do kuchyně a myčky nádobí.\n📍 Praha, stabilní práce\n\nNechte nám jméno a telefon, ozveme se 👇", cs: true },
+];
 const LL = () => (CUR_LANG === "UK" ? "UK" : "HR");
 const digitsPhone = (p) => (p || "").replace(/[^0-9+]/g, "");
 const phoneKey = (p) => (p || "").replace(/[^0-9]/g, "").slice(-9); // zadnjih 9 znamenki (bez pozivnog)
@@ -1758,6 +1767,8 @@ function CandidatesPanel({ data, api }) {
   const [notes, setNotes] = useState({});
   const [copied, setCopied] = useState("");
   const [refWorker, setRefWorker] = useState("");
+  const [adId, setAdId] = useState("sve");
+  const [adTag, setAdTag] = useState(() => { try { return localStorage.getItem("evidencija_ad_tag") || ""; } catch { return ""; } });
   const formUrl = `${window.location.origin}/prijava`;
 
   const load = useCallback(async () => {
@@ -1835,6 +1846,11 @@ function CandidatesPanel({ data, api }) {
   const srcStats = Object.entries(rows.reduce((m, c) => {
     const k = srcKey(c); m[k] = m[k] || { n: 0, hired: 0 }; m[k].n++; if (c.status === "poceo") m[k].hired++; return m;
   }, {})).sort((a, b) => b[1].n - a[1].n);
+  const ad = AD_TEXTS.find((a) => a.id === adId) || AD_TEXTS[0];
+  const adParams = [adTag.trim() ? `z=${slugify(adTag)}` : "", ad.cs ? "l=cs" : ""].filter(Boolean).join("&");
+  const adLink = adParams ? `${formUrl}?${adParams}` : formUrl;
+  const adFull = `${ad.text}\n${adLink}`;
+  const setTag = (v) => { setAdTag(v); try { localStorage.setItem("evidencija_ad_tag", v); } catch {} };
   const refLink = refWorker ? `${formUrl}?z=preporuka-${slugify(data.workers.find((w) => w.id === refWorker)?.name)}` : "";
 
   const chip = (active) => ({ border: `1px solid ${active ? S.green : S.line}`, background: active ? S.greenSoft : "#fff", color: active ? S.green : S.ink,
@@ -1856,6 +1872,24 @@ function CandidatesPanel({ data, api }) {
           {tr("Da vidiš iz koje grupe dolaze ljudi, dodaj oznaku na kraj linka, npr.")} <code>{formUrl}?z=fb-ukrajinci-praha</code>{" "}
           {tr("ili")} <code>?z=viber-robota</code>. {tr("Za češku verziju dodaj")} <code>?l=cs</code>.
         </div>
+      </Card>
+
+      <Card>
+        <div style={{ fontWeight: 700, marginBottom: 4 }}>{tr("📣 Tekstovi za oglase")}</div>
+        <div style={{ fontSize: 13, color: S.sub, marginBottom: 10 }}>{tr("Odaberi tekst, upiši ime grupe i kopiraj. Link s oznakom grupe je već na kraju teksta.")}</div>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 10 }}>
+          {AD_TEXTS.map((a) => <button key={a.id} style={chip(adId === a.id)} onClick={() => setAdId(a.id)}>{tr(a.label)}</button>)}
+        </div>
+        <Field label={tr("Grupa (FB ili Viber) — da znaš odakle dolaze ljudi")}>
+          <input value={adTag} onChange={(e) => setTag(e.target.value)} placeholder={tr("npr. fb robota praha")} style={{ width: "100%", padding: "8px 10px", boxSizing: "border-box" }} />
+        </Field>
+        <div style={{ background: S.bg, borderRadius: 10, padding: "10px 12px", fontSize: 13.5, whiteSpace: "pre-wrap", lineHeight: 1.45, marginBottom: 10, wordBreak: "break-word" }}>{adFull}</div>
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+          <Btn small onClick={() => copy(adFull, "ad")}>{copied === "ad" ? tr("Kopirano ✓") : tr("📋 Kopiraj tekst s linkom")}</Btn>
+          <Btn small kind="ghost" onClick={() => copy(ad.text, "adtext")}>{copied === "adtext" ? tr("Kopirano ✓") : tr("Samo tekst")}</Btn>
+          <Btn small kind="ghost" onClick={() => copy(adLink, "adlink")}>{copied === "adlink" ? tr("Kopirano ✓") : tr("Samo link")}</Btn>
+        </div>
+        <div style={{ fontSize: 12.5, color: S.sub, marginTop: 8 }}>{tr("Grupa ne dopušta linkove? Objavi samo tekst, a link stavi u prvi komentar.")}</div>
       </Card>
 
       <Card>
