@@ -1286,7 +1286,7 @@ export default function App() {
       `}</style>
 
       <Header profile={profile} admin={admin} onLogout={() => supabase.auth.signOut()} lang={lang} setLang={setLang} t={t} data={data}
-        title={adminPanel ? (ADMIN_MENU.find((m) => m[0] === adminPanel) || [])[2] : worker ? worker.name : object ? object.name : openedProfile ? openedProfile.name : t(TAB_TITLE_KEY[tab] || "tabDanas")}
+        title={adminPanel ? (ADMIN_MENU.find((m) => m[0] === adminPanel) || [])[2] : worker ? worker.name : object ? object.name : openedProfile ? openedProfile.name : tab === "kandidati" ? tr("Kandidati") : t(TAB_TITLE_KEY[tab] || "tabDanas")}
         onAdminPanel={(p) => { setAdminPanel(p); setOpenWorker(null); setOpenObject(null); setOpenProfile(null); window.scrollTo({ top: 0, behavior: "smooth" }); }} />
 
       <div style={{ maxWidth: 560, margin: "0 auto", padding: "0 14px" }}>
@@ -1318,6 +1318,7 @@ export default function App() {
           <>
             {tab === "danas" && <TodayTab data={data} api={api} admin={admin} onOpenWorker={setOpenWorker} onOpenObject={setOpenObject}
               openAdminPanel={(p) => { setAdminPanel(p); window.scrollTo({ top: 0, behavior: "smooth" }); }} goTab={setTab} />}
+            {tab === "kandidati" && api.recruiter && <CandidatesPanel data={data} api={api} />}
             {tab === "radnici" && <WorkersTab data={data} api={api} onOpen={setOpenWorker} onOpenObject={setOpenObject} />}
             {tab === "objekti" && <ObjectsTab data={data} api={api} onOpenObject={setOpenObject} />}
             {tab === "imenik" && <DirectoryTab data={data} api={api} onOpen={setOpenWorker} />}
@@ -1328,7 +1329,7 @@ export default function App() {
         )}
       </div>
 
-      {!detailOpen && <TabBar tab={adminPanel ? "" : tab} setTab={(x) => { setAdminPanel(""); setTab(x); window.scrollTo({ top: 0 }); }} t={t} />}
+      {!detailOpen && <TabBar tab={adminPanel ? "" : tab} setTab={(x) => { setAdminPanel(""); setTab(x); window.scrollTo({ top: 0 }); }} t={t} recruiter={api.recruiter} newCandidates={data?.newCandidates || 0} />}
     </div>
   );
 }
@@ -1466,8 +1467,10 @@ function Header({ profile, admin, onLogout, lang, setLang, t, title, data, onAdm
   );
 }
 const TAB_TITLE_KEY = { danas: "tabDanas", radnici: "tabRadnici", objekti: "tabObjekti", imenik: "tabImenik", sati: "tabSati", isplate: "tabIsplate", obracun: "tabObracun" };
-function TabBar({ tab, setTab, t }) {
+function TabBar({ tab, setTab, t, recruiter, newCandidates }) {
   const tabs = [["danas",t("tabDanas"),"📌"],["radnici",t("tabRadnici"),"👷"],["objekti",t("tabObjekti"),"🏨"],["imenik",t("tabImenik"),"📇"],["sati",t("tabSati"),"🕒"],["isplate",t("tabIsplate"),"💶"],["obracun",t("tabObracun"),"🧾"]];
+  // regruteri i admin imaju i karticu Kandidati (s brojem novih prijava)
+  if (recruiter) tabs.splice(1, 0, ["kandidati", tr("Kandidati") + (newCandidates ? ` (${newCandidates})` : ""), "🧑‍🍳"]);
   return (
     <div style={{ position: "fixed", bottom: 0, left: 0, right: 0, background: "#fff", borderTop: `1px solid ${S.line}`,
       display: "flex", justifyContent: "space-around", padding: "6px 4px calc(6px + env(safe-area-inset-bottom))", zIndex: 20 }}>
@@ -3534,7 +3537,6 @@ function TodayRow({ left, right, onClick, sub }) {
 
 function TodayTab({ data, api, admin, onOpenWorker, onOpenObject, openAdminPanel, goTab }) {
   const [closing, setClosing] = useState(false);
-  const [showCands, setShowCands] = useState(false);
   const [remText, setRemText] = useState("");
   const [remDate, setRemDate] = useState("");
   const addRem = async () => { if (!remText.trim()) return; const ok = await api.addReminder(remText.trim(), remDate); if (ok) { setRemText(""); setRemDate(""); } };
@@ -3630,15 +3632,13 @@ function TodayTab({ data, api, admin, onOpenWorker, onOpenObject, openAdminPanel
         </TodaySection>
       )}
 
-      {((admin && data.newCandidates > 0) || (!admin && api.recruiter)) && (
+      {api.recruiter && (data.newCandidates > 0 || !admin) && (
         <TodaySection icon="🧑‍🍳" title={tr("Kandidati")} tone={data.staleCandidates ? "red" : data.newCandidates ? "amber" : "blue"} count={data.newCandidates ? `${data.newCandidates} ${tr("novih")}` : undefined}
-          action={<Btn small onClick={() => (admin ? openAdminPanel("candidates") : setShowCands((v) => !v))} style={{ width: "100%" }}>
-            {!admin && showCands ? tr("Zatvori") : tr("Otvori kandidate")}</Btn>}>
+          action={<Btn small onClick={() => { goTab("kandidati"); window.scrollTo({ top: 0 }); }} style={{ width: "100%" }}>{tr("Otvori kandidate")}</Btn>}>
           <div style={{ fontSize: 13.5 }}>{data.newCandidates ? tr("Nove prijave s prijavnice čekaju da im se javiš.") : tr("Nema novih prijava.")}</div>
           {data.staleCandidates > 0 && <div style={{ fontSize: 13.5, color: S.red, fontWeight: 600, marginTop: 4 }}>⏰ {data.staleCandidates} {tr("čeka dulje od 24 h — javi im se danas.")}</div>}
         </TodaySection>
       )}
-      {!admin && api.recruiter && showCands && <CandidatesPanel data={data} api={api} />}
 
       {admin && (pending.length > 0 || notProposedPrev > 0 || daysToPayday !== null) && (
         <TodaySection icon="💶" title={tr("Isplate")} tone={pending.length ? "amber" : "blue"} count={pending.length ? `${pending.length} čeka` : undefined}
