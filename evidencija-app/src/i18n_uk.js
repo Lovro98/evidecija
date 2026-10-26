@@ -817,5 +817,6 @@ export const TR_UK = {
  "Češki tekst (link otvara češku prijavnicu)": "Чеський текст (посилання відкриває чеську анкету)",
  "Obriši tekst": "Видалити текст",
  "✏️ Uredi": "✏️ Редагувати",
- "Obrisati ovaj tekst oglasa?": "Видалити цей текст оголошення?"
+ "Obrisati ovaj tekst oglasa?": "Видалити цей текст оголошення?",
+ "Češka verzija:": "Чеська версія:"
 };

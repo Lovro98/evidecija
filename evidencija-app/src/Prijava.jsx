@@ -40,7 +40,9 @@ const label = { display: "block", fontWeight: 700, fontSize: 15.5, marginBottom:
 
 export default function Prijava() {
   const params = new URLSearchParams(window.location.search);
-  const [lang, setLang] = useState((params.get("l") || "").toUpperCase() === "CS" ? "CS" : "UK");
+  // /prace (ili ?l=cs) = češka verzija, /robota i /prijava = ukrajinska
+  const czPath = /^\/prace\/?$/.test(window.location.pathname);
+  const [lang, setLang] = useState(czPath || (params.get("l") || "").toUpperCase() === "CS" ? "CS" : "UK");
   const [name, setName] = useState("");
   const [phone, setPhone] = useState("");
   const [positions, setPositions] = useState([]);

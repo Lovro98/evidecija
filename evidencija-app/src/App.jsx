@@ -1766,7 +1766,7 @@ function CandidatesPanel({ data, api }) {
   const [ads, setAds] = useState(null);
   const [adEdit, setAdEdit] = useState(null); // { id|null, label, body, is_cs }
   const [adTag, setAdTag] = useState(() => { try { return localStorage.getItem("evidencija_ad_tag") || ""; } catch { return ""; } });
-  const formUrl = `${window.location.origin}/prijava`;
+  const formUrl = `${window.location.origin}/robota`;
 
   const load = useCallback(async () => {
     const { data: d, error } = await supabase.from("candidates").select("*").order("created_at", { ascending: false }).limit(1000);
@@ -1847,8 +1847,9 @@ function CandidatesPanel({ data, api }) {
   }, {})).sort((a, b) => b[1].n - a[1].n);
   const adList = ads && ads.length ? ads : AD_FALLBACK;
   const ad = adList.find((a) => a.id === adId) || adList[0];
-  const adParams = [adTag.trim() ? `z=${slugify(adTag)}` : "", ad.is_cs ? "l=cs" : ""].filter(Boolean).join("&");
-  const adLink = adParams ? `${formUrl}?${adParams}` : formUrl;
+  const adBase = ad.is_cs ? `${window.location.origin}/prace` : formUrl;
+  const adParams = adTag.trim() ? `z=${slugify(adTag)}` : "";
+  const adLink = adParams ? `${adBase}?${adParams}` : adBase;
   const adFull = `${ad.body}\n${adLink}`;
   const saveAd = async () => {
     const e = adEdit; if (!e || !e.label.trim()) return;
@@ -1894,7 +1895,7 @@ function CandidatesPanel({ data, api }) {
         </div>
         <div style={{ fontSize: 12.5, color: S.sub }}>
           {tr("Da vidiš iz koje grupe dolaze ljudi, dodaj oznaku na kraj linka, npr.")} <code>{formUrl}?z=fb-ukrajinci-praha</code>{" "}
-          {tr("ili")} <code>?z=viber-robota</code>. {tr("Za češku verziju dodaj")} <code>?l=cs</code>.
+          {tr("ili")} <code>?z=viber-robota</code>. {tr("Češka verzija:")} <code>{window.location.origin}/prace</code>.
         </div>
       </Card>
 
