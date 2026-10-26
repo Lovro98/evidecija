@@ -1716,14 +1716,9 @@ function exportAllData(data) {
 /*  KANDIDATI — prijave s javne prijavnice /prijava                   */
 /*  Tablica: candidates (unos kroz funkciju submit_application)       */
 /* ================================================================== */
-// Gotovi tekstovi oglasa za FB i Viber grupe; link s oznakom grupe dodaje se na kraj.
-const AD_TEXTS = [
-  { id: "sve", label: "Sve pozicije (UA)", text: "🏨 Робота в готелях Праги\n\nШукаємо:\n🔹 покоївок\n🔹 кухарів і помічників кухаря\n🔹 мийників посуду\n🔹 працівників на прибирання\n\n✅ Стабільна робота, зміни за домовленістю\n📍 Прага\n\n👉 Залиште заявку за 1 хвилину – ми вам зателефонуємо:" },
-  { id: "kratko", label: "Kratko (UA)", text: "Робота в готелях Праги – покоївки, кухня, мийники посуду.\nЗалиште ім'я і телефон, ми зателефонуємо 👇" },
-  { id: "hsk", label: "Sobarice (UA)", text: "🛏 Шукаємо покоївок у готелі Праги\n\n✅ Стабільні зміни, графік за домовленістю\n✅ Досвід бажаний, але можемо навчити\n📍 Прага\n\nЗалиште ім'я і телефон – ми вам зателефонуємо 👇" },
-  { id: "kuhinja", label: "Kuhinja (UA)", text: "👨‍🍳 Робота на кухні в готелях Праги\n\nШукаємо:\n🔹 кухарів\n🔹 помічників кухаря\n🔹 мийників посуду\n\n✅ Готельні ресторани, стабільні зміни\n📍 Прага\n\nЗалиште заявку за 1 хвилину 👇" },
-  { id: "preporuka", label: "Radnicima – preporuka (UA)", text: "Привіт! Нам потрібні люди на кухню та покоївки в готелі. Якщо знаєте когось, хто шукає роботу, перешліть їм це посилання – вони залишать номер, і ми зателефонуємо 🙏" },
-  { id: "cz", label: "Češki (CZ)", text: "🏨 Práce v hotelech v Praze\n\nHledáme pokojské, kuchaře, pomocné síly do kuchyně a myčky nádobí.\n📍 Praha, stabilní práce\n\nNechte nám jméno a telefon, ozveme se 👇", cs: true },
+// Tekstovi oglasa žive u tablici ad_texts (uređuju admin i regruteri); ovo je samo rezerva ako se ne učitaju.
+const AD_FALLBACK = [
+  { id: "fallback", label: "Sve pozicije", body: "🏨 Робота в готелях Праги\n\nШукаємо покоївок, кухарів, помічників кухаря та мийників посуду.\n📍 Прага\n\n👉 Залиште заявку за 1 хвилину – ми вам зателефонуємо:", is_cs: false },
 ];
 const LL = () => (CUR_LANG === "UK" ? "UK" : "HR");
 const digitsPhone = (p) => (p || "").replace(/[^0-9+]/g, "");
@@ -1767,7 +1762,9 @@ function CandidatesPanel({ data, api }) {
   const [notes, setNotes] = useState({});
   const [copied, setCopied] = useState("");
   const [refWorker, setRefWorker] = useState("");
-  const [adId, setAdId] = useState("sve");
+  const [adId, setAdId] = useState("");
+  const [ads, setAds] = useState(null);
+  const [adEdit, setAdEdit] = useState(null); // { id|null, label, body, is_cs }
   const [adTag, setAdTag] = useState(() => { try { return localStorage.getItem("evidencija_ad_tag") || ""; } catch { return ""; } });
   const formUrl = `${window.location.origin}/prijava`;
 
@@ -1775,6 +1772,8 @@ function CandidatesPanel({ data, api }) {
     const { data: d, error } = await supabase.from("candidates").select("*").order("created_at", { ascending: false }).limit(1000);
     if (error) { setLoadErr(error.message); return; }
     setLoadErr(""); setRows(d || []);
+    const { data: a } = await supabase.from("ad_texts").select("*").order("sort").order("created_at");
+    setAds(a || []);
   }, []);
   useEffect(() => { load(); }, [load]);
 
@@ -1846,10 +1845,35 @@ function CandidatesPanel({ data, api }) {
   const srcStats = Object.entries(rows.reduce((m, c) => {
     const k = srcKey(c); m[k] = m[k] || { n: 0, hired: 0 }; m[k].n++; if (c.status === "poceo") m[k].hired++; return m;
   }, {})).sort((a, b) => b[1].n - a[1].n);
-  const ad = AD_TEXTS.find((a) => a.id === adId) || AD_TEXTS[0];
-  const adParams = [adTag.trim() ? `z=${slugify(adTag)}` : "", ad.cs ? "l=cs" : ""].filter(Boolean).join("&");
+  const adList = ads && ads.length ? ads : AD_FALLBACK;
+  const ad = adList.find((a) => a.id === adId) || adList[0];
+  const adParams = [adTag.trim() ? `z=${slugify(adTag)}` : "", ad.is_cs ? "l=cs" : ""].filter(Boolean).join("&");
   const adLink = adParams ? `${formUrl}?${adParams}` : formUrl;
-  const adFull = `${ad.text}\n${adLink}`;
+  const adFull = `${ad.body}\n${adLink}`;
+  const saveAd = async () => {
+    const e = adEdit; if (!e || !e.label.trim()) return;
+    let newId = e.id;
+    const ok = await api.run(async () => {
+      const row = { label: e.label.trim().slice(0, 60), body: e.body.slice(0, 3000), is_cs: !!e.is_cs, updated_by: api.uid(), updated_at: new Date().toISOString() };
+      if (e.id) {
+        const { error } = await supabase.from("ad_texts").update(row).eq("id", e.id);
+        if (error) throw error;
+      } else {
+        const { data: n, error } = await supabase.from("ad_texts").insert({ ...row, sort: (ads || []).length + 1 }).select().single();
+        if (error) throw error;
+        newId = n.id;
+      }
+    }, `${e.id ? "Promijenio" : "Dodao"} tekst oglasa: ${e.label.trim()}`);
+    if (ok) { setAdEdit(null); await load(); setAdId(newId); }
+  };
+  const deleteAd = async () => {
+    const e = adEdit; if (!e?.id || !window.confirm(tr("Obrisati ovaj tekst oglasa?"))) return;
+    const ok = await api.run(async () => {
+      const { error } = await supabase.from("ad_texts").delete().eq("id", e.id);
+      if (error) throw error;
+    }, `Obrisao tekst oglasa: ${e.label}`);
+    if (ok) { setAdEdit(null); setAdId(""); await load(); }
+  };
   const setTag = (v) => { setAdTag(v); try { localStorage.setItem("evidencija_ad_tag", v); } catch {} };
   const refLink = refWorker ? `${formUrl}?z=preporuka-${slugify(data.workers.find((w) => w.id === refWorker)?.name)}` : "";
 
@@ -1878,18 +1902,42 @@ function CandidatesPanel({ data, api }) {
         <div style={{ fontWeight: 700, marginBottom: 4 }}>{tr("📣 Tekstovi za oglase")}</div>
         <div style={{ fontSize: 13, color: S.sub, marginBottom: 10 }}>{tr("Odaberi tekst, upiši ime grupe i kopiraj. Link s oznakom grupe je već na kraju teksta.")}</div>
         <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 10 }}>
-          {AD_TEXTS.map((a) => <button key={a.id} style={chip(adId === a.id)} onClick={() => setAdId(a.id)}>{tr(a.label)}</button>)}
+          {adList.map((a) => <button key={a.id} style={chip(ad.id === a.id)} onClick={() => { setAdId(a.id); setAdEdit(null); }}>{a.label}{a.is_cs ? " 🇨🇿" : ""}</button>)}
+          {ads && <button style={{ ...chip(adEdit && !adEdit.id), borderStyle: "dashed" }} onClick={() => setAdEdit({ id: null, label: "", body: "", is_cs: false })}>{tr("+ Novi tekst")}</button>}
         </div>
+        {adEdit ? (
+          <div style={{ border: `1px solid ${S.line}`, borderRadius: 12, padding: 12, marginBottom: 10 }}>
+            <Field label={tr("Naziv (vidi se samo ovdje)")}>
+              <input value={adEdit.label} maxLength={60} onChange={(e) => setAdEdit({ ...adEdit, label: e.target.value })} placeholder={tr("npr. Kuhinja – vikend")} style={{ width: "100%", padding: "8px 10px", boxSizing: "border-box" }} />
+            </Field>
+            <Field label={tr("Tekst oglasa (link se dodaje sam na kraj)")}>
+              <textarea value={adEdit.body} maxLength={3000} onChange={(e) => setAdEdit({ ...adEdit, body: e.target.value })} style={{ width: "100%", minHeight: 180, padding: "8px 10px", boxSizing: "border-box", fontSize: 14, lineHeight: 1.45 }} />
+            </Field>
+            <label style={{ display: "flex", alignItems: "center", gap: 7, fontSize: 13, marginBottom: 10, cursor: "pointer" }}>
+              <input type="checkbox" checked={!!adEdit.is_cs} onChange={(e) => setAdEdit({ ...adEdit, is_cs: e.target.checked })} style={{ width: 18, height: 18 }} />
+              {tr("Češki tekst (link otvara češku prijavnicu)")}
+            </label>
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", justifyContent: "space-between" }}>
+              <div style={{ display: "flex", gap: 6 }}>
+                <Btn small onClick={saveAd} disabled={!adEdit.label.trim() || !adEdit.body.trim()}>{tr("Spremi")}</Btn>
+                <Btn small kind="ghost" onClick={() => setAdEdit(null)}>{tr("Odustani")}</Btn>
+              </div>
+              {adEdit.id && <Btn small kind="danger" onClick={deleteAd}>{tr("Obriši tekst")}</Btn>}
+            </div>
+          </div>
+        ) : (<>
         <Field label={tr("Grupa (FB ili Viber) — da znaš odakle dolaze ljudi")}>
           <input value={adTag} onChange={(e) => setTag(e.target.value)} placeholder={tr("npr. fb robota praha")} style={{ width: "100%", padding: "8px 10px", boxSizing: "border-box" }} />
         </Field>
         <div style={{ background: S.bg, borderRadius: 10, padding: "10px 12px", fontSize: 13.5, whiteSpace: "pre-wrap", lineHeight: 1.45, marginBottom: 10, wordBreak: "break-word" }}>{adFull}</div>
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
           <Btn small onClick={() => copy(adFull, "ad")}>{copied === "ad" ? tr("Kopirano ✓") : tr("📋 Kopiraj tekst s linkom")}</Btn>
-          <Btn small kind="ghost" onClick={() => copy(ad.text, "adtext")}>{copied === "adtext" ? tr("Kopirano ✓") : tr("Samo tekst")}</Btn>
+          {ads && ad.id !== "fallback" && <Btn small kind="ghost" onClick={() => setAdEdit({ id: ad.id, label: ad.label, body: ad.body, is_cs: ad.is_cs })}>{tr("✏️ Uredi")}</Btn>}
+          <Btn small kind="ghost" onClick={() => copy(ad.body, "adtext")}>{copied === "adtext" ? tr("Kopirano ✓") : tr("Samo tekst")}</Btn>
           <Btn small kind="ghost" onClick={() => copy(adLink, "adlink")}>{copied === "adlink" ? tr("Kopirano ✓") : tr("Samo link")}</Btn>
         </div>
         <div style={{ fontSize: 12.5, color: S.sub, marginTop: 8 }}>{tr("Grupa ne dopušta linkove? Objavi samo tekst, a link stavi u prvi komentar.")}</div>
+        </>)}
       </Card>
 
       <Card>

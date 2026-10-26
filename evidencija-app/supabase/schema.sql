@@ -861,3 +861,19 @@ end $$;
 drop trigger if exists candidates_notify on public.candidates;
 create trigger candidates_notify after insert on public.candidates
   for each row execute function public.notify_new_candidate();
+
+-- Tekstovi oglasa za FB/Viber grupe (uređuju admin i regruteri, vide se u panelu Kandidati)
+create table if not exists public.ad_texts (
+  id uuid primary key default gen_random_uuid(),
+  label text not null check (char_length(label) between 1 and 60),
+  body text not null default '' check (char_length(body) <= 3000),
+  is_cs boolean not null default false,
+  sort int not null default 0,
+  updated_by uuid references public.profiles on delete set null,
+  updated_at timestamptz not null default now(),
+  created_at timestamptz not null default now()
+);
+alter table public.ad_texts enable row level security;
+drop policy if exists "ads_recruit_all" on public.ad_texts;
+create policy "ads_recruit_all" on public.ad_texts for all to authenticated using (public.can_recruit()) with check (public.can_recruit());
+revoke all on public.ad_texts from anon;

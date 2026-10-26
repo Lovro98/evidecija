@@ -809,5 +809,13 @@ export const TR_UK = {
  "📋 Kopiraj tekst s linkom": "📋 Копіювати текст із посиланням",
  "Samo tekst": "Тільки текст",
  "Samo link": "Тільки посилання",
- "Grupa ne dopušta linkove? Objavi samo tekst, a link stavi u prvi komentar.": "Група не дозволяє посилання? Опублікуйте тільки текст, а посилання додайте в перший коментар."
+ "Grupa ne dopušta linkove? Objavi samo tekst, a link stavi u prvi komentar.": "Група не дозволяє посилання? Опублікуйте тільки текст, а посилання додайте в перший коментар.",
+ "+ Novi tekst": "+ Новий текст",
+ "Naziv (vidi se samo ovdje)": "Назва (видно тільки тут)",
+ "npr. Kuhinja – vikend": "напр. Кухня – вихідні",
+ "Tekst oglasa (link se dodaje sam na kraj)": "Текст оголошення (посилання додається в кінець автоматично)",
+ "Češki tekst (link otvara češku prijavnicu)": "Чеський текст (посилання відкриває чеську анкету)",
+ "Obriši tekst": "Видалити текст",
+ "✏️ Uredi": "✏️ Редагувати",
+ "Obrisati ovaj tekst oglasa?": "Видалити цей текст оголошення?"
 };
