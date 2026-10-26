@@ -809,3 +809,55 @@ begin
 end $$;
 revoke all on function public.submit_application(text,text,text,text[],text,text,text,text,text,text,text,text) from public;
 grant execute on function public.submit_application(text,text,text,text[],text,text,text,text,text,text,text,text) to anon, authenticated;
+
+-- Kandidat -> radnik (gumb "Prebaci u radnike")
+alter table public.candidates add column if not exists worker_id uuid references public.workers on delete set null;
+
+-- Telegram obavijest o novoj prijavi (token i chat_id-jevi samo na serveru, bez RLS politika)
+create table if not exists public.notify_settings (
+  id int primary key default 1 check (id = 1),
+  telegram_bot_token text not null default '',
+  telegram_chat_ids text[] not null default '{}',
+  app_url text not null default 'https://evidecija.vercel.app',
+  updated_at timestamptz default now()
+);
+alter table public.notify_settings enable row level security;
+revoke all on public.notify_settings from anon, authenticated;
+insert into public.notify_settings (id) values (1) on conflict (id) do nothing;
+
+create or replace function public.notify_new_candidate() returns trigger
+language plpgsql security definer set search_path = public as $$
+declare
+  s notify_settings;
+  pos text;
+  chat text;
+  msg text;
+begin
+  select * into s from notify_settings where id = 1;
+  if s.telegram_bot_token is null or s.telegram_bot_token = '' or cardinality(s.telegram_chat_ids) = 0 then
+    return new;
+  end if;
+  select string_agg(case p
+      when 'hsk' then 'покоївка' when 'cook' then 'кухар' when 'kitchen_help' then 'помічник кухаря'
+      when 'dishwasher' then 'мийник посуду' when 'public_cleaning' then 'прибирання' when 'waiter' then 'офіціант'
+      when 'bartender' then 'бармен' when 'reception' then 'рецепція' when 'maintenance' then 'тех. обслуговування'
+      else 'інше' end, ', ')
+    into pos from unnest(new.positions) p;
+  msg := '🧑‍🍳 Нова заявка' || E'\n\n' || '👤 ' || new.full_name || E'\n' || '📞 ' || new.phone || E'\n'
+      || '💼 ' || coalesce(pos, '—') || case when new.source_tag <> '' then E'\n🔗 ' || new.source_tag else '' end;
+  foreach chat in array s.telegram_chat_ids loop
+    perform net.http_post(
+      url := 'https://api.telegram.org/bot' || s.telegram_bot_token || '/sendMessage',
+      body := jsonb_build_object('chat_id', chat, 'text', msg,
+        'reply_markup', jsonb_build_object('inline_keyboard', jsonb_build_array(jsonb_build_array(
+          jsonb_build_object('text', '💬 WhatsApp', 'url', 'https://wa.me/' || replace(new.phone, '+', '')),
+          jsonb_build_object('text', '📋 Відкрити в додатку', 'url', s.app_url))))),
+      headers := '{"Content-Type": "application/json"}'::jsonb);
+  end loop;
+  return new;
+exception when others then
+  return new;
+end $$;
+drop trigger if exists candidates_notify on public.candidates;
+create trigger candidates_notify after insert on public.candidates
+  for each row execute function public.notify_new_candidate();

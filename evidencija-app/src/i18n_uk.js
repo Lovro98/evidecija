@@ -778,5 +778,22 @@ export const TR_UK = {
  "prijava": "заявок",
  "— nije dodijeljen —": "— не призначено —",
  "📊 Odakle dolaze kandidati": "📊 Звідки приходять кандидати",
- "🔗 Link za oglase": "🔗 Посилання для оголошень"
+ "🔗 Link za oglase": "🔗 Посилання для оголошень",
+ "Dodati kandidata kao radnika u karticu Radnici?": "Додати кандидата як працівника у вкладку Працівники?",
+ "Odaberi radnika i pošalji mu njegov link. Svaka prijava preko njega vidi se pod njegovim imenom, pa znaš kome ide bonus.": "Виберіть працівника і надішліть йому його посилання. Кожна заявка через нього буде видна під його ім'ям, тож ви знатимете, кому належить бонус.",
+ "Ovaj broj već ima radnik": "Цей номер уже має працівник",
+ "Ponovljena prijava": "Повторна заявка",
+ "Poruka kopirana, zalijepi je u Viber.": "Повідомлення скопійовано, вставте його у Viber.",
+ "Prva poruka (možeš je promijeniti prije slanja)": "Перше повідомлення (можна змінити перед надсиланням)",
+ "Radnik:": "Працівник:",
+ "Već radnik:": "Уже працює:",
+ "Viber + poruka": "Viber + повідомлення",
+ "WhatsApp + poruka": "WhatsApp + повідомлення",
+ "bez oznake": "без позначки",
+ "bez pomaka": "без змін",
+ "čeka": "чекає",
+ "čeka dulje od 24 h — javi im se danas.": "чекають понад 24 год — зв'яжіться з ними сьогодні.",
+ "— odaberi radnika —": "— виберіть працівника —",
+ "➕ Prebaci u radnike": "➕ Перевести у працівники",
+ "🎁 Link za preporuke": "🎁 Посилання для рекомендацій"
 };

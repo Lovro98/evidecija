@@ -681,10 +681,15 @@ async function fetchAll(isAdmin) {
   let billing = [], audit = [], trash = [], members = [], invoicePayments = [], settings = {}, objectInvoices = [], payrollNotes = [], positionBilling = [], reminders = [], loginLog = [], errorLog = [], commissionRates = [], commissionPayouts = [], brigadeCosts = [], purchaseInvoices = [], monthClose = [], cashAdvances = [];
   let bankMap = {};
   // nove prijave kandidata (RLS: vidi samo admin ili regruter, ostali dobiju 0)
-  let newCandidates = 0;
+  let newCandidates = 0, staleCandidates = 0;
   {
-    const cn = await supabase.from("candidates").select("id", { count: "exact", head: true }).eq("status", "novi");
+    const dayAgo = new Date(Date.now() - 24 * 3600000).toISOString();
+    const [cn, cs] = await Promise.all([
+      supabase.from("candidates").select("id", { count: "exact", head: true }).eq("status", "novi"),
+      supabase.from("candidates").select("id", { count: "exact", head: true }).eq("status", "novi").lt("created_at", dayAgo),
+    ]);
     newCandidates = cn.error ? 0 : (cn.count || 0);
+    staleCandidates = cs.error ? 0 : (cs.count || 0);
   }
   if (isAdmin) {
     const wb = await supabase.from("worker_bank").select("worker_id, bank_account");
@@ -790,7 +795,7 @@ async function fetchAll(isAdmin) {
     loginLog: loginLog.map((l) => ({ id: l.id, userName: l.user_name || "", at: l.at, userAgent: l.user_agent || "" })),
     errorLog: errorLog.map((e) => ({ id: e.id, userName: e.user_name || "", message: e.message, url: e.url || "", at: e.at })),
     settings: settings || {},
-    newCandidates,
+    newCandidates, staleCandidates,
     profiles: profiles.data || [],
     objectMembers: members,
     audit, trash,
@@ -951,7 +956,7 @@ export default function App() {
   };
 
   const api = {
-    admin, recruiter: admin || !!profile?.can_recruit, uid: () => session?.user?.id, settings: data?.settings || {}, t, lang, setLang,
+    admin, recruiter: admin || !!profile?.can_recruit, myName: (profile?.name || "").split(" ")[0], uid: () => session?.user?.id, settings: data?.settings || {}, t, lang, setLang,
     run: (fn, auditText) => act(fn, auditText),
     addWorker: (f) => act(async () => {
       const name = normalizeName(f.name);
@@ -1713,14 +1718,35 @@ function exportAllData(data) {
 /* ================================================================== */
 const LL = () => (CUR_LANG === "UK" ? "UK" : "HR");
 const digitsPhone = (p) => (p || "").replace(/[^0-9+]/g, "");
-const contactLinks = (c) => {
+const phoneKey = (p) => (p || "").replace(/[^0-9]/g, "").slice(-9); // zadnjih 9 znamenki (bez pozivnog)
+const hoursSince = (iso) => (iso ? (Date.now() - new Date(iso).getTime()) / 3600000 : 0);
+const slugify = (s) => (s || "").normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().replace(/[^a-z0-9а-яіїєґ]+/gi, "-").replace(/^-|-$/g, "").slice(0, 40);
+// prva poruka kandidatu, na jeziku na kojem je ispunio prijavnicu
+const firstMessage = (c, myName) => {
+  const first = (c.full_name || "").trim().split(/\s+/)[0] || "";
+  const csLang = c.lang === "CS";
+  const pos = (c.positions || []).map((p) => labelOf(POSITIONS, p, csLang ? "CS" : "UK").toLowerCase()).join(", ");
+  return csLang
+    ? `Dobrý den${first ? `, ${first}` : ""}! Vyplnil(a) jste dotazník na práci v hotelu v Praze (${pos}).${myName ? ` Jmenuji se ${myName}.` : ""} Kdy vám mohu zavolat a domluvit podrobnosti?`
+    : `Добрий день${first ? `, ${first}` : ""}! Ви залишили заявку на роботу в готелі в Празі (${pos}).${myName ? ` Мене звати ${myName}.` : ""} Коли вам зручно поговорити, щоб я розповіла деталі?`;
+};
+// rok za javljanje: novi > 24 h, kontaktiran/razgovor bez pomaka > 3 dana
+const staleInfo = (c) => {
+  if (c.status === "novi") { const h = hoursSince(c.created_at); return h >= 24 ? { level: "red", text: `${tr("čeka")} ${Math.floor(h / 24) >= 1 ? plural(Math.floor(h / 24), "dan", "dana", "dana") : Math.floor(h) + " h"}` } : null; }
+  if (c.status === "kontaktiran" || c.status === "razgovor") {
+    const h = hoursSince(c.status_changed_at || c.created_at);
+    return h >= 72 ? { level: "amber", text: `${plural(Math.floor(h / 24), "dan", "dana", "dana")} ${tr("bez pomaka")}` } : null;
+  }
+  return null;
+};
+const contactLinks = (c, msg) => {
   const ph = digitsPhone(c.phone);
   const intl = ph.replace(/^\+/, "");
   return [
-    ["📞", tr("Nazovi"), `tel:${ph}`],
-    ["💬", "Viber", `viber://chat?number=%2B${intl}`],
-    ["✈️", "Telegram", `https://t.me/+${intl}`],
-    ["🟢", "WhatsApp", `https://wa.me/${intl}`],
+    { icon: "📞", label: tr("Nazovi"), href: `tel:${ph}` },
+    { icon: "🟢", label: tr("WhatsApp + poruka"), href: `https://wa.me/${intl}?text=${encodeURIComponent(msg)}` },
+    { icon: "💬", label: tr("Viber + poruka"), href: `viber://chat?number=%2B${intl}`, copy: msg },
+    { icon: "✈️", label: "Telegram", href: `https://t.me/+${intl}` },
   ];
 };
 function CandidatesPanel({ data, api }) {
@@ -1731,6 +1757,7 @@ function CandidatesPanel({ data, api }) {
   const [open, setOpen] = useState(null);
   const [notes, setNotes] = useState({});
   const [copied, setCopied] = useState("");
+  const [refWorker, setRefWorker] = useState("");
   const formUrl = `${window.location.origin}/prijava`;
 
   const load = useCallback(async () => {
@@ -1741,7 +1768,19 @@ function CandidatesPanel({ data, api }) {
   useEffect(() => { load(); }, [load]);
 
   const objects = sortedObjects(data.objects.filter((o) => !o.archived));
+  const activeWorkers = sortedWorkers(data.workers.filter((w) => !w.archived));
   const objName = (id) => data.objects.find((o) => o.id === id)?.name || "";
+  const workerByPhone = useMemo(() => {
+    const m = {};
+    data.workers.forEach((w) => { const k = phoneKey(w.phone); if (k.length === 9) m[k] = w; });
+    return m;
+  }, [data.workers]);
+  const phoneCount = useMemo(() => {
+    const m = {};
+    (rows || []).forEach((c) => { const k = phoneKey(c.phone); m[k] = (m[k] || 0) + 1; });
+    return m;
+  }, [rows]);
+
   const update = async (c, patch, audit) => {
     const ok = await api.run(async () => {
       const { error } = await supabase.from("candidates").update({ ...patch, updated_by: api.uid() }).eq("id", c.id);
@@ -1759,25 +1798,48 @@ function CandidatesPanel({ data, api }) {
     }, `Obrisana prijava kandidata: ${c.full_name}`);
     if (ok) setRows((prev) => prev.filter((r) => r.id !== c.id));
   };
-  const copy = (text, key) => {
-    navigator.clipboard?.writeText(text).then(() => { setCopied(key); setTimeout(() => setCopied(""), 1800); }).catch(() => {});
+  // kandidat počinje raditi → novi radnik (ime, telefon, hotel, pozicija) i veza na prijavu
+  const toWorker = async (c) => {
+    if (!window.confirm(tr("Dodati kandidata kao radnika u karticu Radnici?"))) return;
+    const obj = data.objects.find((o) => o.id === c.object_id);
+    let workerId = null;
+    const ok = await api.run(async () => {
+      const { data: w, error } = await supabase.from("workers").insert({
+        name: normalizeName(c.full_name), phone: c.phone, base_rate: 0, rate_currency: obj ? countryCur(obj.country) : "CZK",
+        object_id: c.object_id || null, position: labelOf(POSITIONS, (c.positions || [])[0], "HR"), note: "",
+        created_by: api.uid(),
+      }).select().single();
+      if (error) throw error;
+      workerId = w.id;
+      if (c.object_id) {
+        const { error: e2 } = await supabase.from("assignments").insert({ worker_id: w.id, object_id: c.object_id, from_date: todayISO(), created_by: api.uid() });
+        if (e2) throw e2;
+      }
+      const { error: e3 } = await supabase.from("candidates").update({ worker_id: w.id, status: "poceo", status_changed_at: new Date().toISOString(), updated_by: api.uid() }).eq("id", c.id);
+      if (e3) throw e3;
+    }, `Kandidat ${c.full_name} prebačen u radnike`);
+    if (ok) setRows((prev) => prev.map((r) => (r.id === c.id ? { ...r, worker_id: workerId, status: "poceo" } : r)));
   };
+  const copy = (text, key) => navigator.clipboard?.writeText(text).then(() => { setCopied(key); setTimeout(() => setCopied(""), 1800); }).catch(() => {});
 
   if (loadErr) return <Card style={{ marginTop: 8 }}><div style={{ color: S.red, fontSize: 13.5 }}>{tr("Greška: ")}{loadErr}</div></Card>;
   if (!rows) return <Card style={{ marginTop: 8 }}><div style={{ color: S.sub, fontSize: 13.5 }}>{tr("Učitavam…")}</div></Card>;
 
   const inactive = new Set(["poceo", "nije_prikladan", "nedostupan"]);
   const list = rows.filter((c) => (filter === "svi" ? true : filter === "aktivni" ? !inactive.has(c.status) : c.status === filter))
-    .filter((c) => !pos || (c.positions || []).includes(pos));
+    .filter((c) => !pos || (c.positions || []).includes(pos))
+    // najprije oni koji najdulje čekaju na javljanje
+    .sort((a, b) => (staleInfo(b)?.level === "red") - (staleInfo(a)?.level === "red") || b.created_at.localeCompare(a.created_at));
   const countBy = (st) => rows.filter((c) => c.status === st).length;
-  // odakle dolaze: oznaka iz linka (?z=) ili odgovor "odakle ste čuli"
-  const srcKey = (c) => c.source_tag || labelOf(HEARD, c.heard_from, LL()) || "—";
+  const srcKey = (c) => c.source_tag || labelOf(HEARD, c.heard_from, LL()) || tr("bez oznake");
   const srcStats = Object.entries(rows.reduce((m, c) => {
     const k = srcKey(c); m[k] = m[k] || { n: 0, hired: 0 }; m[k].n++; if (c.status === "poceo") m[k].hired++; return m;
   }, {})).sort((a, b) => b[1].n - a[1].n);
+  const refLink = refWorker ? `${formUrl}?z=preporuka-${slugify(data.workers.find((w) => w.id === refWorker)?.name)}` : "";
 
   const chip = (active) => ({ border: `1px solid ${active ? S.green : S.line}`, background: active ? S.greenSoft : "#fff", color: active ? S.green : S.ink,
     borderRadius: 999, padding: "5px 11px", fontSize: 12.5, fontWeight: active ? 700 : 500, cursor: "pointer" });
+  const tag = (bg, color) => ({ background: bg, color, borderRadius: 6, padding: "2px 7px", fontSize: 12, fontWeight: 600 });
 
   return (
     <div style={{ marginTop: 8 }}>
@@ -1794,6 +1856,21 @@ function CandidatesPanel({ data, api }) {
           {tr("Da vidiš iz koje grupe dolaze ljudi, dodaj oznaku na kraj linka, npr.")} <code>{formUrl}?z=fb-ukrajinci-praha</code>{" "}
           {tr("ili")} <code>?z=viber-robota</code>. {tr("Za češku verziju dodaj")} <code>?l=cs</code>.
         </div>
+      </Card>
+
+      <Card>
+        <div style={{ fontWeight: 700, marginBottom: 4 }}>{tr("🎁 Link za preporuke")}</div>
+        <div style={{ fontSize: 13, color: S.sub, marginBottom: 8 }}>{tr("Odaberi radnika i pošalji mu njegov link. Svaka prijava preko njega vidi se pod njegovim imenom, pa znaš kome ide bonus.")}</div>
+        <select value={refWorker} onChange={(e) => setRefWorker(e.target.value)} style={{ width: "100%", padding: "8px 10px", marginBottom: refLink ? 8 : 0 }}>
+          <option value="">{tr("— odaberi radnika —")}</option>
+          {activeWorkers.map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}
+        </select>
+        {refLink && (
+          <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+            <code style={{ flex: 1, background: S.bg, borderRadius: 8, padding: "8px 10px", fontSize: 12.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{refLink}</code>
+            <Btn small onClick={() => copy(refLink, "ref")}>{copied === "ref" ? tr("Kopirano ✓") : tr("Kopiraj")}</Btn>
+          </div>
+        )}
       </Card>
 
       {rows.length > 0 && (
@@ -1819,8 +1896,13 @@ function CandidatesPanel({ data, api }) {
         const st = CAND_STATUS.find((s) => s.id === c.status) || CAND_STATUS[0];
         const isOpen = open === c.id;
         const note = notes[c.id] ?? c.admin_note ?? "";
+        const stale = staleInfo(c);
+        const asWorker = !c.worker_id && workerByPhone[phoneKey(c.phone)];
+        const repeats = (phoneCount[phoneKey(c.phone)] || 0) > 1;
+        const linked = c.worker_id && data.workers.find((w) => w.id === c.worker_id);
+        const msg = firstMessage(c, api.myName);
         return (
-          <Card key={c.id} style={{ padding: 12 }}>
+          <Card key={c.id} style={{ padding: 12, borderLeft: stale?.level === "red" ? `4px solid ${S.red}` : undefined }}>
             <div onClick={() => setOpen(isOpen ? null : c.id)} style={{ cursor: "pointer" }}>
               <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "flex-start" }}>
                 <div style={{ minWidth: 0 }}>
@@ -1830,10 +1912,14 @@ function CandidatesPanel({ data, api }) {
                 <span style={{ background: st.bg, color: st.color, borderRadius: 999, padding: "3px 9px", fontSize: 12, fontWeight: 700, whiteSpace: "nowrap" }}>{tr(st.label)}</span>
               </div>
               <div style={{ display: "flex", flexWrap: "wrap", gap: 5, marginTop: 7 }}>
+                {stale && <span style={tag(stale.level === "red" ? S.redSoft : S.amberSoft, stale.level === "red" ? S.red : S.amber)}>⏰ {stale.text}</span>}
+                {asWorker && <span style={tag(S.blueSoft, S.blue)}>⚠ {tr("Već radnik:")} {asWorker.name}</span>}
+                {repeats && <span style={tag(S.amberSoft, S.amber)}>{tr("Ponovljena prijava")}</span>}
                 {(c.positions || []).map((p) => (
                   <span key={p} style={{ background: POSITIONS.find((x) => x.id === p)?.focus ? S.amberSoft : S.bg, color: S.ink, borderRadius: 6, padding: "2px 7px", fontSize: 12 }}>{labelOf(POSITIONS, p, LL())}</span>
                 ))}
-                {c.object_id && <span style={{ background: S.greenSoft, color: S.green, borderRadius: 6, padding: "2px 7px", fontSize: 12, fontWeight: 600 }}>🏨 {objName(c.object_id)}</span>}
+                {c.object_id && <span style={tag(S.greenSoft, S.green)}>🏨 {objName(c.object_id)}</span>}
+                {c.source_tag && <span style={{ ...tag(S.bg, S.sub), fontWeight: 500 }}>🔗 {c.source_tag}</span>}
               </div>
             </div>
 
@@ -1844,15 +1930,23 @@ function CandidatesPanel({ data, api }) {
                   {c.residence && <div>{tr("Boravak:")} <b>{labelOf(RESIDENCE, c.residence, LL())}</b></div>}
                   {c.start_from && <div>{tr("Može početi:")} <b>{labelOf(START, c.start_from, LL())}</b></div>}
                   {c.experience && <div>{tr("Iskustvo:")} {c.experience}</div>}
-                  <div>{tr("Izvor:")} <b>{labelOf(HEARD, c.heard_from, LL()) || "—"}</b>{c.source_tag ? <> · {tr("link")} <code>{c.source_tag}</code></> : null}{c.referrer ? <> · {tr("preporučio/la")} <b>{c.referrer}</b></> : null}</div>
+                  {(c.heard_from || c.referrer) && <div>{tr("Izvor:")} <b>{labelOf(HEARD, c.heard_from, LL()) || "—"}</b>{c.referrer ? <> · {tr("preporučio/la")} <b>{c.referrer}</b></> : null}</div>}
                   <div style={{ color: S.sub, fontSize: 12 }}>{tr("Ispunio/la na jeziku:")} {c.lang === "CS" ? "CZ" : "UA"}</div>
                 </div>
-                <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 12 }}>
-                  {contactLinks(c).map(([icon, label, href]) => (
-                    <a key={label} href={href} target={href.startsWith("http") ? "_blank" : undefined} rel="noreferrer"
-                      style={{ border: `1px solid ${S.line}`, borderRadius: 10, padding: "7px 11px", fontSize: 13, fontWeight: 600, color: S.ink, textDecoration: "none", background: "#fff" }}>{icon} {label}</a>
-                  ))}
+
+                <div style={{ background: S.bg, borderRadius: 10, padding: "9px 11px", fontSize: 13, marginBottom: 8, lineHeight: 1.45 }}>
+                  <div style={{ fontSize: 11.5, fontWeight: 700, color: S.sub, marginBottom: 3 }}>{tr("Prva poruka (možeš je promijeniti prije slanja)")}</div>
+                  {msg}
                 </div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 12 }}>
+                  {contactLinks(c, msg).map((l) => (
+                    <a key={l.label} href={l.href} target={l.href.startsWith("http") ? "_blank" : undefined} rel="noreferrer"
+                      onClick={() => { if (l.copy) copy(l.copy, `v-${c.id}`); if (c.status === "novi" && l.href !== `tel:${digitsPhone(c.phone)}`) setStatus(c, "kontaktiran"); }}
+                      style={{ border: `1px solid ${S.line}`, borderRadius: 10, padding: "7px 11px", fontSize: 13, fontWeight: 600, color: S.ink, textDecoration: "none", background: "#fff" }}>{l.icon} {l.label}</a>
+                  ))}
+                  {copied === `v-${c.id}` && <span style={{ fontSize: 12.5, color: S.green, alignSelf: "center" }}>{tr("Poruka kopirana, zalijepi je u Viber.")}</span>}
+                </div>
+
                 <Field label={tr("Status")}>
                   <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
                     {CAND_STATUS.map((s) => (
@@ -1873,8 +1967,10 @@ function CandidatesPanel({ data, api }) {
                     onBlur={() => note !== (c.admin_note || "") && update(c, { admin_note: note })}
                     placeholder={tr("Npr. razgovor u četvrtak 10h, govori češki…")} style={{ width: "100%", minHeight: 60, padding: "8px 10px", boxSizing: "border-box" }} />
                 </Field>
-                <div style={{ display: "flex", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
-                  {c.status === "poceo" && <div style={{ fontSize: 12.5, color: S.sub, flex: 1 }}>{tr("Kad počne raditi, dodaj ga kao radnika u kartici Radnici.")}</div>}
+                <div style={{ display: "flex", justifyContent: "space-between", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+                  {linked ? <span style={{ fontSize: 13, color: S.green, fontWeight: 600 }}>✓ {tr("Radnik:")} {linked.name}</span>
+                    : asWorker ? <span style={{ fontSize: 12.5, color: S.sub }}>{tr("Ovaj broj već ima radnik")} {asWorker.name}.</span>
+                    : <Btn small onClick={() => toWorker(c)}>{tr("➕ Prebaci u radnike")}</Btn>}
                   {api.admin && <Btn small kind="danger" onClick={() => remove(c)}>{tr("Obriši prijavu")}</Btn>}
                 </div>
               </div>
@@ -1913,7 +2009,7 @@ const adminBadge = (data, id) => id === "candidates" ? (data.newCandidates || 0)
 const monthLabel = (mo) => { if (!mo) return ""; const [y, m] = mo.split("-").map(Number); return `${String(m).padStart(2, "0")}/${y}`; };
 const monthLong = (mo) => { if (!mo) return ""; const [y, m] = mo.split("-").map(Number); return `${mName(m - 1)} ${y}.`; };
 // ukrajinski ima ista pravila množine (1 / 2–4 / 5+), pa se samo zamijene riječi
-const PLURAL_UK = { osoba: ["особа", "особи", "осіб"], koverta: ["конверт", "конверти", "конвертів"], mjesec: ["місяць", "місяці", "місяців"], "otvoren mjesec": ["відкритий місяць", "відкриті місяці", "відкритих місяців"] };
+const PLURAL_UK = { dan: ["день", "дні", "днів"], osoba: ["особа", "особи", "осіб"], koverta: ["конверт", "конверти", "конвертів"], mjesec: ["місяць", "місяці", "місяців"], "otvoren mjesec": ["відкритий місяць", "відкриті місяці", "відкритих місяців"] };
 const plural = (n, one, few, many) => { const m10 = n % 10, m100 = n % 100; const f = CUR_LANG === "UK" && PLURAL_UK[one]; if (f) [one, few, many] = f; return `${n} ${m10 === 1 && m100 !== 11 ? one : m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14) ? few : many}`; };
 function UnpaidPanel({ data, api, onOpenWorker }) {
   const [rows, setRows] = useState(null);      // koverte sa stanjem (view unpaid_wages_balance)
@@ -3452,10 +3548,11 @@ function TodayTab({ data, api, admin, onOpenWorker, onOpenObject, openAdminPanel
       )}
 
       {((admin && data.newCandidates > 0) || (!admin && api.recruiter)) && (
-        <TodaySection icon="🧑‍🍳" title={tr("Kandidati")} tone={data.newCandidates ? "amber" : "blue"} count={data.newCandidates ? `${data.newCandidates} ${tr("novih")}` : undefined}
+        <TodaySection icon="🧑‍🍳" title={tr("Kandidati")} tone={data.staleCandidates ? "red" : data.newCandidates ? "amber" : "blue"} count={data.newCandidates ? `${data.newCandidates} ${tr("novih")}` : undefined}
           action={<Btn small onClick={() => (admin ? openAdminPanel("candidates") : setShowCands((v) => !v))} style={{ width: "100%" }}>
             {!admin && showCands ? tr("Zatvori") : tr("Otvori kandidate")}</Btn>}>
           <div style={{ fontSize: 13.5 }}>{data.newCandidates ? tr("Nove prijave s prijavnice čekaju da im se javiš.") : tr("Nema novih prijava.")}</div>
+          {data.staleCandidates > 0 && <div style={{ fontSize: 13.5, color: S.red, fontWeight: 600, marginTop: 4 }}>⏰ {data.staleCandidates} {tr("čeka dulje od 24 h — javi im se danas.")}</div>}
         </TodaySection>
       )}
       {!admin && api.recruiter && showCands && <CandidatesPanel data={data} api={api} />}
