@@ -6,6 +6,7 @@ import { supabase } from "./supabase.js";
 import { exportUnpaidXlsx } from "./unpaidExport.js";
 import { downloadStyledXlsx, XC, xDate } from "./xlsxStyled.js";
 import { TR_UK } from "./i18n_uk.js";
+import { POSITIONS, RESIDENCE, MESSENGERS, START, HEARD, CAND_STATUS, labelOf } from "./candidates.js";
 import { FIN_CATS, CZ_CIT, CZ_DIVIDEND, catLabel, catKind, suggestCategory, ruleMatches, txText, fold, decodeText, parseCsv, findHeader, guessMapping, FIELDS, rowsToTxs, finYear, taxEstimate, vatOf, toCzkAmt, payrollLevies, citAdvances, CZ_SOC_FIRM, CZ_SOC_EMP, CZ_ZDR_FIRM, CZ_ZDR_EMP } from "./finance.js";
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorkerUrl;
@@ -679,6 +680,12 @@ async function fetchAll(isAdmin) {
 
   let billing = [], audit = [], trash = [], members = [], invoicePayments = [], settings = {}, objectInvoices = [], payrollNotes = [], positionBilling = [], reminders = [], loginLog = [], errorLog = [], commissionRates = [], commissionPayouts = [], brigadeCosts = [], purchaseInvoices = [], monthClose = [], cashAdvances = [];
   let bankMap = {};
+  // nove prijave kandidata (RLS: vidi samo admin ili regruter, ostali dobiju 0)
+  let newCandidates = 0;
+  {
+    const cn = await supabase.from("candidates").select("id", { count: "exact", head: true }).eq("status", "novi");
+    newCandidates = cn.error ? 0 : (cn.count || 0);
+  }
   if (isAdmin) {
     const wb = await supabase.from("worker_bank").select("worker_id, bank_account");
     if (!wb.error) (wb.data || []).forEach((r) => { bankMap[r.worker_id] = r.bank_account || ""; });
@@ -783,6 +790,7 @@ async function fetchAll(isAdmin) {
     loginLog: loginLog.map((l) => ({ id: l.id, userName: l.user_name || "", at: l.at, userAgent: l.user_agent || "" })),
     errorLog: errorLog.map((e) => ({ id: e.id, userName: e.user_name || "", message: e.message, url: e.url || "", at: e.at })),
     settings: settings || {},
+    newCandidates,
     profiles: profiles.data || [],
     objectMembers: members,
     audit, trash,
@@ -943,7 +951,7 @@ export default function App() {
   };
 
   const api = {
-    admin, uid: () => session?.user?.id, settings: data?.settings || {}, t, lang, setLang,
+    admin, recruiter: admin || !!profile?.can_recruit, uid: () => session?.user?.id, settings: data?.settings || {}, t, lang, setLang,
     run: (fn, auditText) => act(fn, auditText),
     addWorker: (f) => act(async () => {
       const name = normalizeName(f.name);
@@ -1428,7 +1436,7 @@ function Header({ profile, admin, onLogout, lang, setLang, t, title, data, onAdm
                     onMouseEnter={(e) => (e.currentTarget.style.background = S.bg)} onMouseLeave={(e) => (e.currentTarget.style.background = "none")}>
                     <span style={{ width: 22, textAlign: "center" }}>{icon}</span>
                     <span style={{ flex: 1 }}>{label}</span>
-                    {n > 0 && <span style={{ background: id === "approvals" ? S.amberSoft : "#EEF0ED", color: id === "approvals" ? S.amber : S.sub, borderRadius: 999, fontSize: 12, fontWeight: 700, padding: "1px 8px" }}>{n}</span>}
+                    {n > 0 && <span style={{ background: id === "approvals" || id === "candidates" ? S.amberSoft : "#EEF0ED", color: id === "approvals" || id === "candidates" ? S.amber : S.sub, borderRadius: 999, fontSize: 12, fontWeight: 700, padding: "1px 8px" }}>{n}</span>}
                   </button>
                 );
               })}
@@ -1699,12 +1707,204 @@ function exportAllData(data) {
 /* ================================================================== */
 /*  ADMIN PANELI                                                       */
 /* ================================================================== */
+/* ================================================================== */
+/*  KANDIDATI — prijave s javne prijavnice /prijava                   */
+/*  Tablica: candidates (unos kroz funkciju submit_application)       */
+/* ================================================================== */
+const LL = () => (CUR_LANG === "UK" ? "UK" : "HR");
+const digitsPhone = (p) => (p || "").replace(/[^0-9+]/g, "");
+const contactLinks = (c) => {
+  const ph = digitsPhone(c.phone);
+  const intl = ph.replace(/^\+/, "");
+  return [
+    ["📞", tr("Nazovi"), `tel:${ph}`],
+    ["💬", "Viber", `viber://chat?number=%2B${intl}`],
+    ["✈️", "Telegram", `https://t.me/+${intl}`],
+    ["🟢", "WhatsApp", `https://wa.me/${intl}`],
+  ];
+};
+function CandidatesPanel({ data, api }) {
+  const [rows, setRows] = useState(null);
+  const [loadErr, setLoadErr] = useState("");
+  const [filter, setFilter] = useState("aktivni"); // aktivni | svi | <status>
+  const [pos, setPos] = useState("");
+  const [open, setOpen] = useState(null);
+  const [notes, setNotes] = useState({});
+  const [copied, setCopied] = useState("");
+  const formUrl = `${window.location.origin}/prijava`;
+
+  const load = useCallback(async () => {
+    const { data: d, error } = await supabase.from("candidates").select("*").order("created_at", { ascending: false }).limit(1000);
+    if (error) { setLoadErr(error.message); return; }
+    setLoadErr(""); setRows(d || []);
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  const objects = sortedObjects(data.objects.filter((o) => !o.archived));
+  const objName = (id) => data.objects.find((o) => o.id === id)?.name || "";
+  const update = async (c, patch, audit) => {
+    const ok = await api.run(async () => {
+      const { error } = await supabase.from("candidates").update({ ...patch, updated_by: api.uid() }).eq("id", c.id);
+      if (error) throw error;
+    }, audit);
+    if (ok) setRows((prev) => prev.map((r) => (r.id === c.id ? { ...r, ...patch } : r)));
+  };
+  const setStatus = (c, status) => update(c, { status, status_changed_at: new Date().toISOString() },
+    `Kandidat ${c.full_name}: status → ${CAND_STATUS.find((s) => s.id === status)?.label || status}`);
+  const remove = async (c) => {
+    if (!window.confirm(tr("Trajno obrisati prijavu ovog kandidata?"))) return;
+    const ok = await api.run(async () => {
+      const { error } = await supabase.from("candidates").delete().eq("id", c.id);
+      if (error) throw error;
+    }, `Obrisana prijava kandidata: ${c.full_name}`);
+    if (ok) setRows((prev) => prev.filter((r) => r.id !== c.id));
+  };
+  const copy = (text, key) => {
+    navigator.clipboard?.writeText(text).then(() => { setCopied(key); setTimeout(() => setCopied(""), 1800); }).catch(() => {});
+  };
+
+  if (loadErr) return <Card style={{ marginTop: 8 }}><div style={{ color: S.red, fontSize: 13.5 }}>{tr("Greška: ")}{loadErr}</div></Card>;
+  if (!rows) return <Card style={{ marginTop: 8 }}><div style={{ color: S.sub, fontSize: 13.5 }}>{tr("Učitavam…")}</div></Card>;
+
+  const inactive = new Set(["poceo", "nije_prikladan", "nedostupan"]);
+  const list = rows.filter((c) => (filter === "svi" ? true : filter === "aktivni" ? !inactive.has(c.status) : c.status === filter))
+    .filter((c) => !pos || (c.positions || []).includes(pos));
+  const countBy = (st) => rows.filter((c) => c.status === st).length;
+  // odakle dolaze: oznaka iz linka (?z=) ili odgovor "odakle ste čuli"
+  const srcKey = (c) => c.source_tag || labelOf(HEARD, c.heard_from, LL()) || "—";
+  const srcStats = Object.entries(rows.reduce((m, c) => {
+    const k = srcKey(c); m[k] = m[k] || { n: 0, hired: 0 }; m[k].n++; if (c.status === "poceo") m[k].hired++; return m;
+  }, {})).sort((a, b) => b[1].n - a[1].n);
+
+  const chip = (active) => ({ border: `1px solid ${active ? S.green : S.line}`, background: active ? S.greenSoft : "#fff", color: active ? S.green : S.ink,
+    borderRadius: 999, padding: "5px 11px", fontSize: 12.5, fontWeight: active ? 700 : 500, cursor: "pointer" });
+
+  return (
+    <div style={{ marginTop: 8 }}>
+      <Card>
+        <div style={{ fontWeight: 700, marginBottom: 4 }}>{tr("🔗 Link za oglase")}</div>
+        <div style={{ fontSize: 13, color: S.sub, marginBottom: 8 }}>
+          {tr("Stavi ga u svaku objavu u FB i Viber grupama. Kandidat ispuni upitnik na ukrajinskom (ili češkom) i prijava se pojavi ovdje.")}
+        </div>
+        <div style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 8 }}>
+          <code style={{ flex: 1, background: S.bg, borderRadius: 8, padding: "8px 10px", fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{formUrl}</code>
+          <Btn small onClick={() => copy(formUrl, "main")}>{copied === "main" ? tr("Kopirano ✓") : tr("Kopiraj")}</Btn>
+        </div>
+        <div style={{ fontSize: 12.5, color: S.sub }}>
+          {tr("Da vidiš iz koje grupe dolaze ljudi, dodaj oznaku na kraj linka, npr.")} <code>{formUrl}?z=fb-ukrajinci-praha</code>{" "}
+          {tr("ili")} <code>?z=viber-robota</code>. {tr("Za češku verziju dodaj")} <code>?l=cs</code>.
+        </div>
+      </Card>
+
+      {rows.length > 0 && (
+        <Card>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 10 }}>
+            <button style={chip(filter === "aktivni")} onClick={() => setFilter("aktivni")}>{tr("Otvoreni")} ({rows.filter((c) => !inactive.has(c.status)).length})</button>
+            {CAND_STATUS.map((s) => (
+              <button key={s.id} style={chip(filter === s.id)} onClick={() => setFilter(s.id)}>{tr(s.label)} ({countBy(s.id)})</button>
+            ))}
+            <button style={chip(filter === "svi")} onClick={() => setFilter("svi")}>{tr("Svi")} ({rows.length})</button>
+          </div>
+          <select value={pos} onChange={(e) => setPos(e.target.value)} style={{ width: "100%", padding: "8px 10px" }}>
+            <option value="">{tr("Sve pozicije")}</option>
+            {POSITIONS.map((p) => <option key={p.id} value={p.id}>{p[LL()]} ({rows.filter((c) => (c.positions || []).includes(p.id)).length})</option>)}
+          </select>
+        </Card>
+      )}
+
+      {rows.length === 0 && <Card><Empty text={tr("Još nema prijava. Objavi link u grupama i prijave će se pojaviti ovdje.")} /></Card>}
+      {rows.length > 0 && list.length === 0 && <Card><Empty text={tr("Nema kandidata za ovaj filter.")} /></Card>}
+
+      {list.map((c) => {
+        const st = CAND_STATUS.find((s) => s.id === c.status) || CAND_STATUS[0];
+        const isOpen = open === c.id;
+        const note = notes[c.id] ?? c.admin_note ?? "";
+        return (
+          <Card key={c.id} style={{ padding: 12 }}>
+            <div onClick={() => setOpen(isOpen ? null : c.id)} style={{ cursor: "pointer" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "flex-start" }}>
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontWeight: 700, fontSize: 15 }}>{c.full_name}</div>
+                  <div style={{ fontSize: 12.5, color: S.sub }}>{fmtDate(c.created_at.slice(0, 10))} · {c.phone}{c.city ? ` · ${c.city}` : ""}</div>
+                </div>
+                <span style={{ background: st.bg, color: st.color, borderRadius: 999, padding: "3px 9px", fontSize: 12, fontWeight: 700, whiteSpace: "nowrap" }}>{tr(st.label)}</span>
+              </div>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 5, marginTop: 7 }}>
+                {(c.positions || []).map((p) => (
+                  <span key={p} style={{ background: POSITIONS.find((x) => x.id === p)?.focus ? S.amberSoft : S.bg, color: S.ink, borderRadius: 6, padding: "2px 7px", fontSize: 12 }}>{labelOf(POSITIONS, p, LL())}</span>
+                ))}
+                {c.object_id && <span style={{ background: S.greenSoft, color: S.green, borderRadius: 6, padding: "2px 7px", fontSize: 12, fontWeight: 600 }}>🏨 {objName(c.object_id)}</span>}
+              </div>
+            </div>
+
+            {isOpen && (
+              <div style={{ marginTop: 10, borderTop: `1px solid ${S.line}`, paddingTop: 10 }}>
+                <div style={{ display: "grid", gap: 4, fontSize: 13.5, marginBottom: 10 }}>
+                  {c.messenger && <div>{tr("Kontakt:")} <b>{labelOf(MESSENGERS, c.messenger, LL())}</b></div>}
+                  {c.residence && <div>{tr("Boravak:")} <b>{labelOf(RESIDENCE, c.residence, LL())}</b></div>}
+                  {c.start_from && <div>{tr("Može početi:")} <b>{labelOf(START, c.start_from, LL())}</b></div>}
+                  {c.experience && <div>{tr("Iskustvo:")} {c.experience}</div>}
+                  <div>{tr("Izvor:")} <b>{labelOf(HEARD, c.heard_from, LL()) || "—"}</b>{c.source_tag ? <> · {tr("link")} <code>{c.source_tag}</code></> : null}{c.referrer ? <> · {tr("preporučio/la")} <b>{c.referrer}</b></> : null}</div>
+                  <div style={{ color: S.sub, fontSize: 12 }}>{tr("Ispunio/la na jeziku:")} {c.lang === "CS" ? "CZ" : "UA"}</div>
+                </div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 12 }}>
+                  {contactLinks(c).map(([icon, label, href]) => (
+                    <a key={label} href={href} target={href.startsWith("http") ? "_blank" : undefined} rel="noreferrer"
+                      style={{ border: `1px solid ${S.line}`, borderRadius: 10, padding: "7px 11px", fontSize: 13, fontWeight: 600, color: S.ink, textDecoration: "none", background: "#fff" }}>{icon} {label}</a>
+                  ))}
+                </div>
+                <Field label={tr("Status")}>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                    {CAND_STATUS.map((s) => (
+                      <button key={s.id} onClick={() => c.status !== s.id && setStatus(c, s.id)}
+                        style={{ border: `1px solid ${c.status === s.id ? s.color : S.line}`, background: c.status === s.id ? s.bg : "#fff", color: c.status === s.id ? s.color : S.ink,
+                          borderRadius: 999, padding: "6px 11px", fontSize: 12.5, fontWeight: c.status === s.id ? 700 : 500, cursor: "pointer" }}>{tr(s.label)}</button>
+                    ))}
+                  </div>
+                </Field>
+                <Field label={tr("Hotel")}>
+                  <select value={c.object_id || ""} onChange={(e) => update(c, { object_id: e.target.value || null }, `Kandidat ${c.full_name}: hotel → ${objName(e.target.value) || "—"}`)} style={{ width: "100%", padding: "8px 10px" }}>
+                    <option value="">{tr("— nije dodijeljen —")}</option>
+                    {objects.map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}
+                  </select>
+                </Field>
+                <Field label={tr("Bilješka")}>
+                  <textarea value={note} onChange={(e) => setNotes((p) => ({ ...p, [c.id]: e.target.value }))}
+                    onBlur={() => note !== (c.admin_note || "") && update(c, { admin_note: note })}
+                    placeholder={tr("Npr. razgovor u četvrtak 10h, govori češki…")} style={{ width: "100%", minHeight: 60, padding: "8px 10px", boxSizing: "border-box" }} />
+                </Field>
+                <div style={{ display: "flex", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
+                  {c.status === "poceo" && <div style={{ fontSize: 12.5, color: S.sub, flex: 1 }}>{tr("Kad počne raditi, dodaj ga kao radnika u kartici Radnici.")}</div>}
+                  {api.admin && <Btn small kind="danger" onClick={() => remove(c)}>{tr("Obriši prijavu")}</Btn>}
+                </div>
+              </div>
+            )}
+          </Card>
+        );
+      })}
+
+      {srcStats.length > 0 && (
+        <Card>
+          <div style={{ fontWeight: 700, marginBottom: 8 }}>{tr("📊 Odakle dolaze kandidati")}</div>
+          <div style={{ display: "grid", gap: 4, fontSize: 13.5 }}>
+            {srcStats.map(([k, v]) => (
+              <div key={k} style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
+                <span>{k}</span>
+                <span style={{ color: S.sub }}>{v.n} {tr("prijava")} · <b style={{ color: v.hired ? S.green : S.sub }}>{v.hired} {tr("počelo")}</b></span>
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
+    </div>
+  );
+}
 const ADMIN_MENU = [
-  ["approvals", "⏳", "Odobravanje isplata"], ["cash", "💵", "Gotovina kod koordinatora"], ["finance", "💼", "Financije (banka i porezi)"], ["unpaid", "💰", "Neisplaćeno (dugovi radnicima)"], ["vat", "🧾", "DPH"], ["users", "👥", "Korisnici i provizije"],
+  ["candidates", "🧑‍🍳", "Kandidati (prijave)"], ["approvals", "⏳", "Odobravanje isplata"], ["cash", "💵", "Gotovina kod koordinatora"], ["finance", "💼", "Financije (banka i porezi)"], ["unpaid", "💰", "Neisplaćeno (dugovi radnicima)"], ["vat", "🧾", "DPH"], ["users", "👥", "Korisnici i provizije"],
   ["firm", "🏢", "Podaci firme i postavke"], ["audit", "📜", "Povijest radnji"], ["logins", "🔐", "Prijave"],
   ["errors", "🐛", "Greške aplikacije"], ["trash", "🗑", "Koš (obrisano)"],
 ];
-const adminBadge = (data, id) => id === "approvals" ? (data.payouts || []).filter((p) => !p.approved).length
+const adminBadge = (data, id) => id === "candidates" ? (data.newCandidates || 0) : id === "approvals" ? (data.payouts || []).filter((p) => !p.approved).length
   : id === "errors" ? (data.errorLog || []).length : id === "trash" ? data.trash.length : 0;
 /* ================================================================== */
 /*  NEISPLAĆENO — stare koverte i djelomične isplate                   */
@@ -2782,6 +2982,7 @@ function AdminPanels({ data, api, panel, setPanel, onOpenWorker, onOpenProfile }
       )}
 
       {panel === "unpaid" && <UnpaidPanel data={data} api={api} onOpenWorker={onOpenWorker} />}
+      {panel === "candidates" && <CandidatesPanel data={data} api={api} />}
       {panel === "finance" && <FinancePanel data={data} api={api} />}
       {panel === "cash" && <CashPanel data={data} api={api} />}
 
@@ -3154,6 +3355,7 @@ function TodayRow({ left, right, onClick, sub }) {
 
 function TodayTab({ data, api, admin, onOpenWorker, onOpenObject, openAdminPanel, goTab }) {
   const [closing, setClosing] = useState(false);
+  const [showCands, setShowCands] = useState(false);
   const [remText, setRemText] = useState("");
   const [remDate, setRemDate] = useState("");
   const addRem = async () => { if (!remText.trim()) return; const ok = await api.addReminder(remText.trim(), remDate); if (ok) { setRemText(""); setRemDate(""); } };
@@ -3248,6 +3450,15 @@ function TodayTab({ data, api, admin, onOpenWorker, onOpenObject, openAdminPanel
           </div>
         </TodaySection>
       )}
+
+      {((admin && data.newCandidates > 0) || (!admin && api.recruiter)) && (
+        <TodaySection icon="🧑‍🍳" title={tr("Kandidati")} tone={data.newCandidates ? "amber" : "blue"} count={data.newCandidates ? `${data.newCandidates} ${tr("novih")}` : undefined}
+          action={<Btn small onClick={() => (admin ? openAdminPanel("candidates") : setShowCands((v) => !v))} style={{ width: "100%" }}>
+            {!admin && showCands ? tr("Zatvori") : tr("Otvori kandidate")}</Btn>}>
+          <div style={{ fontSize: 13.5 }}>{data.newCandidates ? tr("Nove prijave s prijavnice čekaju da im se javiš.") : tr("Nema novih prijava.")}</div>
+        </TodaySection>
+      )}
+      {!admin && api.recruiter && showCands && <CandidatesPanel data={data} api={api} />}
 
       {admin && (pending.length > 0 || notProposedPrev > 0 || daysToPayday !== null) && (
         <TodaySection icon="💶" title={tr("Isplate")} tone={pending.length ? "amber" : "blue"} count={pending.length ? `${pending.length} čeka` : undefined}

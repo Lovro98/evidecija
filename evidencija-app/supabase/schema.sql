@@ -727,3 +727,85 @@ create policy "btx_admin_all" on bank_transactions for all to authenticated
 drop policy if exists "brule_admin_all" on bank_rules;
 create policy "brule_admin_all" on bank_rules for all to authenticated
   using (is_admin()) with check (is_admin());
+
+-- ============================================================
+-- KANDIDATI — javna prijavnica /prijava
+-- Javni unos SAMO kroz funkciju submit_application (provjera + limit protiv spama).
+-- Čitaju i mijenjaju admin i regruteri (profiles.can_recruit), briše samo admin.
+-- ============================================================
+create table if not exists public.candidates (
+  id uuid primary key default gen_random_uuid(),
+  created_at timestamptz not null default now(),
+  full_name text not null check (char_length(full_name) between 2 and 120),
+  phone text not null check (char_length(phone) between 6 and 30),
+  messenger text not null default '' check (char_length(messenger) <= 20),
+  positions text[] not null default '{}' check (cardinality(positions) <= 12),
+  experience text not null default '' check (char_length(experience) <= 1000),
+  residence text not null default '' check (char_length(residence) <= 40),
+  city text not null default '' check (char_length(city) <= 80),
+  start_from text not null default '' check (char_length(start_from) <= 40),
+  heard_from text not null default '' check (char_length(heard_from) <= 40),
+  referrer text not null default '' check (char_length(referrer) <= 120),
+  source_tag text not null default '' check (char_length(source_tag) <= 60),
+  lang text not null default 'UK' check (char_length(lang) <= 5),
+  status text not null default 'novi' check (status in ('novi','kontaktiran','razgovor','poceo','nije_prikladan','nedostupan')),
+  object_id uuid references public.objects on delete set null,
+  admin_note text not null default '' check (char_length(admin_note) <= 2000),
+  status_changed_at timestamptz,
+  updated_by uuid references public.profiles on delete set null
+);
+create index if not exists candidates_created_idx on public.candidates (created_at desc);
+create index if not exists candidates_phone_idx on public.candidates (phone);
+alter table public.candidates enable row level security;
+-- regruter (profiles.can_recruit) vidi i obrađuje prijave; briše samo admin
+alter table public.profiles add column if not exists can_recruit boolean not null default false;
+create or replace function public.can_recruit() returns boolean
+language sql stable security definer set search_path = public as $$
+  select exists(select 1 from profiles where id = auth.uid() and (role = 'admin' or can_recruit));
+$$;
+drop policy if exists "cand_admin_select" on public.candidates;
+drop policy if exists "cand_admin_update" on public.candidates;
+drop policy if exists "cand_recruit_select" on public.candidates;
+drop policy if exists "cand_recruit_update" on public.candidates;
+drop policy if exists "cand_admin_delete" on public.candidates;
+create policy "cand_recruit_select" on public.candidates for select to authenticated using (public.can_recruit());
+create policy "cand_recruit_update" on public.candidates for update to authenticated using (public.can_recruit()) with check (public.can_recruit());
+create policy "cand_admin_delete" on public.candidates for delete to authenticated using (public.is_admin());
+revoke all on public.candidates from anon;
+
+create or replace function public.submit_application(
+  p_full_name text, p_phone text, p_messenger text, p_positions text[],
+  p_experience text, p_residence text, p_city text, p_start_from text,
+  p_heard_from text, p_referrer text, p_source_tag text, p_lang text
+) returns boolean
+language plpgsql security definer set search_path = public as $$
+declare
+  v_phone text := regexp_replace(coalesce(p_phone,''), '[^0-9+]', '', 'g');
+  v_name text := btrim(coalesce(p_full_name,''));
+begin
+  if char_length(v_name) < 2 or char_length(v_name) > 120 then raise exception 'invalid_name'; end if;
+  if char_length(v_phone) < 6 or char_length(v_phone) > 20 then raise exception 'invalid_phone'; end if;
+  if (select count(*) from candidates where phone = v_phone and created_at > now() - interval '24 hours') >= 3 then
+    return true;
+  end if;
+  if (select count(*) from candidates where created_at > now() - interval '1 hour') >= 60 then
+    raise exception 'too_many';
+  end if;
+  insert into candidates (full_name, phone, messenger, positions, experience, residence, city, start_from, heard_from, referrer, source_tag, lang)
+  values (
+    v_name, v_phone,
+    left(btrim(coalesce(p_messenger,'')), 20),
+    coalesce((select array_agg(left(x, 40)) from (select unnest(p_positions) x limit 12) s), '{}'),
+    left(btrim(coalesce(p_experience,'')), 1000),
+    left(btrim(coalesce(p_residence,'')), 40),
+    left(btrim(coalesce(p_city,'')), 80),
+    left(btrim(coalesce(p_start_from,'')), 40),
+    left(btrim(coalesce(p_heard_from,'')), 40),
+    left(btrim(coalesce(p_referrer,'')), 120),
+    left(btrim(coalesce(p_source_tag,'')), 60),
+    left(coalesce(p_lang,'UK'), 5)
+  );
+  return true;
+end $$;
+revoke all on function public.submit_application(text,text,text,text[],text,text,text,text,text,text,text,text) from public;
+grant execute on function public.submit_application(text,text,text,text[],text,text,text,text,text,text,text,text) to anon, authenticated;

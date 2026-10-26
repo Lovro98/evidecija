@@ -1,0 +1,5 @@
+{
+  "rewrites": [
+    { "source": "/prijava", "destination": "/prijava/index.html" }
+  ]
+}
