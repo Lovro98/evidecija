@@ -818,5 +818,6 @@ export const TR_UK = {
  "Obriši tekst": "Видалити текст",
  "✏️ Uredi": "✏️ Редагувати",
  "Obrisati ovaj tekst oglasa?": "Видалити цей текст оголошення?",
- "Češka verzija:": "Чеська версія:"
+ "Češka verzija:": "Чеська версія:",
+ "Regruter — vidi kandidate i tekstove oglasa": "Рекрутер — бачить кандидатів і тексти оголошень"
 };

@@ -1197,6 +1197,7 @@ export default function App() {
     },
     restore: (t) => act(() => upd(t.table, t.row.id, { deleted_at: null }), `Vratio iz koša: ${t.label}`),
     setRole: (p, role) => act(() => upd("profiles", p.id, { role }), `Promijenio ulogu: ${p.name} → ${role === "admin" ? "admin" : "zaposlenik"}`),
+    setRecruiter: (p, on) => act(() => upd("profiles", p.id, { can_recruit: on }), `${on ? "Dao" : "Maknuo"} pristup kandidatima: ${p.name}`),
     setCommission: (p, rate, cur) => act(() => upd("profiles", p.id, { hourly_commission: rate, commission_currency: cur || "EUR" }),
       `Postavio zadanu proviziju po satu za ${p.name}: ${money(rate, cur)}/h`),
     setCommissionRate: (o, p, rate, cur) => act(() => supabase.from("commission_rates")
@@ -3199,6 +3200,12 @@ function AdminPanels({ data, api, panel, setPanel, onOpenWorker, onOpenProfile }
                     <option value="admin">{tr("Admin")}</option>
                   </select>
                 </div>
+                {p.role !== "admin" && (
+                  <label style={{ display: "flex", alignItems: "center", gap: 7, fontSize: 13, marginTop: 6, cursor: "pointer" }}>
+                    <input type="checkbox" checked={!!p.can_recruit} onChange={(e) => api.setRecruiter(p, e.target.checked)} style={{ width: 18, height: 18 }} />
+                    🧑‍🍳 {tr("Regruter — vidi kandidate i tekstove oglasa")}
+                  </label>
+                )}
                 {p.role !== "admin" && (
                   <div style={{ marginTop: 6 }}>
                     <div style={{ fontSize: 11.5, color: S.sub, marginBottom: 3 }}>{tr("Zadana provizija po satu (za objekte bez posebne cijene ispod)")}</div>
