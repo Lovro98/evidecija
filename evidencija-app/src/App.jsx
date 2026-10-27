@@ -1188,6 +1188,17 @@ export default function App() {
       source_czk: note.sourceCzk, note: note.note || "", created_by: session.user.id,
     }), `Dodao mzdy napomenu: ${wName} ${money(note.amount, note.currency)} (${note.month})`),
     delPayrollNote: (note, wName) => act(() => softDel("payroll_notes", note.id), `Obrisao mzdy napomenu: ${wName} (${note.month})`),
+    // ručni soc.-zdr. za radnika i mjesec: postojeća napomena (i iz Mzdy PDF-a) se zamjenjuje
+    setPayrollNote: (note, wName) => act(async () => {
+      guardPaid(note.workerId, note.month);
+      const old = (data.payrollNotes || []).filter((n) => n.workerId === note.workerId && n.month === note.month);
+      if (old.length) {
+        const { error } = await supabase.from("payroll_notes").update({ deleted_at: new Date().toISOString() }).in("id", old.map((n) => n.id));
+        if (error) throw error;
+      }
+      await ins("payroll_notes", { worker_id: note.workerId, month: note.month, amount: note.amount, currency: note.currency,
+        source_czk: note.sourceCzk, note: note.note || "", created_by: session.user.id });
+    }, `Upisao soc.-zdr.: ${wName} −${money(note.amount, note.currency)} (${note.month})`),
     saveSettings: (s) => {
       const old = data.settings || {};
       const labels = { company_name: "naziv", address: "adresa", oib: "OIB", iban: "IBAN", czk_rate: "tečaj", czk_rate_auto: "automatski tečaj ČNB", weekend_pct: "dodatak vikend", holiday_pct: "dodatak praznik", expiry_warn_days: "dani upozorenja", payday_day: "dan isplate", payday_reminder_days: "dani podsjetnika" };
@@ -7119,6 +7130,58 @@ function calcRows(data, filterFn, objFilters) {
   }).filter((r) => (hasFilter ? r.hours > 0 : (r.hours > 0 || r.pays.length > 0)));
 }
 
+/* dodaci i odbici za jednog radnika u mjesecu (otvara se klikom na osobu u Obračunu) */
+const ADJ_KINDS = [
+  { id: "soczdr", label: "Soc.-zdr. (−)" },
+  { id: "bonus", label: "Dodatak (+), npr. jelo" },
+  { id: "avans", label: "Avans (−)" },
+  { id: "odbitak", label: "Drugi odbitak (−)" },
+];
+function AdjustForm({ r, month, api, czkRate, hasNote }) {
+  const gc = wCur(r.w);
+  const [f, setF] = useState({ kind: "bonus", amount: "", cur: gc, note: "" });
+  const [err, setErr] = useState("");
+  const [busy, setBusy] = useState(false);
+  const save = async () => {
+    const amount = round2(parseNum(f.amount) || 0);
+    if (!(amount > 0)) { setErr(tr("Upiši iznos veći od 0.")); return; }
+    setErr(""); setBusy(true);
+    const [yy, mm] = month.split("-").map(Number);
+    const last = `${month}-${String(new Date(yy, mm, 0).getDate()).padStart(2, "0")}`;
+    const date = todayISO().startsWith(month) ? todayISO() : last;
+    let ok;
+    if (f.kind === "soczdr") {
+      ok = await api.setPayrollNote({ workerId: r.w.id, month, amount, currency: f.cur,
+        sourceCzk: f.cur === "CZK" ? amount : round2(amount * czkRate), note: f.note.trim() || "soc.-zdr." }, r.w.name);
+    } else {
+      const type = f.kind === "odbitak" ? "ostalo" : f.kind;
+      ok = await api.addPayment({ workerId: r.w.id, objectId: "", date, type, amount, currency: f.cur,
+        note: f.note.trim(), deduct: type !== "bonus" }, r.w.name);
+    }
+    setBusy(false);
+    if (ok !== false) setF({ ...f, amount: "", note: "" });
+  };
+  return (
+    <div style={{ background: S.bg, borderRadius: 10, padding: "10px 12px", marginTop: 8 }}>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+        <select value={f.kind} onChange={(e) => setF({ ...f, kind: e.target.value })} style={{ flex: "2 1 170px" }}>
+          {ADJ_KINDS.map((k) => <option key={k.id} value={k.id}>{tr(k.label)}</option>)}
+        </select>
+        <input inputMode="decimal" value={f.amount} onChange={(e) => setF({ ...f, amount: e.target.value })} placeholder={tr("Iznos")} style={{ flex: "1 1 90px" }} />
+        <select value={f.cur} onChange={(e) => setF({ ...f, cur: e.target.value })} style={{ flex: "0 0 70px" }}>
+          <option value="EUR">€</option><option value="CZK">Kč</option>
+        </select>
+      </div>
+      <div style={{ display: "flex", gap: 8, marginTop: 8, flexWrap: "wrap" }}>
+        <input value={f.note} onChange={(e) => setF({ ...f, note: e.target.value })} placeholder={f.kind === "bonus" ? tr("Napomena, npr. jelo") : tr("Napomena (nije obavezno)")} style={{ flex: "1 1 170px" }} />
+        <Btn small onClick={save} disabled={busy}>{busy ? tr("Spremam…") : tr("＋ Dodaj")}</Btn>
+      </div>
+      {f.kind === "soczdr" && hasNote && <div style={{ fontSize: 11.5, color: S.amber, marginTop: 6 }}>{tr("Već postoji soc.-zdr. za ovaj mjesec — novi iznos ga zamjenjuje.")}</div>}
+      {err && <div style={{ fontSize: 12, color: S.red, marginTop: 6 }}>{err}</div>}
+    </div>
+  );
+}
+
 function ReportTab({ data, api, admin, onOpenWorker }) {
   const [view, setView] = useState("month"); // month | year
   const [month, setMonth] = useState(workMonthDefault());
@@ -7512,9 +7575,9 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
       const breakdown = [
         gc === "CZK" ? (r.grossKc ? "zarada " + czk(r.grossKc) : "") : (r.gross ? "zarada " + eur(r.gross) : ""),
         r.extraPay ? "vikend/praznik +" + eur(r.extraPay) : "", r.extraPayKc ? "vikend/praznik +" + czk(r.extraPayKc) : "",
-        r.bonuses ? "bonus +" + eur(r.bonuses) : "", r.czk.bonuses ? "bonus +" + czk(r.czk.bonuses) : "",
+        ...r.pays.filter((p) => p.type === "bonus").map((p) => `${p.note || "bonus"} +${money(p.amount, p.currency)}`),
         r.advances ? "avans −" + eur(r.advances) : "", r.czk.advances ? "avans −" + czk(r.czk.advances) : "",
-        r.deductions ? "odbici −" + eur(r.deductions) : "", r.czk.deductions ? "odbici −" + czk(r.czk.deductions) : "",
+        ...r.pays.filter((p) => p.type !== "avans" && p.type !== "bonus" && p.type !== "racun" && p.deduct).map((p) => `${p.note || "odbitak"} −${money(p.amount, p.currency)}`),
         r.bank ? "na račun −" + eur(r.bank) : "", r.czk.bank ? "na račun −" + czk(r.czk.bank) : "",
         note ? `${noteLabel} −${money(note.amount, note.currency)}` : "",
       ].filter(Boolean).join(" · ");
@@ -7907,7 +7970,7 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
                         ))}
                         {bd.note && (
                           <div className="num" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 13.5, padding: "4px 0", color: S.blue }}>
-                            <span>{bd.note.note || MZDY_NOTE_LABEL} {tr("(pola zbroja,")}{" "}{czk(bd.note.sourceCzk)})</span>
+                            <span>{bd.note.note || MZDY_NOTE_LABEL}{(bd.note.note || MZDY_NOTE_LABEL) === MZDY_NOTE_LABEL && <> {tr("(pola zbroja,")}{" "}{czk(bd.note.sourceCzk)})</>}</span>
                             <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
                               <span style={{ fontWeight: 600 }}>−{money(bd.note.amount, bd.note.currency)}</span>
                               <button onClick={() => api.delPayrollNote(bd.note, r.w.name)} style={{ background: "none", border: "none", color: S.red, fontSize: 15, cursor: "pointer", padding: 2 }}>✕</button>
@@ -7927,7 +7990,14 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
                             <span style={{ color: bd.netE < 0 || bd.netK < 0 ? S.red : S.green }}>{bd.netText}</span>
                           </div>
                         </div>
+                        {view === "month" && !(paid && paid.approved) && (
+                          <>
+                            <div style={head}>{tr("Dodaj dodatak ili odbitak za {0}", monthLong(month))}</div>
+                            <AdjustForm key={r.w.id + month} r={r} month={month} api={api} czkRate={czkRate} hasNote={!!bd.note} />
+                          </>
+                        )}
                         <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
+                          <Btn small kind="ghost" onClick={() => printEnvelopes([r])}>{tr("✉️ Koverta")}</Btn>
                           <Btn small kind="ghost" onClick={() => printPayslip(r)}>{tr("PDF obračun")}</Btn>
                           <Btn small kind="ghost" onClick={() => shareSummary(r)}>{tr("Podijeli sažetak")}</Btn>
                           <Btn small kind="ghost" onClick={() => setSigTarget({ id: r.w.id, name: r.w.name })} style={signatures[r.w.id] ? { color: S.green, borderColor: "#C5DED2" } : undefined}>

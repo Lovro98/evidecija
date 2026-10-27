@@ -819,5 +819,15 @@ export const TR_UK = {
  "✏️ Uredi": "✏️ Редагувати",
  "Obrisati ovaj tekst oglasa?": "Видалити цей текст оголошення?",
  "Češka verzija:": "Чеська версія:",
- "Regruter — vidi kandidate i tekstove oglasa": "Рекрутер — бачить кандидатів і тексти оголошень"
+ "Regruter — vidi kandidate i tekstove oglasa": "Рекрутер — бачить кандидатів і тексти оголошень",
+ "Soc.-zdr. (−)": "Соц.-мед. (−)",
+ "Dodatak (+), npr. jelo": "Доплата (+), напр. їжа",
+ "Avans (−)": "Аванс (−)",
+ "Drugi odbitak (−)": "Інше відрахування (−)",
+ "Upiši iznos veći od 0.": "Введіть суму більше 0.",
+ "Napomena, npr. jelo": "Примітка, напр. їжа",
+ "＋ Dodaj": "＋ Додати",
+ "Već postoji soc.-zdr. za ovaj mjesec — novi iznos ga zamjenjuje.": "Соц.-мед. за цей місяць уже є — нова сума його замінить.",
+ "Dodaj dodatak ili odbitak za {0}": "Додати доплату або відрахування за {0}",
+ "✉️ Koverta": "✉️ Конверт",
 };
