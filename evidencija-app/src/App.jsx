@@ -1783,19 +1783,35 @@ function MoreTab({ data, admin, recruiter, t, lang, setLang, goTab, openPanel, o
 
 // vrh početnog ekrana: pozdrav, glavne brojke, brze radnje (ili prvi koraci za novu firmu)
 function HomeTop({ data, admin, profile, goTab, openPanel, wide }) {
-  const mk = curMonth(), pk = prevMonthKey(mk);
+  const nowMk = curMonth();
+  const [mk, setMk] = useState(nowMk);
+  const shiftMonth = (d) => { const [y, m] = mk.split("-").map(Number); const t = new Date(y, m - 1 + d, 1); setMk(`${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, "0")}`); };
+  const pk = prevMonthKey(mk);
+  const isNow = mk === nowMk;
+  // povlačenje prstom lijevo/desno po brojkama mijenja mjesec
+  const touch = useRef(null);
+  const onTouchStart = (e) => { const t0 = e.touches[0]; touch.current = { x: t0.clientX, y: t0.clientY }; };
+  const onTouchEnd = (e) => {
+    if (!touch.current) return;
+    const t1 = e.changedTouches[0], dx = t1.clientX - touch.current.x, dy = t1.clientY - touch.current.y;
+    touch.current = null;
+    if (Math.abs(dx) > 50 && Math.abs(dx) > Math.abs(dy) * 1.5) shiftMonth(dx < 0 ? 1 : -1);
+  };
+  const [selY, selM] = mk.split("-").map(Number);
   const hoursIn = (k) => round2(data.logs.filter((l) => monthKey(l.date) === k).reduce((s, l) => s + l.hours, 0)
     + (data.brigadeCosts || []).filter((b) => monthKey(b.date) === k).reduce((s, b) => s + b.hours, 0));
   const hNow = hoursIn(mk), hPrev = hoursIn(pk);
   const activeObjects = data.objects.filter((o) => !o.archived);
   const activeWorkers = data.workers.filter((w) => !w.archived);
-  const usedObjects = new Set(activeWorkers.map((w) => w.objectId).filter(Boolean)).size;
+  const monthLogs = data.logs.filter((l) => monthKey(l.date) === mk);
+  const monthWorkers = isNow ? activeWorkers.length : new Set(monthLogs.map((l) => l.workerId)).size;
+  const usedObjects = isNow ? new Set(activeWorkers.map((w) => w.objectId).filter(Boolean)).size : new Set(monthLogs.map((l) => l.objectId).filter(Boolean)).size;
   const warns = expiryWarnings(data.workers, data.settings?.expiry_warn_days, data.workerDocs);
   const pendingN = admin ? (data.payouts || []).filter((p) => !p.approved).length : 0;
   const todo = warns.length + pendingN + (data.newCandidates || 0);
   const urgent = warns.filter((w) => w.past).length;
   let profit = 0, rev = 0;
-  if (admin) activeObjects.forEach((o) => { const p = objMonthProfit(data, o, mk); profit += p.profitKc; rev += p.revKc; });
+  if (admin) data.objects.forEach((o) => { const p = objMonthProfit(data, o, mk); profit += p.profitKc; rev += p.revKc; });
   const hr = new Date().getHours();
   const hello = hr < 11 ? tr("Dobro jutro") : hr < 18 ? tr("Dobar dan") : tr("Dobra večer");
   const first = (profile?.name || "").split(" ")[0];
@@ -1822,6 +1838,13 @@ function HomeTop({ data, admin, profile, goTab, openPanel, wide }) {
       <div style={{ margin: wide ? "-16px -24px 0" : "-16px -14px 0", padding: wide ? "6px 28px 56px" : "6px 18px 56px", background: S.deep, color: "#fff", borderRadius: wide ? "0 0 24px 24px" : 0 }}>
         <div style={{ fontSize: 13, color: S.mint, fontWeight: 600 }}>{dateLabel}</div>
         <div style={{ fontSize: 25, fontWeight: 800, lineHeight: 1.2 }}>{hello}{first ? `, ${first}` : ""}</div>
+        <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 12 }}>
+          <button onClick={() => shiftMonth(-1)} aria-label={tr("Prethodni mjesec")} style={{ width: 44, height: 40, borderRadius: 12, border: "none", background: "rgba(255,255,255,.12)", color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer" }}><Ico name="back" size={20} /></button>
+          <button onClick={() => setMk(nowMk)} title={tr("Vrati na ovaj mjesec")} style={{ flex: "0 1 auto", minWidth: 150, height: 40, borderRadius: 12, border: "none", background: isNow ? "rgba(255,255,255,.12)" : S.rose, color: isNow ? "#fff" : S.deep, fontWeight: 800, fontSize: 14.5, padding: "0 14px", cursor: "pointer" }}>
+            {mName(selM - 1)} {selY}.{!isNow && <span style={{ fontWeight: 700, fontSize: 12 }}> · {tr("natrag na danas")}</span>}
+          </button>
+          <button onClick={() => shiftMonth(1)} aria-label={tr("Sljedeći mjesec")} disabled={isNow} style={{ width: 44, height: 40, borderRadius: 12, border: "none", background: "rgba(255,255,255,.12)", color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", cursor: isNow ? "default" : "pointer", opacity: isNow ? 0.35 : 1 }}><Ico name="chevron" size={20} /></button>
+        </div>
       </div>
       {newFirm ? (
         <div className="c-in" style={{ margin: "-40px 0 0", background: "#fff", borderRadius: 20, padding: 18, boxShadow: "0 6px 20px rgba(11,61,46,.08)" }}>
@@ -1844,11 +1867,11 @@ function HomeTop({ data, admin, profile, goTab, openPanel, wide }) {
           ))}
         </div>
       ) : (
-        <div style={{ margin: "-40px 0 0", display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 10 }}>
-          {tile(tr("Sati ovaj mjesec"), fmtH(hNow), pct == null ? null : `${pct >= 0 ? "+" : ""}${pct} % ${tr("od prošlog mjeseca")}`)}
-          {admin ? tile(tr("Dobit ovaj mjesec"), czk(round2(profit)), rev > 0 ? `${tr("marža")} ${Math.round((profit / rev) * 100)} %` : null)
+        <div key={mk} onTouchStart={onTouchStart} onTouchEnd={onTouchEnd} style={{ margin: "-40px 0 0", display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 10 }}>
+          {tile(isNow ? tr("Sati ovaj mjesec") : tr("Sati"), fmtH(hNow), pct == null ? null : `${pct >= 0 ? "+" : ""}${pct} % ${tr("od prošlog mjeseca")}`)}
+          {admin ? tile(isNow ? tr("Dobit ovaj mjesec") : tr("Dobit"), czk(round2(profit)), rev > 0 ? `${tr("marža")} ${Math.round((profit / rev) * 100)} %` : null)
             : tile(tr("Hoteli"), String(usedObjects || activeObjects.length), null)}
-          {tile(tr("Aktivni radnici"), String(activeWorkers.length), `${tr("u")} ${usedObjects} ${tr("hotela")}`)}
+          {tile(isNow ? tr("Aktivni radnici") : tr("Radilo radnika"), String(monthWorkers), `${tr("u")} ${usedObjects} ${tr("hotela")}`)}
           {tile(tr("Treba riješiti"), String(todo), urgent ? `${urgent} ${tr("hitno")}` : null, todo > 0)}
         </div>
       )}

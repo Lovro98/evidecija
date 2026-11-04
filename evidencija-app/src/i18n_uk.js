@@ -950,4 +950,10 @@ export const TR_UK = {
  "Greške aplikacije": "Помилки застосунку",
  "Koš (obrisano)": "Кошик (видалене)",
  "Kandidati (prijave)": "Кандидати (заявки)",
+ "Prethodni mjesec": "Попередній місяць",
+ "Sljedeći mjesec": "Наступний місяць",
+ "Vrati na ovaj mjesec": "Повернутися до цього місяця",
+ "natrag na danas": "назад до сьогодні",
+ "Dobit": "Прибуток",
+ "Radilo radnika": "Працювало працівників",
 };
