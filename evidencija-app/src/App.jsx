@@ -5432,6 +5432,218 @@ function ProfileDetail({ profile, data, api, onBack }) {
 /* ================================================================== */
 /*  DETALJ RADNIKA                                                     */
 /* ================================================================== */
+/* ---------- POTPIS UGOVORA NA EKRANU (mobitel / iPad) ---------- */
+// potpis prstom ili olovkom; vraća PNG dataURL (ili null kad je prazno) preko onChange
+function InlineSignaturePad({ onChange, height = 190 }) {
+  const ref = useRef(null);
+  const drawing = useRef(false);
+  const hasInk = useRef(false);
+  useEffect(() => {
+    const c = ref.current;
+    const dpr = window.devicePixelRatio || 1;
+    const w = c.offsetWidth;
+    c.width = w * dpr; c.height = height * dpr;
+    const ctx = c.getContext("2d");
+    ctx.scale(dpr, dpr); ctx.lineWidth = 2.4; ctx.lineCap = "round"; ctx.lineJoin = "round"; ctx.strokeStyle = "#10233F";
+  }, [height]);
+  const pos = (e) => { const r = ref.current.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; };
+  const down = (e) => { e.preventDefault(); ref.current.setPointerCapture(e.pointerId); drawing.current = true; const ctx = ref.current.getContext("2d"); const [x, y] = pos(e); ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x + 0.1, y + 0.1); ctx.stroke(); hasInk.current = true; };
+  const move = (e) => { if (!drawing.current) return; e.preventDefault(); const ctx = ref.current.getContext("2d"); const [x, y] = pos(e); ctx.lineTo(x, y); ctx.stroke(); };
+  const up = () => { if (!drawing.current) return; drawing.current = false; onChange(hasInk.current ? ref.current.toDataURL("image/png") : null); };
+  const clear = () => { const c = ref.current; c.getContext("2d").clearRect(0, 0, c.width, c.height); hasInk.current = false; onChange(null); };
+  return (
+    <div>
+      <canvas ref={ref} onPointerDown={down} onPointerMove={move} onPointerUp={up} onPointerCancel={up}
+        style={{ width: "100%", height, background: "#fff", border: `2px dashed ${S.line}`, borderRadius: 12, touchAction: "none", display: "block" }} />
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 6 }}>
+        <span style={{ fontSize: 12, color: S.sub }}>{tr("Potpiši prstom ili olovkom unutar okvira")}</span>
+        <button onClick={clear} style={{ background: "none", border: "none", color: S.red, fontWeight: 700, cursor: "pointer", fontSize: 13 }}>{tr("Obriši potpis")}</button>
+      </div>
+    </div>
+  );
+}
+
+const loadImg = (src) => new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = rej; i.src = src; });
+const nowStamp = () => { const d = new Date(); return `${fmtDate(todayISO())} ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`; };
+
+// stranica s potpisima crta se na canvasu (pa rade i hrvatska slova i ćirilica) i dodaje na kraj PDF-a kao slika A4
+async function buildSignaturePage({ docName, company, workerName, workerSig, workerAt, firmName, firmSig, firmAt, hash }) {
+  const W = 1240, H = 1754, c = document.createElement("canvas");
+  c.width = W; c.height = H;
+  const g = c.getContext("2d");
+  g.fillStyle = "#fff"; g.fillRect(0, 0, W, H);
+  g.fillStyle = "#10233F"; g.textBaseline = "top";
+  const font = (px, bold) => `${bold ? "700 " : ""}${px}px "Segoe UI", system-ui, -apple-system, Roboto, Arial, sans-serif`;
+  g.font = font(44, true); g.fillText("Potpisi ugovora / Podpisy smlouvy", 100, 100);
+  g.font = font(26); g.fillStyle = "#55606E";
+  g.fillText(`Dokument: ${docName}`.slice(0, 90), 100, 170);
+  g.fillText(company, 100, 210);
+  g.strokeStyle = "#D9DEE5"; g.lineWidth = 2; g.beginPath(); g.moveTo(100, 260); g.lineTo(W - 100, 260); g.stroke();
+  const block = async (y, role, name, sig, at) => {
+    g.fillStyle = "#55606E"; g.font = font(24); g.fillText(role, 100, y);
+    g.fillStyle = "#10233F"; g.font = font(34, true); g.fillText(name, 100, y + 36);
+    const img = await loadImg(sig);
+    const maxW = 700, maxH = 260, k = Math.min(maxW / img.width, maxH / img.height);
+    g.drawImage(img, 100, y + 90, img.width * k, img.height * k);
+    g.strokeStyle = "#10233F"; g.lineWidth = 2; g.beginPath(); g.moveTo(100, y + 360); g.lineTo(820, y + 360); g.stroke();
+    g.fillStyle = "#55606E"; g.font = font(24); g.fillText(`Potpisano / Podepsáno: ${at}`, 100, y + 372);
+  };
+  await block(310, "Radnik / Zaměstnanec", workerName, workerSig, workerAt);
+  await block(800, "Za poslodavca / Za zaměstnavatele", firmName, firmSig, firmAt);
+  g.fillStyle = "#7A8594"; g.font = font(20);
+  g.fillText("Potpisano vlastoručno na ekranu u aplikaciji Evidencija rada, u prisutnosti obiju strana.", 100, H - 190);
+  g.fillText("Podepsáno vlastnoručně na obrazovce v aplikaci Evidencija rada, za přítomnosti obou stran.", 100, H - 160);
+  g.fillText(`SHA-256 izvornog dokumenta / původního dokumentu: ${hash}`, 100, H - 120);
+  const blob = await new Promise((r) => c.toBlob(r, "image/png"));
+  return new Uint8Array(await blob.arrayBuffer());
+}
+
+function SignContract({ worker, data, api, onClose }) {
+  const me = data.profiles.find((p) => p.id === api.uid());
+  const [step, setStep] = useState("file"); // file | read | worker | firm | saving
+  const [file, setFile] = useState(null); // { name, bytes }
+  const [validUntil, setValidUntil] = useState("");
+  const [readOk, setReadOk] = useState(false);
+  const [workerSig, setWorkerSig] = useState(null);
+  const [workerAt, setWorkerAt] = useState("");
+  const [firmSig, setFirmSig] = useState(null);
+  const [firmName, setFirmName] = useState(me?.name || "");
+  const [err, setErr] = useState("");
+  const pagesRef = useRef(null);
+  const inputRef = useRef(null);
+
+  const pick = async (e) => {
+    const f = e.target.files?.[0];
+    e.target.value = "";
+    if (!f) return;
+    if (!/\.pdf$/i.test(f.name) && f.type !== "application/pdf") { setErr(tr("Odaberi ugovor u PDF formatu.")); return; }
+    if (f.size > 10 * 1024 * 1024) { setErr(tr("\"{0}\" je veća od 10 MB.", f.name)); return; }
+    setErr("");
+    setFile({ name: f.name, bytes: new Uint8Array(await f.arrayBuffer()) });
+    setStep("read");
+  };
+
+  // prikaz svih stranica ugovora da ga radnik može pročitati prije potpisa
+  useEffect(() => {
+    if (step !== "read" || !file || !pagesRef.current) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const box = pagesRef.current;
+        box.innerHTML = "";
+        const pdf = await pdfjsLib.getDocument({ data: file.bytes.slice() }).promise;
+        for (let i = 1; i <= pdf.numPages && !cancelled; i++) {
+          const page = await pdf.getPage(i);
+          const base = page.getViewport({ scale: 1 });
+          const scale = (box.clientWidth / base.width) * (window.devicePixelRatio || 1);
+          const vp = page.getViewport({ scale });
+          const cv = document.createElement("canvas");
+          cv.width = vp.width; cv.height = vp.height;
+          cv.style.cssText = "width:100%;display:block;margin-bottom:8px;border:1px solid #D9DEE5;border-radius:6px;background:#fff";
+          await page.render({ canvasContext: cv.getContext("2d"), viewport: vp }).promise;
+          if (!cancelled) box.appendChild(cv);
+        }
+      } catch (e) { if (!cancelled) setErr(tr("PDF se ne može otvoriti: ") + (e.message || e)); }
+    })();
+    return () => { cancelled = true; };
+  }, [step, file]);
+
+  const finish = async () => {
+    if (!firmSig || !firmName.trim()) return;
+    setStep("saving"); setErr("");
+    try {
+      const { PDFDocument } = await import(/* @vite-ignore */ "https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/+esm");
+      const digest = await crypto.subtle.digest("SHA-256", file.bytes);
+      const hash = Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, "0")).join("");
+      const doc = await PDFDocument.load(file.bytes.slice(), { ignoreEncryption: true });
+      const png = await buildSignaturePage({
+        docName: file.name, company: data.settings?.company_name || BRAND,
+        workerName: worker.name, workerSig, workerAt, firmName: firmName.trim(), firmSig, firmAt: nowStamp(), hash,
+      });
+      const img = await doc.embedPng(png);
+      const page = doc.addPage([595.28, 841.89]);
+      page.drawImage(img, { x: 0, y: 0, width: 595.28, height: 841.89 });
+      const out = await doc.save();
+      const safe = file.name.replace(/\.pdf$/i, "").replace(/[^\w\-]+/g, "_").slice(0, 50);
+      const path = `${worker.id}/${Date.now()}_${safe}_POTPISANO.pdf`;
+      const { error } = await supabase.storage.from("docs").upload(path, new Blob([out], { type: "application/pdf" }));
+      if (error) throw error;
+      const ok = await api.addWorkerDocs(worker, [{ type: "ugovor", validUntil, filePath: path,
+        note: `Potpisano na ekranu ${workerAt}; za firmu ${firmName.trim()}; SHA-256 ${hash}` }]);
+      if (!ok) throw new Error(tr("Datoteka je spremljena, ali zapis dokumenta nije."));
+      onClose(true);
+    } catch (e) { setErr(tr("Greška pri spremanju: ") + (e.message || e)); setFirmSig(null); setStep("firm"); }
+  };
+
+  const shell = { position: "fixed", inset: 0, background: S.bg, zIndex: 60, overflowY: "auto", WebkitOverflowScrolling: "touch" };
+  const head = (title, sub) => (
+    <div style={{ position: "sticky", top: 0, background: S.ink, color: "#fff", padding: "12px 16px", zIndex: 1, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
+      <div style={{ minWidth: 0 }}>
+        <div style={{ fontSize: 11, letterSpacing: 1.2, textTransform: "uppercase", color: "#9DB3A8", fontWeight: 700 }}>{sub}</div>
+        <div style={{ fontSize: 17, fontWeight: 800 }}>{title}</div>
+      </div>
+      {step !== "saving" && <button onClick={() => onClose(false)} style={{ background: "rgba(255,255,255,.12)", border: "none", color: "#fff", borderRadius: 10, padding: "7px 11px", fontWeight: 700, cursor: "pointer" }}>✕</button>}
+    </div>
+  );
+  const body = { maxWidth: 720, margin: "0 auto", padding: 16 };
+
+  return (
+    <div style={shell}>
+      {head(worker.name, tr("Potpis ugovora"))}
+      <div style={body}>
+        {err && <div style={{ background: S.redSoft, color: S.red, borderRadius: 10, padding: "9px 12px", marginBottom: 12, fontSize: 13.5, fontWeight: 600 }}>{err}</div>}
+
+        {step === "file" && (
+          <Card>
+            <div style={{ fontWeight: 700, marginBottom: 8 }}>{tr("1. Odaberi ugovor (PDF)")}</div>
+            <Field label={tr("Ugovor vrijedi do (neobavezno)")}>
+              <input type="date" value={validUntil} onChange={(e) => setValidUntil(e.target.value)} />
+            </Field>
+            <input ref={inputRef} type="file" accept="application/pdf,.pdf" onChange={pick} style={{ display: "none" }} />
+            <Btn onClick={() => inputRef.current?.click()} style={{ width: "100%" }}>{tr("📄 Odaberi PDF ugovora")}</Btn>
+          </Card>
+        )}
+
+        {step === "read" && (
+          <>
+            <div style={{ fontSize: 13.5, color: S.sub, marginBottom: 8 }}>{tr("Daj uređaj radniku da pročita cijeli ugovor.")}</div>
+            <div ref={pagesRef} />
+            <Card style={{ position: "sticky", bottom: 0 }}>
+              <label style={{ display: "flex", gap: 10, alignItems: "center", fontSize: 14.5, fontWeight: 600, marginBottom: 10 }}>
+                <input type="checkbox" checked={readOk} onChange={(e) => setReadOk(e.target.checked)} style={{ width: 22, height: 22 }} />
+                {tr("Pročitao/la sam ugovor i slažem se s njim")}
+              </label>
+              <Btn disabled={!readOk} onClick={() => setStep("worker")} style={{ width: "100%" }}>{tr("Dalje: potpis radnika")}</Btn>
+            </Card>
+          </>
+        )}
+
+        {step === "worker" && (
+          <Card>
+            <div style={{ fontWeight: 700, marginBottom: 4 }}>{tr("2. Potpis radnika")}</div>
+            <div style={{ fontSize: 15, marginBottom: 10 }}>{worker.name}</div>
+            <InlineSignaturePad onChange={setWorkerSig} />
+            <Btn disabled={!workerSig} onClick={() => { setWorkerAt(nowStamp()); setStep("firm"); }} style={{ width: "100%", marginTop: 12 }}>{tr("Dalje: potpis za firmu")}</Btn>
+          </Card>
+        )}
+
+        {(step === "firm" || step === "saving") && (
+          <Card>
+            <div style={{ fontWeight: 700, marginBottom: 8 }}>{tr("3. Potpis za firmu")}</div>
+            <Field label={tr("Ime osobe koja potpisuje za firmu")}>
+              <input value={firmName} onChange={(e) => setFirmName(e.target.value)} disabled={step === "saving"} />
+            </Field>
+            {step === "firm" && <InlineSignaturePad onChange={setFirmSig} />}
+            <Btn disabled={!firmSig || !firmName.trim() || step === "saving"} onClick={finish} style={{ width: "100%", marginTop: 12 }}>
+              {step === "saving" ? tr("Spremam potpisani ugovor…") : tr("✅ Završi i spremi potpisani ugovor")}
+            </Btn>
+          </Card>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function WorkerDetail({ worker, data, api, onBack }) {
   const [edit, setEdit] = useState(false);
   const [form, setForm] = useState({ ...worker, rate: String(worker.rate || ""), rateCur: wCur(worker), ...splitNameForEdit(worker.name) });
@@ -5475,6 +5687,7 @@ function WorkerDetail({ worker, data, api, onBack }) {
   // obrazac za novi dokument: vrsta + vrijedi do; datoteka je neobavezna
   const [docForm, setDocForm] = useState(null); // null | { type, validUntil }
   const [docEdit, setDocEdit] = useState(null); // null | { id, type, validUntil }
+  const [signOpen, setSignOpen] = useState(false);
   const myDocs = (data.workerDocs || []).filter((d) => d.workerId === worker.id)
     .sort((a, b) => (a.validUntil || "9999").localeCompare(b.validUntil || "9999"));
   const docMetaByPath = Object.fromEntries(myDocs.filter((d) => d.filePath).map((d) => [d.filePath, d]));
@@ -5711,7 +5924,12 @@ function WorkerDetail({ worker, data, api, onBack }) {
       <Card>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
           <div style={{ fontWeight: 700 }}>{tr("Dokumenti i ugovori")}</div>
-          {!docForm && <Btn small kind="ghost" onClick={() => { setDocErr(""); setDocForm({ type: "putovnica", validUntil: "" }); }}>{tr("+ Dokument")}</Btn>}
+          {!docForm && (
+            <div style={{ display: "flex", gap: 6 }}>
+              <Btn small kind="ghost" onClick={() => setSignOpen(true)}>{tr("✍️ Potpis")}</Btn>
+              <Btn small kind="ghost" onClick={() => { setDocErr(""); setDocForm({ type: "putovnica", validUntil: "" }); }}>{tr("+ Dokument")}</Btn>
+            </div>
+          )}
           <input ref={fileRef} type="file" accept="image/*,.pdf,.doc,.docx,.xls,.xlsx,.txt" multiple onChange={uploadDoc} style={{ display: "none" }} />
         </div>
         {docErr && <div style={{ color: S.red, fontSize: 13, marginBottom: 8 }}>{docErr}</div>}
@@ -5805,6 +6023,8 @@ function WorkerDetail({ worker, data, api, onBack }) {
             </div>
           ))}
       </Card>
+
+      {signOpen && <SignContract worker={worker} data={data} api={api} onClose={(saved) => { setSignOpen(false); if (saved) loadDocs(); }} />}
 
       {viewer && (
         <div onClick={() => setViewer(null)} style={{ position: "fixed", inset: 0, background: "rgba(10,14,12,.92)", zIndex: 50,
