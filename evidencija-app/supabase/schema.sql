@@ -877,3 +877,32 @@ alter table public.ad_texts enable row level security;
 drop policy if exists "ads_recruit_all" on public.ad_texts;
 create policy "ads_recruit_all" on public.ad_texts for all to authenticated using (public.can_recruit()) with check (public.can_recruit());
 revoke all on public.ad_texts from anon;
+
+-- ============================================================
+-- DOKUMENTI RADNIKA: vrsta + datum isteka (putovnica, viza, zdravstvena…)
+-- ============================================================
+create table if not exists public.worker_documents (
+  id uuid primary key default gen_random_uuid(),
+  worker_id uuid not null references public.workers on delete cascade,
+  doc_type text not null default 'ostalo',
+  valid_until date,
+  file_path text,
+  note text default '',
+  created_by uuid references public.profiles default auth.uid(),
+  created_at timestamptz default now(),
+  deleted_at timestamptz
+);
+create index if not exists worker_documents_worker_idx on public.worker_documents(worker_id);
+alter table public.worker_documents enable row level security;
+drop policy if exists "wd_select" on public.worker_documents;
+drop policy if exists "wd_insert" on public.worker_documents;
+drop policy if exists "wd_update" on public.worker_documents;
+drop policy if exists "wd_delete_admin" on public.worker_documents;
+create policy "wd_select" on public.worker_documents for select to authenticated
+  using (is_admin() or exists (select 1 from public.workers w where w.id = worker_id));
+create policy "wd_insert" on public.worker_documents for insert to authenticated
+  with check (created_by = auth.uid() and (is_admin() or exists (select 1 from public.workers w where w.id = worker_id)));
+create policy "wd_update" on public.worker_documents for update to authenticated
+  using (is_admin() or created_by = auth.uid());
+create policy "wd_delete_admin" on public.worker_documents for delete to authenticated
+  using (is_admin());

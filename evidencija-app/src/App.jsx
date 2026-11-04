@@ -699,6 +699,15 @@ async function fetchAll(isAdmin) {
     newCandidates = cn.error ? 0 : (cn.count || 0);
     staleCandidates = cs.error ? 0 : (cs.count || 0);
   }
+  // dokumenti radnika s vrstom i datumom isteka (RLS: vidi dokumente radnika koje smije vidjeti)
+  let workerDocs = [];
+  {
+    const wd = await live(supabase.from("worker_documents").select("*"));
+    if (!wd.error) workerDocs = (wd.data || []).map((d) => ({
+      id: d.id, workerId: d.worker_id, type: d.doc_type || "ostalo", validUntil: d.valid_until || "",
+      filePath: d.file_path || "", note: d.note || "", createdAt: d.created_at,
+    }));
+  }
   if (isAdmin) {
     const wb = await supabase.from("worker_bank").select("worker_id, bank_account");
     if (!wb.error) (wb.data || []).forEach((r) => { bankMap[r.worker_id] = r.bank_account || ""; });
@@ -780,6 +789,7 @@ async function fetchAll(isAdmin) {
       rate: Number(pb.rate) || 0, markup: Number(pb.markup) || 0, currency: pb.currency === "CZK" ? "CZK" : "EUR",
     })),
     reminders: reminders.map((r) => ({ id: r.id, text: r.text, dueDate: r.due_date || "", done: !!r.done })),
+    workerDocs,
     commissionRates: commissionRates.map((c) => ({ objectId: c.object_id, userId: c.user_id, rate: Number(c.rate) || 0, currency: c.currency === "CZK" ? "CZK" : "EUR" })),
     commissionPayouts: commissionPayouts.map((c) => ({
       id: c.id, userId: c.user_id, payDate: c.pay_date, amount: Number(c.amount) || 0,
@@ -914,7 +924,7 @@ export default function App() {
     const key = "evidencija_notif_" + todayISO();
     try { if (localStorage.getItem(key)) return; } catch { return; }
     const parts = [];
-    const warns = expiryWarnings(data.workers, data.settings.expiry_warn_days);
+    const warns = expiryWarnings(data.workers, data.settings.expiry_warn_days, data.workerDocs);
     if (warns.length) {
       const expired = warns.filter((w) => w.past).length;
       const soon = warns.length - expired;
@@ -1287,6 +1297,17 @@ export default function App() {
       finally { setBusy(false); }
     },
     logDoc: (text) => supabase.from("audit_log").insert({ user_id: session.user.id, user_name: profile?.name || "", action: text }),
+    // dokument radnika: vrsta + datum isteka (+ putanja datoteke u bucketu "docs", ako je učitana)
+    addWorkerDocs: (worker, rows) => act(() => ins("worker_documents", rows.map((r) => ({
+        worker_id: worker.id, doc_type: r.type || "ostalo", valid_until: r.validUntil || null,
+        file_path: r.filePath || null, note: r.note || "", created_by: session.user.id,
+      }))),
+      `Dodao dokument radniku ${worker.name}: ${rows.map((r) => docTypeLabel(r.type) + (r.validUntil ? " do " + fmtDate(r.validUntil) : "")).join(", ")}`),
+    updWorkerDoc: (worker, d, patch) => act(() => upd("worker_documents", d.id, {
+        ...(patch.type !== undefined ? { doc_type: patch.type } : {}),
+        ...(patch.validUntil !== undefined ? { valid_until: patch.validUntil || null } : {}),
+      }), `Izmijenio dokument radnika ${worker.name}: ${docTypeLabel(patch.type || d.type)}${patch.validUntil ? " do " + fmtDate(patch.validUntil) : ""}`),
+    delWorkerDoc: (worker, d) => act(() => softDel("worker_documents", d.id), `Obrisao dokument radnika ${worker.name}: ${docTypeLabel(d.type)}`),
     addReminder: (text, dueDate) => act(() => ins("reminders", { text, due_date: dueDate || null, created_by: session.user.id }),
       `Dodao podsjetnik: ${text}${dueDate ? " (" + fmtDate(dueDate) + ")" : ""}`),
     toggleReminder: (r, done) => act(() => upd("reminders", r.id, { done }),
@@ -3615,13 +3636,34 @@ function AdminPanels({ data, api, panel, setPanel, onOpenWorker, onOpenProfile }
 /* ================================================================== */
 /*  RADNICI + OBJEKTI + upozorenja na dokumente                        */
 /* ================================================================== */
-function expiryWarnings(workers, days) {
-  const soon = addDaysISO(todayISO(), days || 30);
+// vrste dokumenata radnika (id → oznaka); oznake idu kroz tr() kod prikaza
+const DOC_TYPES = [
+  ["putovnica", "Putovnica"],
+  ["viza", "Viza / boravak"],
+  ["radna_dozvola", "Radna dozvola"],
+  ["ugovor", "Ugovor"],
+  ["zdravstvena", "Zdravstvena potvrda"],
+  ["osiguranje", "Zdravstveno osiguranje"],
+  ["lijecnicki", "Liječnički pregled"],
+  ["ostalo", "Ostalo"],
+];
+const docTypeLabel = (id) => (DOC_TYPES.find((x) => x[0] === id) || DOC_TYPES[DOC_TYPES.length - 1])[1];
+
+// za svaki radnik + vrsta gleda se samo NAJNOVIJI datum (novi dokument zamjenjuje stari)
+function expiryWarnings(workers, days, docs) {
+  const today = todayISO();
+  const soon = addDaysISO(today, days || 30);
   const out = [];
   workers.filter((w) => !w.archived).forEach((w) => {
-    [["permitExpiry", "radna dozvola"], ["contractExpiry", "ugovor"]].forEach(([k, label]) => {
-      const d = w[k];
-      if (d && d <= soon) out.push({ w, label, date: d, past: d < todayISO() });
+    const latest = {};
+    [["permitExpiry", "radna_dozvola"], ["contractExpiry", "ugovor"]].forEach(([k, type]) => {
+      if (w[k]) latest[type] = w[k];
+    });
+    (docs || []).filter((d) => d.workerId === w.id && d.validUntil).forEach((d) => {
+      if (!latest[d.type] || d.validUntil > latest[d.type]) latest[d.type] = d.validUntil;
+    });
+    Object.entries(latest).forEach(([type, d]) => {
+      if (d <= soon) out.push({ w, label: tr(docTypeLabel(type)).toLowerCase(), type, date: d, past: d < today });
     });
   });
   return out.sort((a, b) => a.date.localeCompare(b.date));
@@ -3697,7 +3739,7 @@ function TodayTab({ data, api, admin, onOpenWorker, onOpenObject, openAdminPanel
   const weekRem = reminders.filter((r) => r.dueDate && r.dueDate > today && r.dueDate <= addDaysISO(today, 7)).sort((a, b) => a.dueDate.localeCompare(b.dueDate));
 
   // dokumenti
-  const warns = expiryWarnings(data.workers, data.settings?.expiry_warn_days);
+  const warns = expiryWarnings(data.workers, data.settings?.expiry_warn_days, data.workerDocs);
   const noDocs = active.filter((w) => !w.permitExpiry && !w.contractExpiry);
 
   // isplate
@@ -3822,7 +3864,7 @@ function TodayTab({ data, api, admin, onOpenWorker, onOpenObject, openAdminPanel
       )}
 
       {warns.length > 0 && (
-        <TodaySection icon="🪪" title={tr("Dozvole i ugovori koji ističu")} count={warns.length} tone={warns.some((w) => w.past) ? "red" : "amber"} items={warns}
+        <TodaySection icon="🪪" title={tr("Dokumenti koji ističu")} count={warns.length} tone={warns.some((w) => w.past) ? "red" : "amber"} items={warns}
           render={(x, i) => (
             <TodayRow key={x.w.id + x.label + i} left={x.w.name} sub={`${x.label} · ${oName(x.w.objectId)}`} onClick={() => onOpenWorker(x.w.id)}
               right={<span style={{ color: x.past ? S.red : S.amber, fontWeight: 700 }}>{x.past ? tr("isteklo ") : ""}{fmtDate(x.date)}</span>} />
@@ -4465,7 +4507,7 @@ function WorkersTab({ data, api, onOpen, onOpenObject }) {
 
   const objName = (id) => data.objects.find((o) => o.id === id)?.name || "";
   const mk = curMonth();
-  const warns = expiryWarnings(data.workers, data.settings?.expiry_warn_days);
+  const warns = expiryWarnings(data.workers, data.settings?.expiry_warn_days, data.workerDocs);
   const staleRates = rateStaleWarnings(data.workers, data.rateChanges);
   const [q, setQ] = useState("");
   const newFullName = `${form.lastName.trim()} ${form.firstName.trim()}`.trim();
@@ -5430,17 +5472,40 @@ function WorkerDetail({ worker, data, api, onBack }) {
   }, [worker.id]);
   useEffect(() => { loadDocs(); setMoveObj(worker.objectId || ""); }, [worker.id, worker.objectId, loadDocs]);
 
+  // obrazac za novi dokument: vrsta + vrijedi do; datoteka je neobavezna
+  const [docForm, setDocForm] = useState(null); // null | { type, validUntil }
+  const [docEdit, setDocEdit] = useState(null); // null | { id, type, validUntil }
+  const myDocs = (data.workerDocs || []).filter((d) => d.workerId === worker.id)
+    .sort((a, b) => (a.validUntil || "9999").localeCompare(b.validUntil || "9999"));
+  const docMetaByPath = Object.fromEntries(myDocs.filter((d) => d.filePath).map((d) => [d.filePath, d]));
+  const warnDays = Number(data.settings?.expiry_warn_days) || 30;
+  const dateTone = (iso) => !iso ? S.sub : iso < todayISO() ? S.red : iso <= addDaysISO(todayISO(), warnDays) ? S.amber : S.green;
+
   const uploadDoc = async (e) => {
     const files = Array.from(e.target.files || []);
     setDocErr("");
+    const paths = [];
     for (const f of files) {
       if (f.size > 10 * 1024 * 1024) { setDocErr(tr("\"{0}\" je veća od 10 MB.", f.name)); continue; }
-      const { error } = await supabase.storage.from("docs").upload(`${worker.id}/${Date.now()}_${f.name}`, f);
-      if (error) setDocErr(error.message);
+      const path = `${worker.id}/${Date.now()}_${f.name}`;
+      const { error } = await supabase.storage.from("docs").upload(path, f);
+      if (error) setDocErr(error.message); else paths.push(path);
     }
-    await api.logDoc(`Dodao dokument radniku ${worker.name}`);
-    await loadDocs();
     e.target.value = "";
+    if (paths.length) {
+      const meta = docForm || { type: "ostalo", validUntil: "" };
+      await api.addWorkerDocs(worker, paths.map((p) => ({ type: meta.type, validUntil: meta.validUntil, filePath: p })));
+      setDocForm(null);
+    }
+    await loadDocs();
+  };
+  const saveDocWithoutFile = async () => {
+    if (!docForm?.validUntil) { setDocErr(tr("Upiši datum do kada dokument vrijedi.")); return; }
+    if (await api.addWorkerDocs(worker, [{ type: docForm.type, validUntil: docForm.validUntil }])) setDocForm(null);
+  };
+  const openDocMeta = (d) => {
+    const f = docs?.find((x) => `${worker.id}/${x.name}` === d.filePath);
+    if (f) openDoc(f);
   };
   const openDoc = async (f) => {
     const { data: s } = await supabase.storage.from("docs").createSignedUrl(`${worker.id}/${f.name}`, 300);
@@ -5449,7 +5514,9 @@ function WorkerDetail({ worker, data, api, onBack }) {
   const delDoc = async (f) => {
     const { error } = await supabase.storage.from("docs").remove([`${worker.id}/${f.name}`]);
     if (error) { setDocErr(tr("Brisanje dokumenata može samo admin.")); return; }
-    await api.logDoc(`Obrisao dokument radnika ${worker.name}`);
+    const meta = docMetaByPath[`${worker.id}/${f.name}`];
+    if (meta) await api.delWorkerDoc(worker, meta);
+    else await api.logDoc(`Obrisao dokument radnika ${worker.name}`);
     setViewer(null);
     await loadDocs();
   };
@@ -5644,18 +5711,76 @@ function WorkerDetail({ worker, data, api, onBack }) {
       <Card>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
           <div style={{ fontWeight: 700 }}>{tr("Dokumenti i ugovori")}</div>
-          <Btn small kind="ghost" onClick={() => fileRef.current?.click()}>{tr("+ Slika ili datoteka")}</Btn>
+          {!docForm && <Btn small kind="ghost" onClick={() => { setDocErr(""); setDocForm({ type: "putovnica", validUntil: "" }); }}>{tr("+ Dokument")}</Btn>}
           <input ref={fileRef} type="file" accept="image/*,.pdf,.doc,.docx,.xls,.xlsx,.txt" multiple onChange={uploadDoc} style={{ display: "none" }} />
         </div>
         {docErr && <div style={{ color: S.red, fontSize: 13, marginBottom: 8 }}>{docErr}</div>}
+
+        {docForm && (
+          <div style={{ background: S.bg, borderRadius: 12, padding: 12, marginBottom: 12 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+              <div>
+                <div style={{ fontSize: 12, fontWeight: 600, color: S.sub, marginBottom: 4 }}>{tr("Vrsta")}</div>
+                <select value={docForm.type} onChange={(e) => setDocForm({ ...docForm, type: e.target.value })}>
+                  {DOC_TYPES.map(([id, label]) => <option key={id} value={id}>{tr(label)}</option>)}
+                </select>
+              </div>
+              <div>
+                <div style={{ fontSize: 12, fontWeight: 600, color: S.sub, marginBottom: 4 }}>{tr("Vrijedi do")}</div>
+                <input type="date" value={docForm.validUntil} onChange={(e) => setDocForm({ ...docForm, validUntil: e.target.value })} />
+              </div>
+            </div>
+            <div style={{ fontSize: 12, color: S.sub, margin: "8px 0" }}>{tr("Ako dokument nema rok, ostavi datum prazan. Aplikacija će upozoriti prije isteka.")}</div>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <Btn small onClick={() => fileRef.current?.click()}>{tr("📷 Slikaj ili odaberi datoteku")}</Btn>
+              <Btn small kind="ghost" onClick={saveDocWithoutFile}>{tr("Spremi samo datum")}</Btn>
+              <Btn small kind="ghost" onClick={() => { setDocForm(null); setDocErr(""); }}>{tr("Odustani")}</Btn>
+            </div>
+          </div>
+        )}
+
+        {myDocs.length > 0 && (
+          <div style={{ marginBottom: 12 }}>
+            {myDocs.map((d) => docEdit?.id === d.id ? (
+              <div key={d.id} style={{ display: "grid", gridTemplateColumns: "1fr 1fr auto", gap: 6, padding: "6px 0", borderBottom: `1px solid ${S.line}`, alignItems: "center" }}>
+                <select value={docEdit.type} onChange={(e) => setDocEdit({ ...docEdit, type: e.target.value })}>
+                  {DOC_TYPES.map(([id, label]) => <option key={id} value={id}>{tr(label)}</option>)}
+                </select>
+                <input type="date" value={docEdit.validUntil} onChange={(e) => setDocEdit({ ...docEdit, validUntil: e.target.value })} />
+                <Btn small onClick={async () => { if (await api.updWorkerDoc(worker, d, { type: docEdit.type, validUntil: docEdit.validUntil })) setDocEdit(null); }}>{tr("Spremi")}</Btn>
+              </div>
+            ) : (
+              <div key={d.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 0", borderBottom: `1px solid ${S.line}`, fontSize: 14 }}>
+                <span onClick={() => d.filePath && openDocMeta(d)} style={{ flex: 1, cursor: d.filePath ? "pointer" : "default" }}>
+                  {d.filePath ? "📎 " : "🗓 "}<b>{tr(docTypeLabel(d.type))}</b>
+                </span>
+                <span className="num" style={{ color: dateTone(d.validUntil), fontWeight: 700, fontSize: 13.5 }}>
+                  {d.validUntil ? (d.validUntil < todayISO() ? tr("isteklo ") : tr("do ")) + fmtDate(d.validUntil) : tr("bez roka")}
+                </span>
+                <button onClick={() => setDocEdit({ id: d.id, type: d.type, validUntil: d.validUntil })} title={tr("Uredi")}
+                  style={{ background: "none", border: "none", color: S.sub, fontSize: 15, cursor: "pointer", padding: 4 }}>✎</button>
+                {api.admin && !d.filePath && (
+                  <button onClick={() => api.delWorkerDoc(worker, d)} title={tr("Obriši")}
+                    style={{ background: "none", border: "none", color: S.red, fontSize: 15, cursor: "pointer", padding: 4 }}>✕</button>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
         {docs === null ? <div style={{ color: S.sub, fontSize: 13.5 }}>{tr("Učitavam…")}</div>
-          : docs.length === 0 ? <div style={{ color: S.sub, fontSize: 13.5 }}>{tr("Slikaj ugovor ili dodaj PDF.")}</div>
+          : docs.length === 0 ? (myDocs.length ? null : <div style={{ color: S.sub, fontSize: 13.5 }}>{tr("Dodaj putovnicu, vizu, ugovor ili drugi dokument — s datumom isteka.")}</div>)
           : (
             <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8 }}>
               {docs.map((f) => (
                 <div key={f.name} onClick={() => openDoc(f)} style={{ aspectRatio: "1", borderRadius: 10, border: `1px solid ${S.line}`, background: "#FAFBF9",
                   display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 6, padding: 8, cursor: "pointer" }}>
                   <span style={{ fontSize: 26 }}>{/\.(jpe?g|png|gif|webp)$/i.test(f.name) ? "🖼" : "📄"}</span>
+                  {docMetaByPath[`${worker.id}/${f.name}`] && (() => {
+                    const m = docMetaByPath[`${worker.id}/${f.name}`];
+                    return <span style={{ fontSize: 10.5, fontWeight: 800, color: dateTone(m.validUntil), textAlign: "center" }}>
+                      {tr(docTypeLabel(m.type))}{m.validUntil ? " · " + fmtDate(m.validUntil) : ""}
+                    </span>;
+                  })()}
                   <span style={{ fontSize: 10.5, fontWeight: 600, color: S.sub, textAlign: "center", wordBreak: "break-word", overflow: "hidden" }}>
                     {f.name.replace(/^\d+_/, "").slice(0, 40)}
                   </span>
