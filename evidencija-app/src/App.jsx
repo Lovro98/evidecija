@@ -7573,12 +7573,13 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
       const note = view === "month" ? (data.payrollNotes || []).find((n) => n.workerId === r.w.id && n.month === month) : null;
       const netE = round2(r.net - (note && note.currency === "EUR" ? note.amount : 0));
       const netK = round2(r.czk.net - (note && note.currency === "CZK" ? note.amount : 0));
-      if (netE === 0 && netK === 0) return "";
-      const amounts = [
-        netE !== 0 || netK === 0 ? eur(netE) : "",
+      const gc = wCur(r.w);
+      // koverta se ispisuje i kad je gotovina 0, ako je nešto išlo na račun (BANK redak)
+      if (netE === 0 && netK === 0 && !r.bank && !r.czk.bank) return "";
+      const amounts = netE === 0 && netK === 0 ? [money(0, gc)] : [
+        netE !== 0 ? eur(netE) : "",
         netK !== 0 ? czk(netK) : "",
       ].filter(Boolean);
-      const gc = wCur(r.w);
       const noteLabel = note?.note || MZDY_NOTE_LABEL;
       const breakdown = [
         gc === "CZK" ? (r.grossKc ? "zarada " + czk(r.grossKc) : "") : (r.gross ? "zarada " + eur(r.gross) : ""),
