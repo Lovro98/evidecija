@@ -2192,7 +2192,7 @@ function CandidatesPanel({ data, api }) {
   );
 }
 const ADMIN_MENU = [
-  ["candidates", "🧑‍🍳", "Kandidati (prijave)"], ["approvals", "⏳", "Odobravanje isplata"], ["cash", "💵", "Gotovina kod koordinatora"], ["finance", "💼", "Financije (banka i porezi)"], ["unpaid", "💰", "Neisplaćeno (dugovi radnicima)"], ["vat", "🧾", "DPH"], ["users", "👥", "Korisnici i provizije"],
+  ["ai", "🤖", "AI asistent"], ["candidates", "🧑‍🍳", "Kandidati (prijave)"], ["approvals", "⏳", "Odobravanje isplata"], ["cash", "💵", "Gotovina kod koordinatora"], ["finance", "💼", "Financije (banka i porezi)"], ["unpaid", "💰", "Neisplaćeno (dugovi radnicima)"], ["vat", "🧾", "DPH"], ["users", "👥", "Korisnici i provizije"],
   ["firm", "🏢", "Podaci firme i postavke"], ["audit", "📜", "Povijest radnji"], ["logins", "🔐", "Prijave"],
   ["errors", "🐛", "Greške aplikacije"], ["trash", "🗑", "Koš (obrisano)"],
 ];
@@ -3170,6 +3170,203 @@ function FinancePanel({ data, api }) {
     </div>
   );
 }
+/* ================================================================== */
+/*  AI ASISTENT (Claude) — chat + prilozi; poziv ide preko Edge funkcije */
+/*  "ai-assistant" (API ključ je samo u Supabase tajnama)               */
+/* ================================================================== */
+// sažetak podataka iz aplikacije koji se šalje uz pitanje (bez bankovnih računa)
+function buildAiContext(data) {
+  const mk = curMonth(), pk = prevMonthKey(mk);
+  const oName = (id) => data.objects.find((o) => o.id === id)?.name || "bez objekta";
+  const lines = [];
+  lines.push(`Firma: ${data.settings?.company_name || BRAND}. Tečaj EUR→Kč: ${Number(data.settings?.czk_rate) || 25}.`);
+  lines.push("\nOBJEKTI (hoteli): naziv | država | zadana naplata/h");
+  data.objects.filter((o) => !o.archived).forEach((o) => lines.push(`${o.name} | ${o.country || "HR"} | ${o.billRate ? money(o.billRate, o.billCur) : "—"}`));
+  lines.push("\nRADNICI (aktivni): ime | objekt | pozicija | satnica | radna dozvola do | ugovor do | telefon");
+  data.workers.filter((w) => !w.archived).forEach((w) => lines.push(
+    `${w.name} | ${oName(w.objectId)} | ${w.position || "—"} | ${w.rate ? money(rateNow(data, w), wCur(w)) : "—"} | ${w.permitExpiry || "—"} | ${w.contractExpiry || "—"} | ${w.phone || "—"}`));
+  [mk, pk].forEach((k) => {
+    const agg = new Map();
+    data.logs.filter((l) => monthKey(l.date) === k).forEach((l) => {
+      const key = l.workerId + "|" + l.objectId;
+      agg.set(key, round2((agg.get(key) || 0) + l.hours));
+    });
+    lines.push(`\nSATI ${k} (radnik | objekt | sati):`);
+    [...agg.entries()].sort().forEach(([key, h]) => {
+      const [wid, oid] = key.split("|");
+      lines.push(`${data.workers.find((w) => w.id === wid)?.name || "?"} | ${oName(oid)} | ${h}`);
+    });
+    lines.push(`\nDOBIT PO HOTELU ${k} (Kč): objekt | sati | naplata | trošak | dobit`);
+    data.objects.forEach((o) => {
+      const p = objMonthProfit(data, o, k);
+      if (p.hours || p.revKc || p.costKc) lines.push(`${o.name} | ${p.hours} | ${p.revKc} | ${p.costKc} | ${p.profitKc}`);
+    });
+  });
+  const warns = expiryWarnings(data.workers, data.settings?.expiry_warn_days, data.workerDocs);
+  if (warns.length) {
+    lines.push("\nDOKUMENTI KOJI ISTIČU: radnik | dokument | datum");
+    warns.forEach((x) => lines.push(`${x.w.name} | ${x.label} | ${x.date}${x.past ? " (isteklo)" : ""}`));
+  }
+  return lines.join("\n");
+}
+
+const AI_IMG = /^image\/(jpeg|png|gif|webp)$/;
+async function fileToAiBlock(f) {
+  const b64 = (buf) => { let s = ""; const u = new Uint8Array(buf); for (let i = 0; i < u.length; i += 0x8000) s += String.fromCharCode.apply(null, u.subarray(i, i + 0x8000)); return btoa(s); };
+  if (f.type === "application/pdf" || /\.pdf$/i.test(f.name))
+    return { type: "document", source: { type: "base64", media_type: "application/pdf", data: b64(await f.arrayBuffer()) }, title: f.name };
+  if (AI_IMG.test(f.type)) return { type: "image", source: { type: "base64", media_type: f.type, data: b64(await f.arrayBuffer()) } };
+  if (/\.(xlsx|xls|xlsm|ods|csv)$/i.test(f.name)) {
+    const wb = XLSX.read(await f.arrayBuffer(), { type: "array" });
+    const text = wb.SheetNames.map((n) => `### List: ${n}\n` + XLSX.utils.sheet_to_csv(wb.Sheets[n], { FS: ";" })).join("\n\n");
+    return { type: "text", text: `Prilog "${f.name}" (tablica, CSV po listovima):\n${text.slice(0, 300000)}` };
+  }
+  if (/\.(txt|md|json)$/i.test(f.name) || f.type.startsWith("text/")) return { type: "text", text: `Prilog "${f.name}":\n${(await f.text()).slice(0, 300000)}` };
+  throw new Error(tr("Ova vrsta datoteke nije podržana: {0}", f.name));
+}
+
+// jednostavan prikaz odgovora: **podebljano**, popisi i tablice (| … |) u fiksnom fontu
+function AiText({ text }) {
+  const parts = String(text).split(/\n/);
+  return (
+    <div style={{ fontSize: 14.5, lineHeight: 1.5 }}>
+      {parts.map((ln, i) => {
+        if (/^\s*\|/.test(ln)) return <div key={i} style={{ fontFamily: "ui-monospace, Menlo, monospace", fontSize: 12, whiteSpace: "pre", overflowX: "auto" }}>{ln}</div>;
+        const h = ln.match(/^#{1,4}\s+(.*)/);
+        const body = (h ? h[1] : ln).split(/(\*\*[^*]+\*\*)/).map((seg, j) => /^\*\*[^*]+\*\*$/.test(seg) ? <b key={j}>{seg.slice(2, -2)}</b> : seg);
+        return <div key={i} style={{ minHeight: ln.trim() ? undefined : 8, fontWeight: h ? 800 : undefined, whiteSpace: "pre-wrap" }}>{body}</div>;
+      })}
+    </div>
+  );
+}
+
+function AiAssistantPanel({ data }) {
+  const [msgs, setMsgs] = useState([]); // { role, content: blocks[], files: [names], text? }
+  const [input, setInput] = useState("");
+  const [files, setFiles] = useState([]); // File[]
+  const [withData, setWithData] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const [spend, setSpend] = useState(null); // { spent, limit }
+  const [copied, setCopied] = useState(-1);
+  const fileRef = useRef(null);
+  const endRef = useRef(null);
+  useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth" }); }, [msgs, busy]);
+  useEffect(() => {
+    const start = new Date(); start.setDate(1); start.setHours(0, 0, 0, 0);
+    supabase.from("ai_usage").select("cost_usd").gte("created_at", start.toISOString())
+      .then(({ data: r }) => setSpend({ spent: (r || []).reduce((s, x) => s + Number(x.cost_usd || 0), 0), limit: null }));
+  }, []);
+
+  const addFiles = (e) => {
+    const list = Array.from(e.target.files || []);
+    e.target.value = "";
+    const big = list.find((f) => f.size > 10 * 1024 * 1024);
+    if (big) { setErr(tr("\"{0}\" je veća od 10 MB.", big.name)); return; }
+    setErr(""); setFiles((x) => [...x, ...list].slice(0, 5));
+  };
+
+  const send = async () => {
+    const q = input.trim();
+    if ((!q && !files.length) || busy) return;
+    setErr(""); setBusy(true);
+    try {
+      const blocks = [];
+      for (const f of files) blocks.push(await fileToAiBlock(f));
+      blocks.push({ type: "text", text: q || tr("Pogledaj prilog i reci što je bitno.") });
+      const userMsg = { role: "user", content: blocks, files: files.map((f) => f.name), text: q };
+      const history = [...msgs, userMsg];
+      setMsgs(history); setInput(""); setFiles([]);
+      const { data: res, error } = await supabase.functions.invoke("ai-assistant", {
+        body: { messages: history.map((m) => ({ role: m.role, content: m.content })), context: withData ? buildAiContext(data) : "" },
+      });
+      if (error) {
+        let msg = error.message;
+        try { const b = await error.context.json(); if (b?.error) msg = b.error; } catch {}
+        throw new Error(msg);
+      }
+      setMsgs([...history, { role: "assistant", content: [{ type: "text", text: res.text || "" }], text: res.text || "" }]);
+      if (res.spent != null) setSpend({ spent: res.spent, limit: res.limit });
+    } catch (e) {
+      setErr(String(e.message || e));
+      setMsgs((m) => (m.length && m[m.length - 1].role === "user" ? m.slice(0, -1) : m)); // vrati pitanje u polje
+      setInput(q);
+    } finally { setBusy(false); }
+  };
+  const copy = async (t, i) => { try { await navigator.clipboard.writeText(t); setCopied(i); setTimeout(() => setCopied(-1), 1500); } catch {} };
+  const usd = (n) => "$" + (Number(n) || 0).toFixed(2);
+  const examples = [
+    "Usporedi priloženu tablicu sati iz hotela s našim satima za prošli mjesec i pokaži razlike.",
+    "Koji dokumenti radnicima ističu u idućih 30 dana?",
+    "Koji hotel nam je prošli mjesec bio najisplativiji i zašto?",
+    "Napiši na ukrajinskom poruku radnicima da se sati predaju do 3. u mjesecu.",
+  ];
+
+  return (
+    <>
+      <Card style={{ padding: "10px 14px" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+          <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13.5, fontWeight: 600 }}>
+            <input type="checkbox" checked={withData} onChange={(e) => setWithData(e.target.checked)} style={{ width: 18, height: 18 }} />
+            {tr("Claude vidi podatke iz aplikacije")}
+          </label>
+          {msgs.length > 0 && <Btn small kind="ghost" onClick={() => { setMsgs([]); setErr(""); }}>{tr("Novi razgovor")}</Btn>}
+        </div>
+        <div className="num" style={{ fontSize: 12, color: S.sub, marginTop: 4 }}>
+          {tr("Radnici, sati (ovaj i prošli mjesec), dobit po hotelu i rokovi dokumenata. Bankovni računi se ne šalju.")}
+          {spend && <> · {tr("potrošeno ovaj mjesec")} {usd(spend.spent)}{spend.limit ? ` / ${usd(spend.limit)}` : ""}</>}
+        </div>
+      </Card>
+
+      {msgs.length === 0 && (
+        <Card>
+          <div style={{ fontWeight: 700, marginBottom: 8 }}>{tr("🤖 Pitaj ili priloži dokument")}</div>
+          {examples.map((x) => (
+            <button key={x} onClick={() => setInput(tr(x))} style={{ display: "block", width: "100%", textAlign: "left", background: S.bg, border: "none", borderRadius: 10, padding: "9px 11px", marginBottom: 6, fontSize: 13.5, color: S.ink, cursor: "pointer" }}>{tr(x)}</button>
+          ))}
+        </Card>
+      )}
+
+      {msgs.map((m, i) => (
+        <div key={i} style={{ display: "flex", justifyContent: m.role === "user" ? "flex-end" : "flex-start", marginBottom: 10 }}>
+          <div style={{ maxWidth: "88%", background: m.role === "user" ? S.green : S.card, color: m.role === "user" ? "#fff" : S.ink,
+            border: m.role === "user" ? "none" : `1px solid ${S.line}`, borderRadius: 14, padding: "10px 12px" }}>
+            {m.files?.length > 0 && <div style={{ fontSize: 12, opacity: 0.85, marginBottom: 4 }}>📎 {m.files.join(", ")}</div>}
+            {m.role === "user" ? <div style={{ whiteSpace: "pre-wrap", fontSize: 14.5 }}>{m.text}</div> : <AiText text={m.text} />}
+            {m.role === "assistant" && (
+              <button onClick={() => copy(m.text, i)} style={{ background: "none", border: "none", color: S.sub, fontSize: 12, fontWeight: 700, cursor: "pointer", padding: "6px 0 0" }}>
+                {copied === i ? tr("✓ Kopirano") : tr("Kopiraj odgovor")}
+              </button>
+            )}
+          </div>
+        </div>
+      ))}
+      {busy && <div style={{ color: S.sub, fontSize: 13.5, marginBottom: 10 }}>{tr("Claude razmišlja…")}</div>}
+      {err && <div style={{ background: S.redSoft, color: S.red, borderRadius: 10, padding: "9px 12px", marginBottom: 10, fontSize: 13.5, fontWeight: 600 }}>{err}</div>}
+      <div ref={endRef} />
+
+      <Card style={{ position: "sticky", bottom: 76, boxShadow: "0 4px 16px rgba(0,0,0,.08)" }}>
+        {files.length > 0 && (
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
+            {files.map((f, i) => (
+              <span key={i} style={{ background: S.bg, borderRadius: 999, padding: "4px 10px", fontSize: 12.5 }}>
+                📎 {f.name.slice(0, 28)} <button onClick={() => setFiles(files.filter((_, j) => j !== i))} style={{ background: "none", border: "none", color: S.red, cursor: "pointer", fontWeight: 800 }}>✕</button>
+              </span>
+            ))}
+          </div>
+        )}
+        <textarea value={input} onChange={(e) => setInput(e.target.value)} rows={2} placeholder={tr("Pitaj nešto ili priloži PDF, sliku ili Excel…")}
+          onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) send(); }} style={{ resize: "vertical" }} />
+        <input ref={fileRef} type="file" multiple accept="application/pdf,.pdf,image/jpeg,image/png,image/webp,image/gif,.xlsx,.xls,.xlsm,.ods,.csv,.txt" onChange={addFiles} style={{ display: "none" }} />
+        <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+          <Btn kind="ghost" onClick={() => fileRef.current?.click()} disabled={busy}>📎</Btn>
+          <Btn onClick={send} disabled={busy || (!input.trim() && !files.length)} style={{ flex: 1 }}>{busy ? tr("Šaljem…") : tr("Pošalji")}</Btn>
+        </div>
+      </Card>
+    </>
+  );
+}
+
 function AdminPanels({ data, api, panel, setPanel, onOpenWorker, onOpenProfile }) {
   const [firm, setFirm] = useState({ company_name: "", address: "", oib: "", iban: "", czk_rate: "25", czk_rate_auto: true, weekend_pct: "0", holiday_pct: "0", expiry_warn_days: "30", payday_day: "5", payday_reminder_days: "3" });
   const [auditQ, setAuditQ] = useState("");
@@ -3281,6 +3478,7 @@ function AdminPanels({ data, api, panel, setPanel, onOpenWorker, onOpenProfile }
 
       {panel === "unpaid" && <UnpaidPanel data={data} api={api} onOpenWorker={onOpenWorker} />}
       {panel === "candidates" && <CandidatesPanel data={data} api={api} />}
+      {panel === "ai" && <AiAssistantPanel data={data} />}
       {panel === "finance" && <FinancePanel data={data} api={api} />}
       {panel === "cash" && <CashPanel data={data} api={api} />}
 

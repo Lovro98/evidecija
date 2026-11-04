@@ -906,3 +906,20 @@ create policy "wd_update" on public.worker_documents for update to authenticated
   using (is_admin() or created_by = auth.uid());
 create policy "wd_delete_admin" on public.worker_documents for delete to authenticated
   using (is_admin());
+
+-- ============================================================
+-- AI ASISTENT: zapis potrošnje (Edge funkcija ai-assistant upisuje service-role ključem)
+-- ============================================================
+create table if not exists public.ai_usage (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid references public.profiles,
+  model text,
+  input_tokens integer default 0,
+  output_tokens integer default 0,
+  cost_usd numeric default 0,
+  created_at timestamptz default now()
+);
+create index if not exists ai_usage_created_idx on public.ai_usage(created_at);
+alter table public.ai_usage enable row level security;
+drop policy if exists "ai_usage_admin_select" on public.ai_usage;
+create policy "ai_usage_admin_select" on public.ai_usage for select to authenticated using (is_admin());
