@@ -5,6 +5,7 @@ import pdfjsWorkerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import { supabase } from "./supabase.js";
 import { exportUnpaidXlsx } from "./unpaidExport.js";
 import { downloadStyledXlsx, XC, xDate } from "./xlsxStyled.js";
+import { downloadAccountantZip, printAccountantPack } from "./accountantPack.js";
 import { TR_UK } from "./i18n_uk.js";
 import { POSITIONS, RESIDENCE, MESSENGERS, START, HEARD, CAND_STATUS, labelOf } from "./candidates.js";
 import { FIN_CATS, CZ_CIT, CZ_DIVIDEND, catLabel, catKind, suggestCategory, ruleMatches, txText, fold, decodeText, parseCsv, findHeader, guessMapping, FIELDS, rowsToTxs, finYear, taxEstimate, vatOf, toCzkAmt, payrollLevies, citAdvances, CZ_SOC_FIRM, CZ_SOC_EMP, CZ_ZDR_FIRM, CZ_ZDR_EMP } from "./finance.js";
@@ -797,7 +798,7 @@ async function fetchAll(isAdmin) {
     })),
     purchaseInvoices: purchaseInvoices.map((p) => ({
       id: p.id, supplier: p.supplier || "", number: p.number || "", duzp: p.duzp, base: Number(p.base_amount) || 0,
-      vat: Number(p.vat_amount) || 0, currency: p.currency === "EUR" ? "EUR" : "CZK", note: p.note || "",
+      vat: Number(p.vat_amount) || 0, currency: p.currency === "EUR" ? "EUR" : "CZK", note: p.note || "", filePath: p.file_path || "",
     })),
     monthClose: monthClose.map((c) => ({ id: c.id, month: c.month, objectId: c.object_id || null, step: c.step, doneAt: c.done_at })),
     loginLog: loginLog.map((l) => ({ id: l.id, userName: l.user_name || "", at: l.at, userAgent: l.user_agent || "" })),
@@ -1265,6 +1266,8 @@ export default function App() {
       supplier: f.supplier, number: f.number, duzp: f.duzp, base_amount: f.base, vat_amount: f.vat, currency: f.currency || "CZK", note: f.note || "",
       created_by: session.user.id,
     }), `Upisao primljenu fakturu: ${f.supplier} ${f.number} (DPH ${money(f.vat, f.currency)}, DUZP ${fmtDate(f.duzp)})`),
+    setPurchaseInvoiceFile: (pi, filePath) => act(() => upd("purchase_invoices", pi.id, { file_path: filePath }),
+      filePath ? `Dodao PDF uz primljenu fakturu ${pi.supplier} ${pi.number}` : `Uklonio PDF s primljene fakture ${pi.supplier} ${pi.number}`),
     delPurchaseInvoice: (pi) => act(() => softDel("purchase_invoices", pi.id),
       `Obrisao primljenu fakturu: ${pi.supplier} ${pi.number} (DPH ${money(pi.vat, pi.currency)})`),
     createEmployee: async (f) => {
@@ -3132,6 +3135,12 @@ function AdminPanels({ data, api, panel, setPanel, onOpenWorker, onOpenProfile }
   const [apprBusy, setApprBusy] = useState(false);
   const [vatMonth, setVatMonth] = useState(prevMonthKey(curMonth()));
   const [piForm, setPiForm] = useState({ supplier: "", number: "", duzp: todayISO(), base: "", vat: "", currency: "CZK" });
+  const [packBusy, setPackBusy] = useState(""); // "" | "zip" | "print"
+  const [packMsg, setPackMsg] = useState("");
+  const piFileRef = useRef(null);
+  const piFileTarget = useRef(null);
+  const [piFileBusy, setPiFileBusy] = useState(null);
+  const [piViewer, setPiViewer] = useState(null);
   const [lastBackup, setLastBackup] = useState(() => { try { return localStorage.getItem("evidencija_last_backup"); } catch { return null; } });
   const daysSinceBackup = lastBackup ? Math.floor((Date.now() - new Date(lastBackup).getTime()) / 86400000) : null;
   const doBackup = () => {
@@ -3334,8 +3343,44 @@ function AdminPanels({ data, api, panel, setPanel, onOpenWorker, onOpenProfile }
           if (ok) setPiForm({ supplier: "", number: "", duzp: piForm.duzp, base: "", vat: "", currency: piForm.currency });
         };
         const row = { display: "flex", justifyContent: "space-between", gap: 8, padding: "5px 0", borderBottom: `1px solid ${S.line}`, fontSize: 13 };
+        const company = data.settings?.company_name || "Molnar Rose agency & floristry s.r.o.";
+        const runPack = async (kind) => {
+          if (packBusy) return;
+          setPackBusy(kind); setPackMsg("");
+          try {
+            const args = { supabase, month: vatMonth, out: v.out, inn: v.inn, objName,
+              onProgress: (i, n) => setPackMsg(tr("Preuzimam fakture… {0}/{1}", i, n)) };
+            const res = kind === "zip"
+              ? await downloadAccountantZip(args)
+              : await printAccountantPack({ ...args, pdfjsLib, company });
+            setPackMsg(res.missing.length
+              ? tr("Gotovo. Bez PDF-a ({0}): {1} — dodaj PDF uz te fakture pa ponovi.", res.missing.length, res.missing.map((r) => r.number || r.party).join(", "))
+              : tr("Gotovo ✓ Sve fakture imaju PDF."));
+            api.logDoc(`${kind === "zip" ? "Preuzeo ZIP" : "Otvorio ispis"} faktura za knjigovođu (${vatMonth})`);
+          } catch (e) { setPackMsg(tr("Greška: ") + (e.message || e)); }
+          finally { setPackBusy(""); }
+        };
+        const pickPiFile = (pi) => { piFileTarget.current = pi; piFileRef.current?.click(); };
+        const uploadPiFile = async (e) => {
+          const file = e.target.files?.[0];
+          e.target.value = "";
+          const pi = piFileTarget.current;
+          if (!file || !pi) return;
+          setPiFileBusy(pi.id);
+          const path = `purchase/${pi.id}_${Date.now()}_${file.name.replace(/[^\w.\-]+/g, "_")}`;
+          const { error } = await supabase.storage.from("invoices").upload(path, file);
+          if (error) setPackMsg(tr("Greška: ") + error.message);
+          else await api.setPurchaseInvoiceFile(pi, path);
+          setPiFileBusy(null);
+        };
+        const viewPiFile = async (pi) => {
+          const { data: s } = await supabase.storage.from("invoices").createSignedUrl(pi.filePath, 300);
+          if (s?.signedUrl) setPiViewer({ name: `${pi.supplier} ${pi.number}`, url: s.signedUrl, image: /\.(jpe?g|png|gif|webp)$/i.test(pi.filePath) });
+        };
+        const noPdf = v.out.filter((i) => !i.filePath).length + v.inn.filter((p) => !p.filePath).length;
         return (
           <Card style={{ marginTop: 8 }}>
+            <input ref={piFileRef} type="file" accept="application/pdf,image/*" onChange={uploadPiFile} style={{ display: "none" }} />
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
               <div style={{ fontWeight: 700 }}>{tr("🧾 DPH za razdoblje")}</div>
               <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
@@ -3362,6 +3407,19 @@ function AdminPanels({ data, api, panel, setPanel, onOpenWorker, onOpenProfile }
               {tr("Faktura ide u mjesec prema DUZP-u. Ako DUZP nije upisan, prema razdoblju fakture (\"za měsíc …\"), a tek onda prema datumu izdavanja. Rok vrijedi za mjesečnog platitelja DPH (25. idućeg mjeseca, pomaknuto na radni dan). Ovo je pomoć za planiranje, konačan iznos potvrdi s knjigovođom.")}
             </div>
 
+            <div style={{ background: S.blueSoft, borderRadius: 12, padding: "10px 12px", marginBottom: 12 }}>
+              <div style={{ fontWeight: 700, fontSize: 13.5, marginBottom: 4 }}>{tr("📦 Za knjigovođu — sve fakture za")}{" "}{mName(vm - 1)} {vy}.</div>
+              <div style={{ fontSize: 12, color: S.sub, marginBottom: 8 }}>
+                {tr("{0} izdanih + {1} primljenih faktura (po DUZP-u).", v.out.length, v.inn.length)}{" "}
+                {noPdf > 0 ? <span style={{ color: S.amber }}>{tr("{0} bez PDF-a — dodaj ga gumbom 📎 uz fakturu.", noPdf)}</span> : tr("Sve imaju PDF.")}
+              </div>
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                <Btn small onClick={() => runPack("zip")} disabled={!!packBusy || (v.out.length + v.inn.length === 0)}>{packBusy === "zip" ? tr("Pripremam…") : tr("⬇️ Preuzmi sve (ZIP + pregled)")}</Btn>
+                <Btn small kind="ghost" onClick={() => runPack("print")} disabled={!!packBusy || (v.out.length + v.inn.length === 0)}>{packBusy === "print" ? tr("Pripremam…") : tr("🖨️ Ispiši sve")}</Btn>
+              </div>
+              {packMsg && <div style={{ fontSize: 12, marginTop: 6, color: packMsg.startsWith(tr("Greška: ")) ? S.red : S.ink }}>{packMsg}</div>}
+            </div>
+
             <div style={{ fontWeight: 700, fontSize: 13.5, margin: "4px 0" }}>{tr("Izdane fakture (")}{v.out.length})</div>
             {outSorted.length === 0 ? (
               <div style={{ color: S.sub, fontSize: 13 }}>{tr("Nema izdanih faktura za ovo razdoblje. Uvezi PDF-ove iz Vyfakturuja u kartici Objekti → \"📥 Uvoz faktura\".")}</div>
@@ -3378,6 +3436,9 @@ function AdminPanels({ data, api, panel, setPanel, onOpenWorker, onOpenProfile }
                 <span>{pi.supplier}{pi.number ? " · " + pi.number : ""}<br /><span style={{ fontSize: 11.5, color: S.sub }}>{tr("DUZP")}{" "}{fmtDate(pi.duzp)}{pi.base ? " · základ " + money(pi.base, pi.currency) : ""}</span></span>
                 <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
                   <b className="num" style={{ color: S.green }}>{tr("DPH")}{" "}{money(pi.vat, pi.currency)}</b>
+                  {pi.filePath
+                    ? <button onClick={() => viewPiFile(pi)} title={tr("Otvori PDF")} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 15 }}>📄</button>
+                    : <button onClick={() => pickPiFile(pi)} disabled={piFileBusy === pi.id} title={tr("Dodaj PDF fakture")} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 15, opacity: piFileBusy === pi.id ? 0.4 : 1 }}>📎</button>}
                   <button onClick={() => window.confirm(tr("Obrisati fakturu {0} {1}?", pi.supplier, pi.number)) && api.delPurchaseInvoice(pi)} style={{ background: "none", border: "none", color: S.red, cursor: "pointer", fontSize: 15 }}>✕</button>
                 </span>
               </div>
@@ -3399,6 +3460,19 @@ function AdminPanels({ data, api, panel, setPanel, onOpenWorker, onOpenProfile }
                 <Btn small onClick={submitPi} disabled={!piForm.supplier.trim() || !(parseNum(piForm.vat) > 0)}>{tr("Spremi")}</Btn>
               </div>
             </div>
+            {piViewer && (
+              <div onClick={() => setPiViewer(null)} style={{ position: "fixed", inset: 0, background: "rgba(10,14,12,.92)", zIndex: 50,
+                display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 16 }}>
+                {piViewer.image
+                  ? <img src={piViewer.url} alt="" style={{ maxWidth: "100%", maxHeight: "72vh", borderRadius: 12 }} />
+                  : <iframe title="faktura" src={piViewer.url} onClick={(e) => e.stopPropagation()} style={{ width: "min(900px, 100%)", height: "72vh", border: 0, borderRadius: 12, background: "#fff" }} />}
+                <div style={{ fontWeight: 700, color: "#fff", marginTop: 8 }}>{piViewer.name}</div>
+                <div style={{ display: "flex", gap: 10, marginTop: 10 }} onClick={(e) => e.stopPropagation()}>
+                  <a href={piViewer.url} target="_blank" rel="noreferrer" style={{ background: S.green, color: "#fff", borderRadius: 10, padding: "9px 14px", fontWeight: 700, textDecoration: "none", fontSize: 13.5 }}>{tr("⬇ Otvori / preuzmi")}</a>
+                  <Btn small onClick={() => setPiViewer(null)}>{tr("Zatvori")}</Btn>
+                </div>
+              </div>
+            )}
           </Card>
         );
       })()}

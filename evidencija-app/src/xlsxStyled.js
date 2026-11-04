@@ -134,15 +134,20 @@ function addSheet(wb, sh) {
   return ws;
 }
 
-/** Izradi i preuzmi .xlsx s jednim ili više listova. */
-export async function downloadStyledXlsx({ fileName, sheets }) {
+/** Izradi .xlsx s jednim ili više listova i vrati ga kao ArrayBuffer (npr. za ZIP). */
+export async function styledXlsxBuffer({ sheets }) {
   const { default: ExcelJS } = await import("exceljs");
   const wb = new ExcelJS.Workbook();
   wb.creator = "Evidencija rada – Molnar Rose";
   wb.created = new Date();
   wb.calcProperties.fullCalcOnLoad = true;
   sheets.forEach((sh) => addSheet(wb, sh));
-  const buf = await wb.xlsx.writeBuffer();
+  return wb.xlsx.writeBuffer();
+}
+
+/** Izradi i preuzmi .xlsx s jednim ili više listova. */
+export async function downloadStyledXlsx({ fileName, sheets }) {
+  const buf = await styledXlsxBuffer({ sheets });
   const blob = new Blob([buf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
