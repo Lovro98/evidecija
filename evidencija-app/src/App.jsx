@@ -5277,8 +5277,26 @@ function WorkerDetail({ worker, data, api, onBack }) {
   const [docErr, setDocErr] = useState("");
   const [viewer, setViewer] = useState(null);
   const fileRef = useRef(null);
+  const [envMonth, setEnvMonth] = useState(workMonthDefault());
 
   const objName = (id) => data.objects.find((o) => o.id === id)?.name || "";
+
+  /* koverta po mjesecima: mjeseci u kojima radnik ima sati ili isplata (+ odabrani) */
+  const envMonths = useMemo(() => {
+    const set = new Set([envMonth]);
+    data.logs.forEach((l) => { if (l.workerId === worker.id) set.add(monthKey(l.date)); });
+    data.payments.forEach((p) => { if (p.workerId === worker.id) set.add(monthKey(p.date)); });
+    return [...set].filter(Boolean).sort().reverse();
+  }, [data.logs, data.payments, worker.id, envMonth]);
+  const shiftEnvMonth = (d) => { const [yy, mm] = envMonth.split("-").map(Number); const dt = new Date(yy, mm - 1 + d, 1); setEnvMonth(`${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, "0")}`); };
+  const envRow = useMemo(() => calcRows({ ...data, workers: [worker] }, (d) => monthKey(d) === envMonth).find((r) => r.w.id === worker.id) || null,
+    [data, worker, envMonth]);
+  const envNote = (data.payrollNotes || []).find((n) => n.workerId === worker.id && n.month === envMonth);
+  const envCash = envRow ? (wCur(worker) === "CZK"
+    ? round2(envRow.czk.net - (envNote && envNote.currency === "CZK" ? envNote.amount : 0))
+    : round2(envRow.net - (envNote && envNote.currency === "EUR" ? envNote.amount : 0))) : 0;
+  const envBank = envRow ? bankAmountsFor(envRow) : [];
+  const envPrintable = !!envRow && (envCash !== 0 || envBank.length > 0 || envRow.net !== 0 || envRow.czk.net !== 0);
 
   const loadDocs = useCallback(async () => {
     const { data: files, error } = await supabase.storage.from("docs").list(worker.id, { limit: 100 });
@@ -5410,6 +5428,26 @@ function WorkerDetail({ worker, data, api, onBack }) {
             </div>
           </>
         )}
+      </Card>
+
+      <Card>
+        <div style={{ fontWeight: 700, marginBottom: 8 }}>{tr("✉️ Koverta")}</div>
+        <div style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 8 }}>
+          <Btn small kind="ghost" onClick={() => shiftEnvMonth(-1)}>←</Btn>
+          <select value={envMonth} onChange={(e) => setEnvMonth(e.target.value)} style={{ flex: 1 }}>
+            {envMonths.map((mo) => <option key={mo} value={mo}>{monthLong(mo)}</option>)}
+          </select>
+          <Btn small kind="ghost" onClick={() => shiftEnvMonth(1)}>→</Btn>
+        </div>
+        {envRow ? (
+          <div className="num" style={{ fontSize: 13.5, marginBottom: 8, lineHeight: 1.5 }}>
+            <div>{tr("Sati")}: <b>{fmtH(envRow.hours)}</b></div>
+            {envBank.length > 0 && <div style={{ color: S.blue }}><b>{bankLabelFor(envRow, api.admin)}</b> {envBank.join(" + ")}</div>}
+            <div>{tr("Na koverti (gotovina)")}: <b>{money(envCash, wCur(worker))}</b></div>
+          </div>
+        ) : <div style={{ fontSize: 13.5, color: S.sub, marginBottom: 8 }}>{tr("Nema sati ni isplata u ovom mjesecu.")}</div>}
+        <Btn small onClick={() => printEnvelopesDoc(data, [envRow], { month: envMonth, admin: api.admin, title: `Koverta ${worker.name} ${monthLong(envMonth)}` })}
+          disabled={!envPrintable}>{tr("✉️ Ispiši kovertu")}</Btn>
       </Card>
 
       <Card style={{ background: S.blueSoft, borderColor: "#CBDCEA" }}>
@@ -7095,6 +7133,70 @@ const paymentMethodLabel = (r) => {
   return "🏦+💶 Dio na račun";
 };
 
+/* ---------- Koverte za isplatu (zajedničko: Obračun i kartica radnika) ---------- */
+/* BANK redak: broj računa (iz worker_bank) vidi samo admin; "?" na kraju ostaje kako je upisano (treba provjeriti) */
+const escHtml = (x) => String(x).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const bankLabelFor = (r, admin) => {
+  if (!admin) return "BANK";
+  const acc = (r.w.bankAccount || "").trim();
+  return `BANK (${acc || "račun nije upisan"})`;
+};
+const bankAmountsFor = (r) => [r.bank ? eur(r.bank) : "", r.czk.bank ? czk(r.czk.bank) : ""].filter(Boolean);
+// view: "month" | "year"; month: "YYYY-MM"
+function printEnvelopesDoc(data, list, { view = "month", month, admin, title }) {
+    const [y, m] = month.split("-").map(Number);
+    const objName = (id) => data.objects.find((o) => o.id === id)?.name || "";
+    const bankLabel = (r) => bankLabelFor(r, admin);
+    const bankAmounts = bankAmountsFor;
+    const esc = escHtml;
+    const pages = list.map((r) => {
+      const objs = [...new Set(r.logs.map((l) => objName(l.objectId)).filter(Boolean))];
+      const objLine = objs.length ? objs.join(", ") : (objName(r.w.objectId) || "");
+      const note = view === "month" ? (data.payrollNotes || []).find((n) => n.workerId === r.w.id && n.month === month) : null;
+      const netE = round2(r.net - (note && note.currency === "EUR" ? note.amount : 0));
+      const netK = round2(r.czk.net - (note && note.currency === "CZK" ? note.amount : 0));
+      const gc = wCur(r.w);
+      // koverta se ispisuje i kad je gotovina 0, ako je nešto išlo na račun (BANK redak)
+      if (netE === 0 && netK === 0 && !r.bank && !r.czk.bank) return "";
+      const amounts = netE === 0 && netK === 0 ? [money(0, gc)] : [
+        netE !== 0 ? eur(netE) : "",
+        netK !== 0 ? czk(netK) : "",
+      ].filter(Boolean);
+      const noteLabel = note?.note || MZDY_NOTE_LABEL;
+      const breakdown = [
+        gc === "CZK" ? (r.grossKc ? "zarada " + czk(r.grossKc) : "") : (r.gross ? "zarada " + eur(r.gross) : ""),
+        r.extraPay ? "vikend/praznik +" + eur(r.extraPay) : "", r.extraPayKc ? "vikend/praznik +" + czk(r.extraPayKc) : "",
+        ...r.pays.filter((p) => p.type === "bonus").map((p) => `${p.note || "bonus"} +${money(p.amount, p.currency)}`),
+        r.advances ? "avans −" + eur(r.advances) : "", r.czk.advances ? "avans −" + czk(r.czk.advances) : "",
+        ...r.pays.filter((p) => p.type !== "avans" && p.type !== "bonus" && p.type !== "racun" && p.deduct).map((p) => `${p.note || "odbitak"} −${money(p.amount, p.currency)}`),
+        note ? `${noteLabel} −${money(note.amount, note.currency)}` : "",
+      ].filter(Boolean).join(" · ");
+      const envPeriodLabel = view === "month" ? `${m}. ${y}.` : `${y}.`;
+      return `<div class="env">
+        <div class="env-top">${envPeriodLabel}${objLine ? "<br>" + objLine : ""}</div>
+        <div class="env-mid">
+          <div class="env-name">${r.w.name}</div>
+          <div class="env-hours">${fmtH(r.hours)}</div>
+        </div>
+        ${breakdown && breakdown !== ("zarada " + amounts[0]) ? `<div class="env-break">${breakdown}</div>` : ""}
+        ${bankAmounts(r).length ? `<div class="env-bank">${esc(bankLabel(r))}&nbsp;&nbsp;${bankAmounts(r).join(" + ")}</div>` : ""}
+        <div class="env-total">${amounts.join("<br>")}</div>
+      </div>`;
+    }).join("");
+    printDoc(title || ("Koverte " + (view === "month" ? monthLong(month) : `${y}.`)), `<style>
+      @page{size:220mm 110mm;margin:0}
+      body{padding:0!important;margin:0!important;max-width:none!important}
+      .env{width:220mm;box-sizing:border-box;padding:10mm 18mm 0;page-break-after:always;page-break-inside:avoid;text-align:center}
+      .env-top{font-size:12pt;color:#444;line-height:1.3}
+      .env-mid{margin:2mm 0 1.5mm}
+      .env-name{font-size:19pt;font-weight:bold;letter-spacing:.5px;margin-bottom:1mm;text-transform:uppercase}
+      .env-hours{font-size:11.5pt}
+      .env-break{font-size:9pt;color:#444;line-height:1.25;margin-bottom:1mm}
+      .env-bank{font-size:12.5pt;font-weight:bold;margin-top:2mm}
+      .env-total{border-top:2px solid #000;width:70%;margin:4mm auto 0;padding-top:2mm;font-size:17pt;font-weight:bold;line-height:1.2}
+    </style>${pages}`);
+}
+
 /* ================================================================== */
 /*  OBRAČUN: mjesec/godina, isplaćeno, PDF, naplata, grafovi           */
 /* ================================================================== */
@@ -7460,14 +7562,8 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
   /* razrada obračuna jednog radnika — ista za ekran i PDF (oznake su hrvatske, na ekranu idu kroz tr) */
   const noteFor = (r) => (view === "month" ? (data.payrollNotes || []).find((n) => n.workerId === r.w.id && n.month === month) : null);
   const amtText = (e, k, gc) => [e ? eur(e) : "", k ? czk(k) : ""].filter(Boolean).join(" + ") || money(0, gc);
-  /* BANK redak: broj računa (iz worker_bank) vidi samo admin; "?" na kraju ostaje kako je upisano (treba provjeriti) */
-  const bankLabel = (r) => {
-    if (!admin) return "BANK";
-    const acc = (r.w.bankAccount || "").trim();
-    return `BANK (${acc || "račun nije upisan"})`;
-  };
-  const esc = (x) => String(x).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
-  const bankAmounts = (r) => [r.bank ? eur(r.bank) : "", r.czk.bank ? czk(r.czk.bank) : ""].filter(Boolean);
+  const bankLabel = (r) => bankLabelFor(r, admin);
+  const esc = escHtml;
   const breakdownOf = (r) => {
     const note = noteFor(r);
     const gc = wCur(r.w);
@@ -7566,54 +7662,8 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
   };
 
   /* ---------- Koverte za isplatu (jedna po radniku, za ispis) ---------- */
-  const printEnvelopes = (list) => {
-    const pages = (list || rows).map((r) => {
-      const objs = [...new Set(r.logs.map((l) => objName(l.objectId)).filter(Boolean))];
-      const objLine = objs.length ? objs.join(", ") : (objName(r.w.objectId) || "");
-      const note = view === "month" ? (data.payrollNotes || []).find((n) => n.workerId === r.w.id && n.month === month) : null;
-      const netE = round2(r.net - (note && note.currency === "EUR" ? note.amount : 0));
-      const netK = round2(r.czk.net - (note && note.currency === "CZK" ? note.amount : 0));
-      const gc = wCur(r.w);
-      // koverta se ispisuje i kad je gotovina 0, ako je nešto išlo na račun (BANK redak)
-      if (netE === 0 && netK === 0 && !r.bank && !r.czk.bank) return "";
-      const amounts = netE === 0 && netK === 0 ? [money(0, gc)] : [
-        netE !== 0 ? eur(netE) : "",
-        netK !== 0 ? czk(netK) : "",
-      ].filter(Boolean);
-      const noteLabel = note?.note || MZDY_NOTE_LABEL;
-      const breakdown = [
-        gc === "CZK" ? (r.grossKc ? "zarada " + czk(r.grossKc) : "") : (r.gross ? "zarada " + eur(r.gross) : ""),
-        r.extraPay ? "vikend/praznik +" + eur(r.extraPay) : "", r.extraPayKc ? "vikend/praznik +" + czk(r.extraPayKc) : "",
-        ...r.pays.filter((p) => p.type === "bonus").map((p) => `${p.note || "bonus"} +${money(p.amount, p.currency)}`),
-        r.advances ? "avans −" + eur(r.advances) : "", r.czk.advances ? "avans −" + czk(r.czk.advances) : "",
-        ...r.pays.filter((p) => p.type !== "avans" && p.type !== "bonus" && p.type !== "racun" && p.deduct).map((p) => `${p.note || "odbitak"} −${money(p.amount, p.currency)}`),
-        note ? `${noteLabel} −${money(note.amount, note.currency)}` : "",
-      ].filter(Boolean).join(" · ");
-      const envPeriodLabel = view === "month" ? `${m}. ${y}.` : `${y}.`;
-      return `<div class="env">
-        <div class="env-top">${envPeriodLabel}${objLine ? "<br>" + objLine : ""}</div>
-        <div class="env-mid">
-          <div class="env-name">${r.w.name}</div>
-          <div class="env-hours">${fmtH(r.hours)}</div>
-        </div>
-        ${breakdown && breakdown !== ("zarada " + amounts[0]) ? `<div class="env-break">${breakdown}</div>` : ""}
-        ${bankAmounts(r).length ? `<div class="env-bank">${esc(bankLabel(r))}&nbsp;&nbsp;${bankAmounts(r).join(" + ")}</div>` : ""}
-        <div class="env-total">${amounts.join("<br>")}</div>
-      </div>`;
-    }).join("");
-    printDoc("Koverte " + periodLabel + (objFilterName ? " — " + objFilterName : ""), `<style>
-      @page{size:220mm 110mm;margin:0}
-      body{padding:0!important;margin:0!important;max-width:none!important}
-      .env{width:220mm;box-sizing:border-box;padding:10mm 18mm 0;page-break-after:always;page-break-inside:avoid;text-align:center}
-      .env-top{font-size:12pt;color:#444;line-height:1.3}
-      .env-mid{margin:2mm 0 1.5mm}
-      .env-name{font-size:19pt;font-weight:bold;letter-spacing:.5px;margin-bottom:1mm;text-transform:uppercase}
-      .env-hours{font-size:11.5pt}
-      .env-break{font-size:9pt;color:#444;line-height:1.25;margin-bottom:1mm}
-      .env-bank{font-size:12.5pt;font-weight:bold;margin-top:2mm}
-      .env-total{border-top:2px solid #000;width:70%;margin:4mm auto 0;padding-top:2mm;font-size:17pt;font-weight:bold;line-height:1.2}
-    </style>${pages}`);
-  };
+  const printEnvelopes = (list) => printEnvelopesDoc(data, list || rows, { view, month, admin,
+    title: "Koverte " + periodLabel + (objFilterName ? " — " + objFilterName : "") });
 
   const exportExcel = () => {
     const targetIds = new Set(exportTargetRows.map((r) => r.w.id));
@@ -8072,6 +8122,7 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
                       {view === "month" && admin && selectedPending.length > 0 && (
                         <Btn small onClick={() => approveMany(selectedPending)} disabled={bulkBusy}>{bulkBusy ? tr("Spremam…") : tr("Odobri ({0})", selectedPending.length)}</Btn>
                       )}
+                      <Btn small kind="ghost" onClick={() => printEnvelopes(exportTargetRows)} disabled={bulkBusy}>{tr("✉️ Ispiši koverte ({0})", exportTargetRows.length)}</Btn>
                       <Btn small kind="ghost" onClick={() => setSelected(new Set())} disabled={bulkBusy}>{tr("Poništi odabir")}</Btn>
                     </div>
                   </div>

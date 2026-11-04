@@ -1,6 +1,10 @@
 // Ukrajinski prijevod: ključ je hrvatski tekst iz App.jsx (tr("…")).
 // Kad nema prijevoda, prikazuje se hrvatski.
 export const TR_UK = {
+ "Na koverti (gotovina)": "На конверті (готівка)",
+ "Nema sati ni isplata u ovom mjesecu.": "У цьому місяці немає годин і виплат.",
+ "✉️ Ispiši kovertu": "✉️ Надрукувати конверт",
+ "✉️ Ispiši koverte ({0})": "✉️ Надрукувати конверти ({0})",
  "🎉 Praznik:": "🎉 Свято:",
  "Subota": "Субота",
  "Nedjelja": "Неділя",
