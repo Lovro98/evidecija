@@ -1313,7 +1313,8 @@ export default function App() {
 
       <Header profile={profile} admin={admin} onLogout={() => supabase.auth.signOut()} lang={lang} setLang={setLang} t={t} data={data}
         title={adminPanel ? (ADMIN_MENU.find((m) => m[0] === adminPanel) || [])[2] : worker ? worker.name : object ? object.name : openedProfile ? openedProfile.name : tab === "kandidati" ? tr("Kandidati") : t(TAB_TITLE_KEY[tab] || "tabDanas")}
-        onAdminPanel={(p) => { setAdminPanel(p); setOpenWorker(null); setOpenObject(null); setOpenProfile(null); window.scrollTo({ top: 0, behavior: "smooth" }); }} />
+        onAdminPanel={(p) => { setAdminPanel(p); setOpenWorker(null); setOpenObject(null); setOpenProfile(null); window.scrollTo({ top: 0, behavior: "smooth" }); }}
+        onHome={() => { setAdminPanel(""); setOpenWorker(null); setOpenObject(null); setOpenProfile(null); setTab("danas"); window.scrollTo({ top: 0, behavior: "smooth" }); }} />
 
       <div style={{ maxWidth: 560, margin: "0 auto", padding: "0 14px" }}>
         {err && (
@@ -1428,7 +1429,7 @@ function Login({ lang, setLang, t }) {
   );
 }
 
-function Header({ profile, admin, onLogout, lang, setLang, t, title, data, onAdminPanel }) {
+function Header({ profile, admin, onLogout, lang, setLang, t, title, data, onAdminPanel, onHome }) {
   const [menu, setMenu] = useState(""); // "" | "admin" | "user"
   const pending = admin ? adminBadge(data, "approvals") : 0;
   const close = () => setMenu("");
@@ -1440,7 +1441,8 @@ function Header({ profile, admin, onLogout, lang, setLang, t, title, data, onAdm
     <div style={{ background: S.ink, color: "#fff", padding: "12px 16px", marginBottom: 16, position: "sticky", top: 0, zIndex: 30 }}>
       {menu && <div onClick={close} style={{ position: "fixed", inset: 0, zIndex: 40 }} />}
       <div style={{ maxWidth: 560, margin: "0 auto", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
+        <div onClick={() => { close(); onHome && onHome(); }} role="button" title={tr("Početna")}
+          style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0, cursor: "pointer" }}>
           <BrandMark />
           <div style={{ minWidth: 0 }}>
             <div style={{ fontSize: 11, letterSpacing: 1.5, textTransform: "uppercase", color: "#9DB3A8", fontWeight: 700 }}>{BRAND}</div>
