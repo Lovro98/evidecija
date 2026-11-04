@@ -330,6 +330,29 @@ const writeOfflineQueue = (q) => { try { localStorage.setItem(OFFLINE_QUEUE_KEY,
 const isNetworkError = (e) => (typeof navigator !== "undefined" && navigator.onLine === false)
   || /fetch|network|failed to fetch/i.test(String(e?.message || e || ""));
 
+/* ---------- dobit objekta za mjesec (ista logika kao "Naplata i dobit" u objektu) ---------- */
+function objMonthProfit(data, object, mk) {
+  const logs = data.logs.filter((l) => l.objectId === object.id && monthKey(l.date) === mk);
+  const brig = (data.brigadeCosts || []).filter((b) => b.objectId === object.id && monthKey(b.date) === mk);
+  const rv = objRevenue(data, object, logs, brig);
+  let costE = 0, costK = 0;
+  logs.forEach((l) => {
+    const wk = data.workers.find((x) => x.id === l.workerId);
+    const v = l.hours * rateFor(data, wk, l.date, l.position) + extraPayForLog(data, wk, l);
+    if (wCur(wk) === "CZK") costK += v; else costE += v;
+  });
+  const oPays = data.payments.filter((p) => !p.workerId && p.objectId === object.id && monthKey(p.date) === mk);
+  costE += oPays.filter((p) => (p.currency || "EUR") === "EUR").reduce((s, p) => s + p.amount, 0)
+    + brig.filter((b) => (b.currency || "CZK") === "EUR").reduce((s, b) => s + b.amount, 0);
+  costK += oPays.filter((p) => p.currency === "CZK").reduce((s, p) => s + p.amount, 0)
+    + brig.filter((b) => b.currency === "CZK").reduce((s, b) => s + b.amount, 0);
+  const hours = round2(logs.reduce((s, l) => s + l.hours, 0) + brig.reduce((s, b) => s + b.hours, 0));
+  const rate = Number(data.settings?.czk_rate) || 25;
+  // za usporedbu hotela sve u Kč (EUR × tečaj iz postavki)
+  const revKc = round2(rv.revenueKc + rv.revenue * rate), costKc = round2(costK + costE * rate);
+  return { rv, hours, revKc, costKc, profitKc: round2(revKc - costKc) };
+}
+
 /* ---------- naplata objekta po poziciji (HSK, kuhinja, bar…) ---------- */
 const positionBillFor = (data, objectId, position) =>
   (data.positionBilling || []).find((pb) => pb.objectId === objectId && pb.position === (position || ""));
@@ -6336,6 +6359,51 @@ function CashPanel({ data, api }) {
   );
 }
 
+/* ---------- STAVKE ZA VYFAKTURUJ: gotove stavke fakture za hotel i mjesec ---------- */
+function VyfakturujItems({ object, rv, mk }) {
+  const [copied, setCopied] = useState("");
+  const [y, m] = mk.split("-");
+  const period = `${m}/${y}`;
+  const items = rv.byPosition.filter((r) => r.hours > 0).map((r) => ({
+    text: `Poskytnutí pracovníků${r.position ? " – " + r.position : ""} (${period})`,
+    qty: round2(r.hours), unit: "hod", price: r.rate, cur: r.cur, amount: r.amount,
+  }));
+  const fmtNum = (n) => String(n).replace(".", ",");
+  const copy = async (text, what) => {
+    try { await navigator.clipboard.writeText(text); setCopied(what); setTimeout(() => setCopied(""), 1800); }
+    catch { setCopied("err"); }
+  };
+  const allText = items.map((i) => [i.text, fmtNum(i.qty), i.unit, fmtNum(i.price)].join("\t")).join("\n");
+  const customer = object.invoiceCustomerName || object.name;
+  const totals = items.reduce((t, i) => ({ ...t, [i.cur]: round2((t[i.cur] || 0) + i.amount) }), {});
+  return (
+    <Card>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+        <div style={{ fontWeight: 800, fontSize: 15 }}>{tr("🧾 Za Vyfakturuj")}</div>
+        <Btn small kind="ghost" onClick={() => copy(allText, "all")}>{copied === "all" ? tr("✓ Kopirano") : tr("Kopiraj sve stavke")}</Btn>
+      </div>
+      <div style={{ fontSize: 12.5, color: S.sub, marginBottom: 8 }}>
+        {tr("Kupac:")} <b style={{ color: S.ink }}>{customer}</b> · {tr("razdoblje")} {period}. {tr("Dodirni redak da kopiraš pojedinu vrijednost. DPH odaberi u Vyfakturuju.")}
+      </div>
+      {items.map((i, k) => (
+        <div key={k} style={{ padding: "7px 0", borderBottom: `1px solid ${S.line}`, fontSize: 13.5 }}>
+          <div onClick={() => copy(i.text, "t" + k)} style={{ fontWeight: 600, cursor: "pointer" }}>{i.text}{copied === "t" + k ? " ✓" : ""}</div>
+          <div className="num" style={{ display: "flex", gap: 12, color: S.sub, marginTop: 2 }}>
+            <span onClick={() => copy(fmtNum(i.qty), "q" + k)} style={{ cursor: "pointer" }}>{tr("Množství")}: <b style={{ color: S.ink }}>{fmtNum(i.qty)} {i.unit}</b>{copied === "q" + k ? " ✓" : ""}</span>
+            <span onClick={() => copy(fmtNum(i.price), "p" + k)} style={{ cursor: "pointer" }}>{tr("Cena/j.")}: <b style={{ color: S.ink }}>{money(i.price, i.cur)}</b>{copied === "p" + k ? " ✓" : ""}</span>
+            <span style={{ marginLeft: "auto" }}><b style={{ color: S.ink }}>{money(i.amount, i.cur)}</b></span>
+          </div>
+        </div>
+      ))}
+      <div className="num" style={{ display: "flex", justifyContent: "space-between", fontWeight: 800, paddingTop: 8 }}>
+        <span>{tr("Ukupno bez DPH")}</span>
+        <span>{Object.entries(totals).map(([c, v]) => money(v, c)).join(" + ")}</span>
+      </div>
+      {copied === "err" && <div style={{ color: S.red, fontSize: 12.5, marginTop: 6 }}>{tr("Kopiranje nije uspjelo — označi tekst ručno.")}</div>}
+    </Card>
+  );
+}
+
 function ObjectDetail({ object, data, api, onBack, onOpenWorker }) {
   const [mode, setMode] = useState("day");
   const [section, setSection] = useState(api.admin ? "pregled" : "sati"); // pregled | sati | fakture | postavke
@@ -6743,6 +6811,7 @@ function ObjectDetail({ object, data, api, onBack, onOpenWorker }) {
               return <div className="num" style={{ fontSize: 12.5, marginTop: 8, fontWeight: 600, color: over ? S.red : pct >= 80 ? S.amber : S.sub }}>{over || pct >= 80 ? "⚠️ " : ""}{tr("Proračun: potrošeno")}{" "}{money(round2(spent), bc)} {tr("od")}{" "}{money(object.monthlyBudget, bc)} ({pct}%)</div>; })()}
           </Card>
           )}
+          {section === "pregled" && rv.byPosition.length > 0 && <VyfakturujItems object={object} rv={rv} mk={mk} />}
           {section === "postavke" && (<>
           <Card>
             <div style={{ fontWeight: 800, fontSize: 15, marginBottom: 10 }}>{tr("💶 Naplata objekta")}</div>
@@ -7873,6 +7942,69 @@ function AdjustForm({ r, month, api, czkRate, hasNote }) {
   );
 }
 
+/* ---------- USPOREDBA ISPLATIVOSTI HOTELA (Obračun → Analiza) ---------- */
+function HotelProfitability({ data }) {
+  const [mk, setMk] = useState(curMonth());
+  const shift = (d) => { const [y, m] = mk.split("-").map(Number); const t = new Date(y, m - 1 + d, 1); setMk(`${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, "0")}`); };
+  const [y, m] = mk.split("-").map(Number);
+  const last6 = Array.from({ length: 6 }, (_, i) => { const t = new Date(y, m - 1 - (5 - i), 1); return `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, "0")}`; });
+  const rows = data.objects.map((o) => {
+    const p = objMonthProfit(data, o, mk);
+    const trend = last6.map((k) => objMonthProfit(data, o, k).profitKc);
+    return { o, ...p, margin: p.revKc > 0 ? round2((p.profitKc / p.revKc) * 100) : null, perH: p.hours > 0 ? round2(p.profitKc / p.hours) : null, trend };
+  }).filter((r) => r.hours > 0 || r.revKc > 0 || r.costKc > 0).sort((a, b) => b.profitKc - a.profitKc);
+  const tot = rows.reduce((t, r) => ({ rev: t.rev + r.revKc, cost: t.cost + r.costKc, profit: t.profit + r.profitKc, h: t.h + r.hours }), { rev: 0, cost: 0, profit: 0, h: 0 });
+  const Spark = ({ vals }) => {
+    const max = Math.max(1, ...vals.map((v) => Math.abs(v)));
+    return (
+      <div style={{ display: "flex", alignItems: "center", gap: 2, height: 22 }} title={tr("Dobit zadnjih 6 mjeseci")}>
+        {vals.map((v, i) => (
+          <div key={i} style={{ width: 6, height: Math.max(2, Math.round((Math.abs(v) / max) * 20)), background: v >= 0 ? S.green : S.red, opacity: i === vals.length - 1 ? 1 : 0.55, borderRadius: 2, alignSelf: v >= 0 ? "flex-end" : "flex-start" }} />
+        ))}
+      </div>
+    );
+  };
+  return (
+    <Card>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+        <div style={{ fontWeight: 700 }}>{tr("🏨 Isplativost hotela")}</div>
+        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <Btn small kind="ghost" onClick={() => shift(-1)}>←</Btn>
+          <span style={{ fontWeight: 700, fontSize: 13.5 }}>{mName(m - 1)} {y}.</span>
+          <Btn small kind="ghost" onClick={() => shift(1)}>→</Btn>
+        </div>
+      </div>
+      <div style={{ fontSize: 12, color: S.sub, marginBottom: 8 }}>{tr("Sve u Kč (EUR preračunat po tečaju iz postavki). Poredano po dobiti.")}</div>
+      {rows.length === 0 ? <div style={{ color: S.sub, fontSize: 13.5 }}>{tr("Nema podataka za ovaj mjesec.")}</div> : (
+        <>
+          {rows.map((r, i) => (
+            <div key={r.o.id} style={{ padding: "8px 0", borderBottom: `1px solid ${S.line}` }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+                <span style={{ fontWeight: 700, fontSize: 14.5, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{i + 1}. {r.o.name}</span>
+                <span className="num" style={{ fontWeight: 800, color: r.profitKc >= 0 ? S.green : S.red, whiteSpace: "nowrap" }}>{czk(r.profitKc)}</span>
+              </div>
+              <div className="num" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 12.5, color: S.sub, marginTop: 3, gap: 8 }}>
+                <span>{fmtH(r.hours)} · {tr("naplata")} {czk(r.revKc)} · {tr("trošak")} {czk(r.costKc)}</span>
+                <Spark vals={r.trend} />
+              </div>
+              <div className="num" style={{ fontSize: 12.5, marginTop: 2 }}>
+                <span style={{ fontWeight: 700, color: r.margin == null ? S.sub : r.margin < 10 ? S.red : r.margin < 20 ? S.amber : S.green }}>
+                  {tr("marža")} {r.margin == null ? "—" : r.margin + " %"}
+                </span>
+                <span style={{ color: S.sub }}> · {tr("dobit po satu")} {r.perH == null ? "—" : czk(r.perH)}</span>
+              </div>
+            </div>
+          ))}
+          <div className="num" style={{ display: "flex", justifyContent: "space-between", fontWeight: 800, paddingTop: 8 }}>
+            <span>{tr("Ukupno")} · {fmtH(round2(tot.h))}</span>
+            <span style={{ color: tot.profit >= 0 ? S.green : S.red }}>{czk(round2(tot.profit))}{tot.rev > 0 ? ` (${round2((tot.profit / tot.rev) * 100)} %)` : ""}</span>
+          </div>
+        </>
+      )}
+    </Card>
+  );
+}
+
 function ReportTab({ data, api, admin, onOpenWorker }) {
   const [view, setView] = useState("month"); // month | year
   const [month, setMonth] = useState(workMonthDefault());
@@ -8808,6 +8940,7 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
 
           {section === "analiza" && (
             <>
+              {admin && <HotelProfitability data={data} />}
               {admin && (
                 <Card>
                   <div style={{ fontWeight: 700, marginBottom: 8 }}>{tr("Dobit ({0})", periodLabelUi)}</div>
