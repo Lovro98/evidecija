@@ -17,11 +17,30 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorkerUrl;
 /* ================================================================== */
 
 const S = {
-  bg: "#F4F5F1", card: "#FFFFFF", ink: "#1C2521", sub: "#5C6862", line: "#E1E5DF",
+  bg: "#F3F4EF", card: "#FFFFFF", ink: "#17211C", sub: "#55625B", line: "#E1E5DF", deep: "#0B3D2E", rose: "#F4C9C0", mint: "#A9C7BA",
   green: "#0E6B4F", greenSoft: "#E3F0EA", amber: "#B97F1E", amberSoft: "#FBF1DC",
   red: "#B3402F", redSoft: "#F9E8E4", blue: "#2B5D8A", blueSoft: "#E6EEF5",
 };
 
+const APP_FONT = "Manrope, 'Segoe UI', system-ui, -apple-system, sans-serif";
+const APP_CSS = `
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  input, select, button, textarea { font-family: inherit; font-size: 15px; }
+  input, select, textarea { width: 100%; padding: 11px 12px; border: 1px solid ${S.line}; border-radius: 12px; background: #fff; color: ${S.ink}; outline: none; }
+  input:focus, select:focus, textarea:focus { border-color: ${S.green}; box-shadow: 0 0 0 3px rgba(14,107,79,.12); }
+  .num { font-variant-numeric: tabular-nums; }
+  button { transition: transform .08s ease, background-color .15s ease, box-shadow .15s ease; }
+  button:active { transform: scale(.97); }
+  @keyframes cIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+  .c-in { animation: cIn .28s ease both; }
+  @keyframes toastIn { from { opacity: 0; transform: translateY(12px) scale(.98); } to { opacity: 1; transform: none; } }
+  .toast { animation: toastIn .22s ease both; }
+  @keyframes shimmer { 0% { background-position: -300px 0; } 100% { background-position: 300px 0; } }
+  .skel { background: linear-gradient(90deg, #E7EAE4 0%, #F1F3EE 50%, #E7EAE4 100%); background-size: 600px 100%; animation: shimmer 1.2s linear infinite; border-radius: 12px; }
+  @keyframes sheetIn { from { transform: translateY(24px); opacity: 0; } to { transform: none; opacity: 1; } }
+  .sheet { animation: sheetIn .2s ease both; }
+  @media (prefers-reduced-motion: reduce) { .c-in, .toast, .skel, .sheet { animation: none; } button { transition: none; } }
+`;
 const eur = (n) => (isNaN(n) ? 0 : n).toLocaleString("hr-HR", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + " €";
 const czk = (n) => (isNaN(n) ? 0 : n).toLocaleString("cs-CZ", { minimumFractionDigits: 0, maximumFractionDigits: 2 }) + " Kč";
 const money = (n, c) => (c === "CZK" ? czk(n) : eur(n));
@@ -858,6 +877,10 @@ export default function App() {
   const [openObject, setOpenObject] = useState(null);
   const [openProfile, setOpenProfile] = useState(null);
   const [adminPanel, setAdminPanel] = useState("");
+  const wide = useWide();
+  const [toast, setToast] = useState("");
+  const [fabOpen, setFabOpen] = useState(false);
+  useEffect(() => { if (!toast) return; const id = setTimeout(() => setToast(""), 2200); return () => clearTimeout(id); }, [toast]);
 
   const admin = profile?.role === "admin";
   const loginLogged = useRef(false);
@@ -983,6 +1006,7 @@ export default function App() {
       if (auditText) await supabase.from("audit_log").insert({ user_id: session.user.id, user_name: profile?.name || "", action: auditText });
       await reload();
       setErr("");
+      if (auditText) setToast(tr("Spremljeno"));
       return true;
     } catch (e) { setErr(tr("Greška: ") + (e.message || e)); return false; }
     finally { setBusy(false); }
@@ -1338,40 +1362,48 @@ export default function App() {
     delReminder: (r) => act(() => softDel("reminders", r.id), `Obrisao podsjetnik: ${r.text}`),
   };
 
-  if (session === undefined) return <Center>{tr("Učitavam…")}</Center>;
+  if (session === undefined) return <LoadingSkeleton />;
   if (!session) return <Login lang={lang} setLang={setLang} t={t} />;
-  if (!data) return <Center>{err || tr("Učitavam podatke…")}</Center>;
+  if (!data) return err ? <Center>{err}</Center> : <LoadingSkeleton />;
 
   const worker = data.workers.find((w) => w.id === openWorker);
   const object = data.objects.find((o) => o.id === openObject);
   const openedProfile = data.profiles.find((p) => p.id === openProfile);
   const detailOpen = worker || object || openedProfile;
 
+  const navTab = adminPanel || MORE_TABS.includes(tab) || tab === "vise" ? "vise" : tab;
+  const resetDetail = () => { setOpenWorker(null); setOpenObject(null); setOpenProfile(null); };
+  const goTab = (x) => { setAdminPanel(""); resetDetail(); setTab(x); setFabOpen(false); window.scrollTo({ top: 0 }); };
+  const openPanel = (p) => { resetDetail(); setAdminPanel(p); setFabOpen(false); window.scrollTo({ top: 0, behavior: "smooth" }); };
+  const moreBadge = (data.newCandidates || 0) + (admin ? (data.payouts || []).filter((p) => !p.approved).length : 0);
+  // iPad/računalo: popis lijevo, detalji desno
+  const splitList = wide && !adminPanel && ((tab === "radnici" && worker) || (tab === "objekti" && object));
+  const showBackToMore = !detailOpen && (adminPanel || MORE_TABS.includes(tab));
+  const showFab = !detailOpen && !adminPanel && ["danas", "radnici", "sati", "objekti"].includes(tab);
+  const title = adminPanel ? tr((ADMIN_MENU.find((m) => m[0] === adminPanel) || [])[2] || "")
+    : worker && !splitList ? worker.name : object && !splitList ? object.name : openedProfile ? openedProfile.name
+    : tab === "vise" ? tr("Više") : tab === "kandidati" ? tr("Kandidati") : tab === "objekti" ? tr("Hoteli") : t(TAB_TITLE_KEY[tab] || "tabDanas");
+
+  const workerDetailEl = worker && <WorkerDetail key={worker.id} worker={worker} data={data} api={api} onBack={() => setOpenWorker(null)} />;
+  const objectDetailEl = object && <ObjectDetail key={object.id} object={object} data={data} api={api} onBack={() => setOpenObject(null)} onOpenWorker={setOpenWorker} />;
+
   return (
-    <div style={{ minHeight: "100vh", background: S.bg, color: S.ink, fontFamily: "'Segoe UI', system-ui, sans-serif", paddingBottom: 84 }}>
-      <style>{`
-        * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
-        input, select, button, textarea { font-family: inherit; font-size: 15px; }
-        input, select, textarea { width: 100%; padding: 11px 12px; border: 1px solid ${S.line}; border-radius: 10px; background: #fff; color: ${S.ink}; outline: none; }
-        input:focus, select:focus, textarea:focus { border-color: ${S.green}; }
-        .num { font-variant-numeric: tabular-nums; }
-        button:active { transform: scale(.985); }
-      `}</style>
+    <div style={{ minHeight: "100vh", background: S.bg, color: S.ink, fontFamily: APP_FONT, paddingBottom: wide ? 24 : 96, paddingLeft: wide ? 88 : 0 }}>
+      <style>{APP_CSS}</style>
+      {wide && <SideRail tab={navTab} setTab={goTab} t={t} moreBadge={moreBadge} onHome={() => goTab("danas")} />}
 
-      <Header profile={profile} admin={admin} onLogout={() => supabase.auth.signOut()} lang={lang} setLang={setLang} t={t} data={data}
-        title={adminPanel ? (ADMIN_MENU.find((m) => m[0] === adminPanel) || [])[2] : worker ? worker.name : object ? object.name : openedProfile ? openedProfile.name : tab === "kandidati" ? tr("Kandidati") : t(TAB_TITLE_KEY[tab] || "tabDanas")}
-        onAdminPanel={(p) => { setAdminPanel(p); setOpenWorker(null); setOpenObject(null); setOpenProfile(null); window.scrollTo({ top: 0, behavior: "smooth" }); }}
-        onHome={() => { setAdminPanel(""); setOpenWorker(null); setOpenObject(null); setOpenProfile(null); setTab("danas"); window.scrollTo({ top: 0, behavior: "smooth" }); }} />
+      <Header profile={profile} admin={admin} onLogout={() => supabase.auth.signOut()} lang={lang} setLang={setLang} t={t} data={data} wide={wide}
+        title={title} onAdminPanel={openPanel} onHome={() => goTab("danas")} />
 
-      <div style={{ maxWidth: 560, margin: "0 auto", padding: "0 14px" }}>
+      <div style={{ maxWidth: splitList ? 1240 : wide ? 860 : 560, margin: "0 auto", padding: wide ? "0 24px" : "0 14px" }}>
         {err && (
-          <div style={{ background: S.redSoft, color: S.red, borderRadius: 10, padding: "9px 12px", marginBottom: 12, fontSize: 13.5, fontWeight: 600 }}>
+          <div style={{ background: S.redSoft, color: S.red, borderRadius: 12, padding: "9px 12px", marginBottom: 12, fontSize: 13.5, fontWeight: 600 }}>
             {err} <button onClick={() => setErr("")} style={{ background: "none", border: "none", color: S.red, fontWeight: 800, cursor: "pointer", float: "right" }}>✕</button>
           </div>
         )}
         {busy && <div style={{ fontSize: 12.5, color: S.sub, marginBottom: 8 }}>{tr("Spremam…")}</div>}
         {offlineQueue.length > 0 && (
-          <div style={{ background: S.amberSoft, color: S.amber, borderRadius: 10, padding: "9px 12px", marginBottom: 12, fontSize: 13, fontWeight: 600,
+          <div style={{ background: S.amberSoft, color: S.amber, borderRadius: 12, padding: "9px 12px", marginBottom: 12, fontSize: 13, fontWeight: 600,
             display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
             <span>📴 {offlineQueue.length} {offlineQueue.length === 1 ? tr("upis čeka") : tr("upisa čeka")} {tr("slanje (nema interneta)")}</span>
             <button onClick={flushOfflineQueue} style={{ background: "none", border: `1px solid ${S.amber}`, color: S.amber, borderRadius: 8, padding: "4px 9px", fontWeight: 700, cursor: "pointer", fontSize: 12.5 }}>
@@ -1380,18 +1412,34 @@ export default function App() {
           </div>
         )}
 
+        {showBackToMore && (
+          <button onClick={() => goTab("vise")} style={{ background: "none", border: "none", color: S.green, fontWeight: 800, fontSize: 14.5, padding: "2px 0 12px", cursor: "pointer", display: "flex", alignItems: "center", gap: 4 }}>
+            <Ico name="back" size={18} />{tr("Više")}
+          </button>
+        )}
+
         {admin && !detailOpen && adminPanel && <AdminPanels data={data} api={api} panel={adminPanel} setPanel={setAdminPanel} onOpenWorker={(id) => { setAdminPanel(""); setOpenWorker(id); }} onOpenProfile={(id) => { setAdminPanel(""); setOpenProfile(id); }} />}
 
-        {worker ? (
-          <WorkerDetail worker={worker} data={data} api={api} onBack={() => setOpenWorker(null)} />
-        ) : object ? (
-          <ObjectDetail object={object} data={data} api={api} onBack={() => setOpenObject(null)} onOpenWorker={setOpenWorker} />
-        ) : openedProfile ? (
-          <ProfileDetail profile={openedProfile} data={data} api={api} onBack={() => setOpenProfile(null)} />
-        ) : adminPanel ? null : (
+        {splitList ? (
+          <div style={{ display: "grid", gridTemplateColumns: "minmax(300px, 380px) minmax(0, 1fr)", gap: 20, alignItems: "start" }}>
+            <div style={{ position: "sticky", top: 84, maxHeight: "calc(100vh - 100px)", overflowY: "auto", paddingRight: 4 }}>
+              {tab === "radnici"
+                ? <WorkersTab data={data} api={api} onOpen={setOpenWorker} onOpenObject={(id) => { setTab("objekti"); setOpenWorker(null); setOpenObject(id); }} />
+                : <ObjectsTab data={data} api={api} onOpenObject={setOpenObject} />}
+            </div>
+            <div style={{ minWidth: 0 }}>{tab === "radnici" ? workerDetailEl : objectDetailEl}</div>
+          </div>
+        ) : worker ? workerDetailEl
+          : object ? objectDetailEl
+          : openedProfile ? (
+            <ProfileDetail profile={openedProfile} data={data} api={api} onBack={() => setOpenProfile(null)} />
+          ) : adminPanel ? null : (
           <>
+            {tab === "danas" && <HomeTop data={data} admin={admin} profile={profile} goTab={goTab} openPanel={openPanel} wide={wide} />}
             {tab === "danas" && <TodayTab data={data} api={api} admin={admin} onOpenWorker={setOpenWorker} onOpenObject={setOpenObject}
-              openAdminPanel={(p) => { setAdminPanel(p); window.scrollTo({ top: 0, behavior: "smooth" }); }} goTab={setTab} />}
+              openAdminPanel={openPanel} goTab={goTab} />}
+            {tab === "vise" && <MoreTab data={data} admin={admin} recruiter={api.recruiter} t={t} lang={lang} setLang={setLang} goTab={goTab} openPanel={openPanel}
+              onLogout={() => supabase.auth.signOut()} profile={profile} wide={wide} />}
             {tab === "kandidati" && api.recruiter && <CandidatesPanel data={data} api={api} />}
             {tab === "radnici" && <WorkersTab data={data} api={api} onOpen={setOpenWorker} onOpenObject={setOpenObject} />}
             {tab === "objekti" && <ObjectsTab data={data} api={api} onOpenObject={setOpenObject} />}
@@ -1403,14 +1451,23 @@ export default function App() {
         )}
       </div>
 
-      {!detailOpen && <TabBar tab={adminPanel ? "" : tab} setTab={(x) => { setAdminPanel(""); setTab(x); window.scrollTo({ top: 0 }); }} t={t} recruiter={api.recruiter} newCandidates={data?.newCandidates || 0} />}
+      {!detailOpen && !wide && <TabBar tab={navTab} setTab={goTab} t={t} moreBadge={moreBadge} />}
+      {showFab && <Fab open={fabOpen} setOpen={setFabOpen} admin={admin} goTab={goTab} openPanel={openPanel} wide={wide} />}
+      {toast && (
+        <div style={{ position: "fixed", left: wide ? 88 : 0, right: 0, bottom: wide ? 28 : "calc(92px + env(safe-area-inset-bottom))", display: "flex", justifyContent: "center", pointerEvents: "none", zIndex: 60 }}>
+          <div className="toast" role="status" style={{ background: S.ink, color: "#fff", borderRadius: 14, padding: "11px 16px", display: "flex", alignItems: "center", gap: 10, fontSize: 14, fontWeight: 700, boxShadow: "0 8px 24px rgba(0,0,0,.18)" }}>
+            <span style={{ width: 22, height: 22, borderRadius: 99, background: S.green, display: "flex", alignItems: "center", justifyContent: "center" }}><Ico name="check" size={13} stroke={3} /></span>
+            {toast}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
 /* ================================================================== */
 function Center({ children }) {
-  return <div style={{ minHeight: "100vh", display: "grid", placeItems: "center", background: S.bg, color: S.sub, fontFamily: "system-ui", padding: 20, textAlign: "center" }}>{children}</div>;
+  return <div style={{ minHeight: "100vh", display: "grid", placeItems: "center", background: S.bg, color: S.sub, fontFamily: APP_FONT, padding: 20, textAlign: "center" }}>{children}</div>;
 }
 
 function Login({ lang, setLang, t }) {
@@ -1430,9 +1487,9 @@ function Login({ lang, setLang, t }) {
     if (error) setErr(tr("Google prijava nije uključena — treba se postaviti u Supabase Dashboardu (Authentication → Providers → Google)."));
   };
   return (
-    <div style={{ minHeight: "100vh", background: S.bg, fontFamily: "'Segoe UI', system-ui, sans-serif", color: S.ink }}>
+    <div style={{ minHeight: "100vh", background: S.bg, fontFamily: APP_FONT, color: S.ink }}>
       <style>{`* { box-sizing: border-box; } input { width: 100%; padding: 12px; border: 1px solid ${S.line}; border-radius: 10px; outline: none; font-size: 15px; } input:focus { border-color: ${S.green}; }`}</style>
-      <div style={{ background: S.ink, color: "#fff", padding: "26px 16px" }}>
+      <div style={{ background: S.deep, color: "#fff", padding: "26px 16px" }}>
         <div style={{ maxWidth: 420, margin: "0 auto", display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
           <div>
             <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
@@ -1476,7 +1533,7 @@ function Login({ lang, setLang, t }) {
   );
 }
 
-function Header({ profile, admin, onLogout, lang, setLang, t, title, data, onAdminPanel, onHome }) {
+function Header({ profile, admin, onLogout, lang, setLang, t, title, data, onAdminPanel, onHome, showAdminMenu = false, wide = false }) {
   const [menu, setMenu] = useState(""); // "" | "admin" | "user"
   const pending = admin ? adminBadge(data, "approvals") : 0;
   const close = () => setMenu("");
@@ -1485,9 +1542,9 @@ function Header({ profile, admin, onLogout, lang, setLang, t, title, data, onAdm
   const item = { display: "flex", alignItems: "center", gap: 10, width: "100%", background: "none", border: "none", textAlign: "left",
     padding: "10px 10px", borderRadius: 10, cursor: "pointer", fontSize: 14, color: S.ink };
   return (
-    <div style={{ background: S.ink, color: "#fff", padding: "12px 16px", marginBottom: 16, position: "sticky", top: 0, zIndex: 30 }}>
+    <div style={{ background: S.deep, color: "#fff", padding: "12px 16px", marginBottom: 16, position: "sticky", top: 0, zIndex: 30 }}>
       {menu && <div onClick={close} style={{ position: "fixed", inset: 0, zIndex: 40 }} />}
-      <div style={{ maxWidth: 560, margin: "0 auto", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
+      <div style={{ maxWidth: wide ? 1240 : 560, margin: "0 auto", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, padding: wide ? "0 8px" : 0 }}>
         <div onClick={() => { close(); onHome && onHome(); }} role="button" title={tr("Početna")}
           style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0, cursor: "pointer" }}>
           <BrandMark />
@@ -1497,7 +1554,7 @@ function Header({ profile, admin, onLogout, lang, setLang, t, title, data, onAdm
           </div>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 8, position: "relative" }}>
-          {admin && (
+          {admin && showAdminMenu && (
             <button onClick={() => setMenu(menu === "admin" ? "" : "admin")} title={tr("Upravljanje")} style={{ position: "relative", background: menu === "admin" ? "rgba(255,255,255,.22)" : "rgba(255,255,255,.1)",
               border: "1px solid rgba(255,255,255,.2)", borderRadius: 10, color: "#fff", padding: "7px 11px", fontSize: 13, fontWeight: 700, cursor: "pointer" }}>
               {tr("⚙︎ Upravljanje")}
@@ -1542,25 +1599,301 @@ function Header({ profile, admin, onLogout, lang, setLang, t, title, data, onAdm
   );
 }
 const TAB_TITLE_KEY = { danas: "tabDanas", radnici: "tabRadnici", objekti: "tabObjekti", imenik: "tabImenik", sati: "tabSati", isplate: "tabIsplate", obracun: "tabObracun" };
-function TabBar({ tab, setTab, t, recruiter, newCandidates }) {
-  const tabs = [["danas",t("tabDanas"),"📌"],["radnici",t("tabRadnici"),"👷"],["objekti",t("tabObjekti"),"🏨"],["imenik",t("tabImenik"),"📇"],["sati",t("tabSati"),"🕒"],["isplate",t("tabIsplate"),"💶"],["obracun",t("tabObracun"),"🧾"]];
-  // regruteri i admin imaju i karticu Kandidati (s brojem novih prijava)
-  if (recruiter) tabs.splice(1, 0, ["kandidati", tr("Kandidati") + (newCandidates ? ` (${newCandidates})` : ""), "🧑‍🍳"]);
+/* ================================================================== */
+/*  NOVI IZGLED: ikone, navigacija (donja traka / bočni izbornik),     */
+/*  ekran Više, vrh početnog ekrana, + gumb, kostur učitavanja         */
+/* ================================================================== */
+const ICONS = {
+  home: <path d="M3 10.5 12 3l9 7.5V20a1 1 0 0 1-1 1h-5v-6h-6v6H4a1 1 0 0 1-1-1z" />,
+  users: <><circle cx="9" cy="8" r="3.5" /><path d="M2.5 20c.8-3.5 3.4-5.5 6.5-5.5s5.7 2 6.5 5.5" /><path d="M16 4.5a3.5 3.5 0 0 1 0 7M18.5 14.8c1.7.8 2.7 2.6 3 5.2" /></>,
+  userPlus: <><circle cx="9" cy="8" r="3.5" /><path d="M2.5 20c.8-3.5 3.4-5.5 6.5-5.5s5.7 2 6.5 5.5" /><path d="M19 8v6M16 11h6" /></>,
+  clock: <><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" /></>,
+  building: <><rect x="5" y="3" width="14" height="18" rx="1.5" /><path d="M9 7h2M13 7h2M9 11h2M13 11h2M10 21v-4h4v4" /></>,
+  grid: <><rect x="4" y="4" width="6.5" height="6.5" rx="1.5" /><rect x="13.5" y="4" width="6.5" height="6.5" rx="1.5" /><rect x="4" y="13.5" width="6.5" height="6.5" rx="1.5" /><rect x="13.5" y="13.5" width="6.5" height="6.5" rx="1.5" /></>,
+  book: <><path d="M4 5a2 2 0 0 1 2-2h13v16H6a2 2 0 0 0-2 2z" /><path d="M4 19V5M9 7h6M9 11h6" /></>,
+  wallet: <><rect x="3" y="6" width="18" height="13" rx="2" /><circle cx="12" cy="12.5" r="2.5" /></>,
+  chart: <path d="M4 19V5M4 19h16M8 15l3-4 3 2 5-6" />,
+  check: <path d="M20 6 9 17l-5-5" />,
+  cash: <path d="M12 2v20M17 6H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6" />,
+  bank: <path d="M3 21h18M5 21V10l7-5 7 5v11M9 21v-6h6v6" />,
+  envelope: <><rect x="3" y="7" width="18" height="12" rx="2" /><path d="M3 10l9 5 9-5" /></>,
+  receipt: <><path d="M6 3h12v18l-3-2-3 2-3-2-3 2z" /><path d="M9 8h6M9 12h6" /></>,
+  settings: <><circle cx="12" cy="12" r="3" /><path d="M12 2v3M12 19v3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M2 12h3M19 12h3M4.9 19.1 7 17M17 7l2.1-2.1" /></>,
+  history: <><path d="M3 12a9 9 0 1 0 3-6.7L3 8" /><path d="M3 3v5h5M12 7v5l3 2" /></>,
+  lock: <><rect x="5" y="11" width="14" height="10" rx="2" /><path d="M8 11V8a4 4 0 0 1 8 0v3" /></>,
+  bug: <><rect x="8" y="7" width="8" height="12" rx="4" /><path d="M12 7V4M5 11h3M16 11h3M5 17h3M16 17h3M8 4l2 2M16 4l-2 2" /></>,
+  trash: <path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13" />,
+  sparkles: <><path d="M12 3l1.8 4.7L18.5 9.5l-4.7 1.8L12 16l-1.8-4.7L5.5 9.5l4.7-1.8z" /><path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z" /></>,
+  plus: <path d="M12 5v14M5 12h14" />,
+  pen: <><path d="M4 20h4L19 9a2.8 2.8 0 0 0-4-4L4 16z" /><path d="M13.5 6.5l4 4" /></>,
+  doc: <><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z" /><path d="M14 3v5h5M9 13h6M9 17h4" /></>,
+  alert: <><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z" /><path d="M12 9v4M12 17h.01" /></>,
+  logout: <><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4" /><path d="M10 17l-5-5 5-5M5 12h11" /></>,
+  chevron: <path d="M9 6l6 6-6 6" />,
+  back: <path d="M15 6l-6 6 6 6" />,
+  x: <path d="M6 6l12 12M18 6 6 18" />,
+};
+function Ico({ name, size = 22, stroke = 2 }) {
   return (
-    <div style={{ position: "fixed", bottom: 0, left: 0, right: 0, background: "#fff", borderTop: `1px solid ${S.line}`,
-      display: "flex", justifyContent: "space-around", padding: "6px 4px calc(6px + env(safe-area-inset-bottom))", zIndex: 20 }}>
-      {tabs.map(([id, label, icon]) => (
-        <button key={id} onClick={() => setTab(id)} style={{ background: "none", border: "none", padding: "6px 3px", borderRadius: 10, minWidth: 0, flex: 1,
-          color: tab === id ? S.green : S.sub, fontWeight: tab === id ? 700 : 500, fontSize: 11,
-          display: "flex", flexDirection: "column", alignItems: "center", gap: 2, cursor: "pointer" }}>
-          <span style={{ fontSize: 19 }}>{icon}</span>{label}
-        </button>
-      ))}
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={stroke} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={{ flex: "0 0 auto" }}>
+      {ICONS[name] || ICONS.grid}
+    </svg>
+  );
+}
+const NAV_ITEMS = [["danas", "home", "tabDanas"], ["radnici", "users", "tabRadnici"], ["sati", "clock", "tabSati"], ["objekti", "building", "Hoteli"], ["vise", "grid", "Više"]];
+const navLabel = (t, key) => (key.startsWith("tab") ? t(key) : tr(key));
+const MORE_TABS = ["imenik", "isplate", "obracun", "kandidati"];
+const ADMIN_ICON = { ai: "sparkles", candidates: "userPlus", approvals: "check", cash: "cash", finance: "bank", unpaid: "envelope", vat: "receipt", users: "users", firm: "settings", audit: "history", logins: "lock", errors: "bug", trash: "trash" };
+const Badge = ({ n, style }) => n > 0 ? (
+  <span style={{ minWidth: 18, height: 18, borderRadius: 99, background: "#C2410C", color: "#fff", fontSize: 10.5, fontWeight: 800,
+    display: "inline-flex", alignItems: "center", justifyContent: "center", padding: "0 5px", ...style }}>{n > 99 ? "99+" : n}</span>
+) : null;
+
+// širina ekrana: od 900 px (iPad vodoravno, računalo) bočni izbornik i dva stupca
+function useWide(min = 900) {
+  const q = `(min-width: ${min}px)`;
+  const [wide, setWide] = useState(() => typeof window !== "undefined" && window.matchMedia ? window.matchMedia(q).matches : false);
+  useEffect(() => {
+    if (!window.matchMedia) return;
+    const m = window.matchMedia(q);
+    const on = () => setWide(m.matches);
+    m.addEventListener ? m.addEventListener("change", on) : m.addListener(on);
+    return () => { m.removeEventListener ? m.removeEventListener("change", on) : m.removeListener(on); };
+  }, [q]);
+  return wide;
+}
+
+function TabBar({ tab, setTab, t, moreBadge }) {
+  return (
+    <nav style={{ position: "fixed", bottom: 0, left: 0, right: 0, background: "#fff", borderTop: `1px solid ${S.line}`,
+      display: "grid", gridTemplateColumns: "repeat(5, minmax(0, 1fr))", padding: "6px 6px calc(6px + env(safe-area-inset-bottom))", zIndex: 20 }}>
+      {NAV_ITEMS.map(([id, icon, key]) => {
+        const on = tab === id;
+        return (
+          <button key={id} onClick={() => setTab(id)} aria-current={on ? "page" : undefined} style={{ background: "none", border: "none", padding: "6px 2px", minHeight: 50, minWidth: 0,
+            color: on ? S.green : "#6B7670", fontWeight: on ? 800 : 700, fontSize: 11, display: "flex", flexDirection: "column", alignItems: "center", gap: 3, cursor: "pointer", position: "relative" }}>
+            <Ico name={icon} stroke={on ? 2.3 : 2} />
+            <span style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: "100%" }}>{navLabel(t, key)}</span>
+            {id === "vise" && <Badge n={moreBadge} style={{ position: "absolute", top: 2, left: "calc(50% + 6px)" }} />}
+          </button>
+        );
+      })}
+    </nav>
+  );
+}
+
+function SideRail({ tab, setTab, t, moreBadge, onHome }) {
+  return (
+    <nav style={{ position: "fixed", top: 0, bottom: 0, left: 0, width: 88, background: S.deep, display: "flex", flexDirection: "column", alignItems: "center", padding: "16px 0", gap: 6, zIndex: 35 }}>
+      <button onClick={onHome} aria-label={tr("Početna")} style={{ background: "none", border: "none", padding: 4, marginBottom: 12, cursor: "pointer" }}><BrandMark size={44} /></button>
+      {NAV_ITEMS.map(([id, icon, key]) => {
+        const on = tab === id;
+        return (
+          <button key={id} onClick={() => setTab(id)} aria-current={on ? "page" : undefined} style={{ width: 68, minHeight: 60, borderRadius: 16, border: "none", cursor: "pointer", position: "relative",
+            background: on ? "rgba(255,255,255,.13)" : "transparent", color: on ? "#fff" : S.mint, fontWeight: on ? 800 : 700, fontSize: 11,
+            display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 4 }}>
+            <Ico name={icon} stroke={on ? 2.3 : 2} />{navLabel(t, key)}
+            {id === "vise" && <Badge n={moreBadge} style={{ position: "absolute", top: 6, right: 8 }} />}
+          </button>
+        );
+      })}
+    </nav>
+  );
+}
+
+function LoadingSkeleton() {
+  return (
+    <div style={{ minHeight: "100vh", background: S.bg, fontFamily: APP_FONT }}>
+      <style>{APP_CSS}</style>
+      <div style={{ background: S.deep, height: 64, display: "flex", alignItems: "center", padding: "0 16px", gap: 10 }}>
+        <BrandMark /><span style={{ color: "#fff", fontWeight: 800 }}>{BRAND}</span>
+      </div>
+      <div style={{ maxWidth: 560, margin: "0 auto", padding: 16, display: "grid", gap: 12 }} aria-label={tr("Učitavam…")}>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+          {[0, 1, 2, 3].map((i) => <div key={i} className="skel" style={{ height: 88, borderRadius: 18 }} />)}
+        </div>
+        <div className="skel" style={{ height: 76, borderRadius: 18 }} />
+        <div className="skel" style={{ height: 180, borderRadius: 18 }} />
+      </div>
     </div>
   );
 }
+
+// tile u ekranu Više
+function MoreTile({ icon, label, onClick, n, tone = "green" }) {
+  const tones = { green: [S.greenSoft, S.green], blue: [S.blueSoft, S.blue], amber: [S.amberSoft, "#8A4B0F"], red: ["#FBEDEA", "#A3412F"], gray: ["#EEF0EB", "#3F4A44"] };
+  const [bg, fg] = tones[tone] || tones.green;
+  return (
+    <button onClick={onClick} style={{ position: "relative", border: "1px solid #ECEEE8", background: "#fff", borderRadius: 16, padding: "14px 6px", minHeight: 96,
+      display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 8, fontSize: 12.5, fontWeight: 700, color: S.ink, cursor: "pointer", textAlign: "center" }}>
+      <span style={{ width: 42, height: 42, borderRadius: 12, background: bg, color: fg, display: "flex", alignItems: "center", justifyContent: "center" }}><Ico name={icon} size={21} /></span>
+      <span style={{ lineHeight: 1.2 }}>{label}</span>
+      <Badge n={n} style={{ position: "absolute", top: 8, right: 8 }} />
+    </button>
+  );
+}
+
+function MoreTab({ data, admin, recruiter, t, lang, setLang, goTab, openPanel, onLogout, profile, wide }) {
+  const sec = { fontSize: 12, fontWeight: 800, color: S.sub, letterSpacing: 0.8, textTransform: "uppercase", margin: "18px 2px 8px" };
+  const grid = { display: "grid", gridTemplateColumns: `repeat(${wide ? 4 : 3}, minmax(0, 1fr))`, gap: 8 };
+  const work = [["imenik", "book", t("tabImenik"), "blue"], ["isplate", "wallet", t("tabIsplate"), "green"], ["obracun", "chart", t("tabObracun"), "blue"]];
+  if (recruiter) work.unshift(["kandidati", "userPlus", tr("Kandidati"), "green"]);
+  const toneOf = { approvals: "amber", unpaid: "red", cash: "green", finance: "blue", vat: "blue", users: "blue", firm: "gray", audit: "gray", logins: "gray", errors: "gray", trash: "gray" };
+  return (
+    <>
+      {admin && (
+        <button onClick={() => openPanel("ai")} className="c-in" style={{ width: "100%", border: "none", background: S.deep, color: "#fff", borderRadius: 20, padding: 16, display: "flex", alignItems: "center", gap: 14, cursor: "pointer", textAlign: "left" }}>
+          <span style={{ width: 48, height: 48, borderRadius: 14, background: "rgba(255,255,255,.12)", color: S.rose, display: "flex", alignItems: "center", justifyContent: "center" }}><Ico name="sparkles" size={24} /></span>
+          <span style={{ flex: 1, minWidth: 0 }}>
+            <span style={{ display: "block", fontSize: 16, fontWeight: 800 }}>{tr("AI asistent")}</span>
+            <span style={{ display: "block", fontSize: 12.5, color: S.mint, fontWeight: 600 }}>{tr("Priloži tablicu sati ili fakturu i pitaj")}</span>
+          </span>
+          <span style={{ color: S.mint }}><Ico name="chevron" size={20} /></span>
+        </button>
+      )}
+      <div style={sec}>{tr("Rad")}</div>
+      <div style={grid}>
+        {work.map(([id, icon, label, tone]) => <MoreTile key={id} icon={icon} label={label} tone={tone} n={id === "kandidati" ? data.newCandidates || 0 : 0} onClick={() => goTab(id)} />)}
+      </div>
+      {admin && (
+        <>
+          <div style={sec}>{tr("Upravljanje")}</div>
+          <div style={grid}>
+            {ADMIN_MENU.filter(([id]) => id !== "ai" && id !== "candidates").map(([id, , label]) => (
+              <MoreTile key={id} icon={ADMIN_ICON[id]} label={tr(label)} tone={toneOf[id]} n={adminBadge(data, id)} onClick={() => openPanel(id)} />
+            ))}
+          </div>
+        </>
+      )}
+      <Card style={{ marginTop: 18 }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
+          <div>
+            <div style={{ fontWeight: 800 }}>{profile?.name || "—"}</div>
+            <div style={{ fontSize: 12.5, color: S.sub }}>{admin ? tr("Administrator") : tr("Zaposlenik")}</div>
+          </div>
+          <LangSwitch lang={lang} setLang={setLang} labeled />
+        </div>
+        <button onClick={onLogout} style={{ marginTop: 12, width: "100%", minHeight: 46, borderRadius: 12, border: `1px solid ${S.redSoft}`, background: "#fff", color: S.red, fontWeight: 800, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
+          <Ico name="logout" size={18} />{t("logout")}
+        </button>
+      </Card>
+    </>
+  );
+}
+
+// vrh početnog ekrana: pozdrav, glavne brojke, brze radnje (ili prvi koraci za novu firmu)
+function HomeTop({ data, admin, profile, goTab, openPanel, wide }) {
+  const mk = curMonth(), pk = prevMonthKey(mk);
+  const hoursIn = (k) => round2(data.logs.filter((l) => monthKey(l.date) === k).reduce((s, l) => s + l.hours, 0)
+    + (data.brigadeCosts || []).filter((b) => monthKey(b.date) === k).reduce((s, b) => s + b.hours, 0));
+  const hNow = hoursIn(mk), hPrev = hoursIn(pk);
+  const activeObjects = data.objects.filter((o) => !o.archived);
+  const activeWorkers = data.workers.filter((w) => !w.archived);
+  const usedObjects = new Set(activeWorkers.map((w) => w.objectId).filter(Boolean)).size;
+  const warns = expiryWarnings(data.workers, data.settings?.expiry_warn_days, data.workerDocs);
+  const pendingN = admin ? (data.payouts || []).filter((p) => !p.approved).length : 0;
+  const todo = warns.length + pendingN + (data.newCandidates || 0);
+  const urgent = warns.filter((w) => w.past).length;
+  let profit = 0, rev = 0;
+  if (admin) activeObjects.forEach((o) => { const p = objMonthProfit(data, o, mk); profit += p.profitKc; rev += p.revKc; });
+  const hr = new Date().getHours();
+  const hello = hr < 11 ? tr("Dobro jutro") : hr < 18 ? tr("Dobar dan") : tr("Dobra večer");
+  const first = (profile?.name || "").split(" ")[0];
+  const d = new Date();
+  const dateLabel = `${d.getDate()}. ${mName(d.getMonth())} ${d.getFullYear()}.`;
+  const tile = (label, value, sub, warn) => (
+    <div className="c-in" style={{ background: warn ? "#FFF4E6" : "#fff", borderRadius: 18, padding: 14, boxShadow: "0 6px 20px rgba(11,61,46,.07)", minWidth: 0 }}>
+      <div style={{ fontSize: 12, color: warn ? "#8A4B0F" : S.sub, fontWeight: 700 }}>{label}</div>
+      <div className="num" style={{ fontSize: 22, fontWeight: 800, marginTop: 4, color: warn ? "#8A4B0F" : S.ink, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{value}</div>
+      {sub && <div style={{ fontSize: 12, color: warn ? "#8A4B0F" : S.green, fontWeight: 700, marginTop: 3 }}>{sub}</div>}
+    </div>
+  );
+  const action = (icon, label, onClick, dark) => (
+    <button onClick={onClick} style={{ border: "none", background: dark ? S.deep : "#fff", color: dark ? "#fff" : S.ink, borderRadius: 16, padding: "12px 4px", minHeight: 88,
+      display: "flex", flexDirection: "column", alignItems: "center", gap: 7, fontSize: 11.5, fontWeight: 700, cursor: "pointer" }}>
+      <span style={{ width: 40, height: 40, borderRadius: 12, background: dark ? "rgba(255,255,255,.12)" : S.greenSoft, color: dark ? S.rose : S.green, display: "flex", alignItems: "center", justifyContent: "center" }}><Ico name={icon} size={20} /></span>
+      {label}
+    </button>
+  );
+  const pct = hPrev > 0 ? Math.round(((hNow - hPrev) / hPrev) * 100) : null;
+  const newFirm = admin && activeObjects.length === 0;
+  return (
+    <div style={{ marginBottom: 14 }}>
+      <div style={{ margin: wide ? "-16px -24px 0" : "-16px -14px 0", padding: wide ? "6px 28px 56px" : "6px 18px 56px", background: S.deep, color: "#fff", borderRadius: wide ? "0 0 24px 24px" : 0 }}>
+        <div style={{ fontSize: 13, color: S.mint, fontWeight: 600 }}>{dateLabel}</div>
+        <div style={{ fontSize: 25, fontWeight: 800, lineHeight: 1.2 }}>{hello}{first ? `, ${first}` : ""}</div>
+      </div>
+      {newFirm ? (
+        <div className="c-in" style={{ margin: "-40px 0 0", background: "#fff", borderRadius: 20, padding: 18, boxShadow: "0 6px 20px rgba(11,61,46,.08)" }}>
+          <div style={{ fontSize: 20, fontWeight: 800 }}>{tr("Dobro došli!")}</div>
+          <div style={{ fontSize: 14, color: S.sub, margin: "4px 0 12px" }}>{tr("Tri koraka i aplikacija je spremna. Traje oko 5 minuta.")}</div>
+          {[
+            [!!data.settings?.company_name, tr("Podaci firme i logo"), tr("Naziv, adresa, tečaj"), () => openPanel("firm")],
+            [activeObjects.length > 0, tr("Dodaj prvi hotel"), tr("Naziv i cijena po satu"), () => goTab("objekti")],
+            [activeWorkers.length > 0, tr("Dodaj radnike"), tr("Jednog po jednog ili uvezi iz Excela"), () => goTab("radnici")],
+          ].map(([done, title, sub, go], i) => (
+            <button key={i} onClick={go} style={{ width: "100%", display: "flex", alignItems: "center", gap: 12, padding: "12px 0", border: "none", borderTop: i ? "1px solid #ECEEE8" : "none", background: "none", textAlign: "left", cursor: "pointer", color: S.ink }}>
+              <span style={{ width: 34, height: 34, borderRadius: 99, flex: "0 0 auto", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 800,
+                background: done ? S.green : "#fff", color: done ? "#fff" : S.green, border: done ? "none" : `2px solid ${S.green}` }}>{done ? <Ico name="check" size={18} stroke={2.6} /> : i + 1}</span>
+              <span style={{ flex: 1 }}>
+                <span style={{ display: "block", fontWeight: 800, fontSize: 14.5, textDecoration: done ? "line-through" : "none", color: done ? S.sub : S.ink }}>{title}</span>
+                <span style={{ display: "block", fontSize: 12.5, color: S.sub }}>{sub}</span>
+              </span>
+              <span style={{ color: "#8A958F" }}><Ico name="chevron" size={18} /></span>
+            </button>
+          ))}
+        </div>
+      ) : (
+        <div style={{ margin: "-40px 0 0", display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 10 }}>
+          {tile(tr("Sati ovaj mjesec"), fmtH(hNow), pct == null ? null : `${pct >= 0 ? "+" : ""}${pct} % ${tr("od prošlog mjeseca")}`)}
+          {admin ? tile(tr("Dobit ovaj mjesec"), czk(round2(profit)), rev > 0 ? `${tr("marža")} ${Math.round((profit / rev) * 100)} %` : null)
+            : tile(tr("Hoteli"), String(usedObjects || activeObjects.length), null)}
+          {tile(tr("Aktivni radnici"), String(activeWorkers.length), `${tr("u")} ${usedObjects} ${tr("hotela")}`)}
+          {tile(tr("Treba riješiti"), String(todo), urgent ? `${urgent} ${tr("hitno")}` : null, todo > 0)}
+        </div>
+      )}
+      <div style={{ fontSize: 15, fontWeight: 800, margin: "18px 2px 10px" }}>{tr("Brze radnje")}</div>
+      <div style={{ display: "grid", gridTemplateColumns: `repeat(${admin ? 4 : 3}, minmax(0, 1fr))`, gap: 8 }}>
+        {action("clock", tr("Upiši sate"), () => goTab("sati"))}
+        {action("userPlus", tr("Novi radnik"), () => goTab("radnici"))}
+        {action("pen", tr("Potpis"), () => goTab("radnici"))}
+        {admin && action("sparkles", tr("Pitaj AI"), () => openPanel("ai"), true)}
+      </div>
+    </div>
+  );
+}
+
+// plutajući + gumb s brzim radnjama
+function Fab({ open, setOpen, admin, goTab, openPanel, wide }) {
+  const bottom = wide ? 24 : "calc(84px + env(safe-area-inset-bottom))";
+  const item = (icon, label, sub, go) => (
+    <button onClick={() => { setOpen(false); go(); }} style={{ width: "100%", display: "flex", alignItems: "center", gap: 12, padding: "12px 6px", minHeight: 56, border: "none", background: "none", textAlign: "left", cursor: "pointer", color: S.ink, borderRadius: 12 }}>
+      <span style={{ width: 40, height: 40, borderRadius: 12, background: S.greenSoft, color: S.green, display: "flex", alignItems: "center", justifyContent: "center" }}><Ico name={icon} size={20} /></span>
+      <span><span style={{ display: "block", fontWeight: 800, fontSize: 15 }}>{label}</span><span style={{ display: "block", fontSize: 12.5, color: S.sub }}>{sub}</span></span>
+    </button>
+  );
+  return (
+    <>
+      {open && <div onClick={() => setOpen(false)} style={{ position: "fixed", inset: 0, background: "rgba(10,20,15,.35)", zIndex: 44 }} />}
+      {open && (
+        <div className="sheet" role="dialog" aria-label={tr("Dodaj")} style={{ position: "fixed", right: 16, bottom: `calc(${typeof bottom === "number" ? bottom + "px" : bottom} + 72px)`, width: 290, maxWidth: "calc(100vw - 32px)", background: "#fff", borderRadius: 20, padding: 8, zIndex: 46, boxShadow: "0 18px 40px rgba(0,0,0,.18)" }}>
+          {item("clock", tr("Upiši sate"), tr("Za danas ili cijeli mjesec"), () => goTab("sati"))}
+          {item("userPlus", tr("Novi radnik"), tr("Ili uvoz iz Excela"), () => goTab("radnici"))}
+          {item("doc", tr("Dokument ili potpis"), tr("Odaberi radnika pa Dokumenti"), () => goTab("radnici"))}
+          {admin && item("sparkles", tr("Pitaj AI"), tr("Priloži tablicu ili fakturu"), () => openPanel("ai"))}
+        </div>
+      )}
+      <button onClick={() => setOpen(!open)} aria-label={open ? tr("Zatvori") : tr("Dodaj")} aria-expanded={open}
+        style={{ position: "fixed", right: 16, bottom, width: 60, height: 60, borderRadius: 20, border: "none", background: open ? S.deep : S.green, color: "#fff", zIndex: 47,
+          boxShadow: "0 10px 24px rgba(14,107,79,.35)", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer" }}>
+        <Ico name={open ? "x" : "plus"} size={26} stroke={2.4} />
+      </button>
+    </>
+  );
+}
+
 function Card({ children, style, onClick }) {
-  return <div onClick={onClick} style={{ background: S.card, border: `1px solid ${S.line}`, borderRadius: 14, padding: 14, marginBottom: 12, ...style }}>{children}</div>;
+  return <div className="c-in" onClick={onClick} style={{ background: S.card, border: "1px solid #ECEEE8", borderRadius: 18, padding: 14, marginBottom: 12, boxShadow: "0 1px 2px rgba(11,61,46,.04)", ...style }}>{children}</div>;
 }
 function Btn({ children, onClick, kind = "primary", small, style, disabled }) {
   const base = {
@@ -1570,8 +1903,8 @@ function Btn({ children, onClick, kind = "primary", small, style, disabled }) {
     excel: { background: "#1D6F42", color: "#fff", border: "none" },
   }[kind];
   return (
-    <button onClick={onClick} disabled={disabled} style={{ ...base, borderRadius: 10, padding: small ? "7px 12px" : "12px 16px",
-      fontWeight: 600, cursor: "pointer", fontSize: small ? 13.5 : 15, whiteSpace: "nowrap", opacity: disabled ? 0.6 : 1, ...style }}>
+    <button onClick={onClick} disabled={disabled} style={{ ...base, borderRadius: small ? 10 : 12, padding: small ? "8px 12px" : "12px 16px", minHeight: small ? 36 : 46,
+      fontWeight: 700, cursor: "pointer", fontSize: small ? 13.5 : 15, whiteSpace: "nowrap", opacity: disabled ? 0.6 : 1, ...style }}>
       {children}
     </button>
   );
@@ -4004,12 +4337,8 @@ function TodayTab({ data, api, admin, onOpenWorker, onOpenObject, openAdminPanel
   return (
     <div>
       <Card style={{ background: urgentCount ? S.amberSoft : S.greenSoft, borderColor: urgentCount ? "#EBD9B4" : "#CFE3D8", padding: "12px 14px" }}>
-        <div style={{ fontSize: 12.5, color: S.sub, textTransform: "capitalize" }}>{dateLabel}</div>
-        <div style={{ fontWeight: 800, fontSize: 17, color: urgentCount ? S.amber : S.green, marginTop: 2 }}>
+        <div style={{ fontWeight: 800, fontSize: 16, color: urgentCount ? S.amber : S.green }}>
           {urgentCount ? tr("{0} {1} pažnju danas", urgentCount, urgentCount === 1 ? "stvar traži" : "stvari traže") : tr("Danas nema ništa hitno ✓")}
-        </div>
-        <div className="num" style={{ fontSize: 12.5, color: S.sub, marginTop: 4 }}>
-          {active.length} {tr("aktivnih radnika ·")}{" "}{openObjs.length} {tr("otvorenih objekata")}
         </div>
       </Card>
 
