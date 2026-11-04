@@ -293,14 +293,20 @@ function DayBadge({ iso }) {
   return null;
 }
 
-function rateFor(data, w, date) {
+function rateFor(data, w, date, position) {
   if (!w) return 0;
+  // satnica po poziciji (npr. bílá / studená) — samo ako upis ima drugu poziciju nego što je radnikova
+  const pr = position && position !== (w.position || "") ? Number((w.positionRates || {})[position]) : 0;
+  if (pr > 0) return pr;
   const ch = (data.rateChanges || [])
     .filter((r) => r.workerId === w.id && r.from <= (date || "9999-12-31"))
     .sort((a, b) => a.from.localeCompare(b.from));
   return ch.length ? ch[ch.length - 1].rate : (w.rate || 0);
 }
 const rateNow = (data, w) => rateFor(data, w, todayISO());
+// "Kuchyň – bílá" → "bílá" (kratko za kovertu); bez crtice vraća cijeli naziv
+const posShort = (p) => { const s = String(p || ""); const i = s.lastIndexOf("–"); return (i >= 0 ? s.slice(i + 1) : s).trim(); };
+const allPositions = (data) => [...new Set([...(data.workers || []).map((w) => w.position), ...(data.logs || []).map((l) => l.position)].filter(Boolean))].sort((a, b) => a.localeCompare(b, "hr"));
 const paidFor = (data, workerId, mo) => (data.payouts || []).find((p) => p.workerId === workerId && p.month === mo);
 
 /* ---------- dodatak na satnicu vikendom / praznikom (postavke firme) ---------- */
@@ -313,7 +319,7 @@ const payMultiplier = (settings, dateISO) => {
 const extraPayForLog = (data, w, l) => {
   const mult = payMultiplier(data.settings, l.date);
   if (mult <= 1) return 0;
-  return round2(l.hours * rateFor(data, w, l.date) * (mult - 1));
+  return round2(l.hours * rateFor(data, w, l.date, l.position) * (mult - 1));
 };
 
 /* ---------- red za slanje kad nema interneta (trenutno: upis sati) ---------- */
@@ -326,11 +332,11 @@ const isNetworkError = (e) => (typeof navigator !== "undefined" && navigator.onL
 /* ---------- naplata objekta po poziciji (HSK, kuhinja, bar…) ---------- */
 const positionBillFor = (data, objectId, position) =>
   (data.positionBilling || []).find((pb) => pb.objectId === objectId && pb.position === (position || ""));
-function billRateForLog(data, object, worker, date) {
-  const pos = worker?.position || "";
+function billRateForLog(data, object, worker, date, position) {
+  const pos = position || worker?.position || "";
   const entry = pos ? positionBillFor(data, object?.id, pos) : null;
   if (entry) {
-    if (entry.mode === "markup") return { rate: round2((rateFor(data, worker, date) || 0) + (entry.markup || 0)), cur: entry.currency };
+    if (entry.mode === "markup") return { rate: round2((rateFor(data, worker, date, position) || 0) + (entry.markup || 0)), cur: entry.currency };
     return { rate: entry.rate || 0, cur: entry.currency };
   }
   return { rate: object?.billRate || 0, cur: object?.billCur || "EUR" };
@@ -341,11 +347,12 @@ function objRevenue(data, object, logs, brigade) {
   const byPos = new Map();
   logs.forEach((l) => {
     const wk = data.workers.find((x) => x.id === l.workerId);
-    const { rate, cur } = billRateForLog(data, object, wk, l.date);
+    const { rate, cur } = billRateForLog(data, object, wk, l.date, l.position);
     const amt = round2(l.hours * rate);
     if (cur === "CZK") revenueKc = round2(revenueKc + amt); else revenue = round2(revenue + amt);
-    const key = (wk?.position || "") + "|" + cur;
-    const row = byPos.get(key) || { position: wk?.position || "", cur, hours: 0, rate, amount: 0 };
+    const lpos = l.position || wk?.position || "";
+    const key = lpos + "|" + cur + "|" + rate;
+    const row = byPos.get(key) || { position: lpos, cur, hours: 0, rate, amount: 0 };
     row.hours = round2(row.hours + l.hours);
     row.amount = round2(row.amount + amt);
     byPos.set(key, row);
@@ -733,6 +740,7 @@ async function fetchAll(isAdmin) {
       objectId: w.object_id || "", note: w.note || "", archived: !!w.archived, archivedDate: w.archived_date || "",
       permitExpiry: w.permit_expiry || "", contractExpiry: w.contract_expiry || "", position: w.position || "", bankAccount: bankMap[w.id] || "",
       rateCurrency: w.rate_currency === "CZK" ? "CZK" : "EUR",
+      positionRates: (w.position_rates && typeof w.position_rates === "object") ? w.position_rates : {},
     })),
     objects: (objects.data || []).map((o) => ({
       id: o.id, name: o.name, billRate: billMap[o.id]?.rate || 0, billCur: billMap[o.id]?.cur || countryCur(o.country || "HR"), country: o.country || "HR",
@@ -742,7 +750,7 @@ async function fetchAll(isAdmin) {
     logs: (logs.data || []).map((l) => ({
       id: l.id, workerId: l.worker_id, objectId: l.object_id || "", date: l.work_date,
       from: l.from_t || "", to: l.to_t || "", hours: Number(l.hours), monthly: !!l.monthly, note: l.note || "",
-      createdBy: l.created_by || "",
+      createdBy: l.created_by || "", position: l.position || "",
     })),
     payments: (payments.data || []).map((p) => ({
       id: p.id, workerId: p.worker_id || "", objectId: p.object_id || "", date: p.pay_date, type: p.type,
@@ -992,6 +1000,8 @@ export default function App() {
         if (round2(old.rate || 0) !== round2(parseNum(f.rate) || 0)) diffs.push(`satnica ${old.rate || 0}→${parseNum(f.rate) || 0}`);
         if ((old.objectId || "") !== (f.objectId || "")) diffs.push(`objekt ${objName(old.objectId)}→${objName(f.objectId)}`);
         if ((old.position || "") !== (f.position || "")) diffs.push(`pozicija "${old.position || "—"}"→"${f.position || "—"}"`);
+        if (f.positionRates && JSON.stringify(cleanPositionRates(old.positionRates || {}, old.position)) !== JSON.stringify(cleanPositionRates(f.positionRates, f.position)))
+          diffs.push(`satnice po poziciji: ${Object.entries(cleanPositionRates(f.positionRates, f.position)).map(([k, v]) => k + " " + v).join(", ") || "—"}`);
         if ((old.permitExpiry || "") !== (f.permitExpiry || "")) diffs.push(`istek dozvole ${old.permitExpiry || "—"}→${f.permitExpiry || "—"}`);
         if ((old.contractExpiry || "") !== (f.contractExpiry || "")) diffs.push(`istek ugovora ${old.contractExpiry || "—"}→${f.contractExpiry || "—"}`);
         if ((old.bankAccount || "") !== (f.bankAccount || "").trim()) diffs.push("broj računa promijenjen");
@@ -999,6 +1009,7 @@ export default function App() {
       return act(async () => { await upd("workers", id, {
         name: newName, phone: f.phone, base_rate: parseNum(f.rate) || 0, rate_currency: f.rateCur || "EUR", object_id: f.objectId || null, note: f.note,
         permit_expiry: f.permitExpiry || null, contract_expiry: f.contractExpiry || null, position: f.position || "",
+        ...(f.positionRates ? { position_rates: cleanPositionRates(f.positionRates, f.position) } : {}),
       }); if (admin && (old?.bankAccount || "") !== (f.bankAccount || "").trim()) await saveBank(id, f.bankAccount); }, `Uredio podatke radnika: ${name}${diffs.length ? " (" + diffs.join(", ") + ")" : ""}`);
     },
     setPosition: (w, position) => act(() => upd("workers", w.id, { position }),
@@ -1097,7 +1108,7 @@ export default function App() {
     setMonthlyHoursBulk: (entries, objectId, mo, objName) => act(async () => {
       for (const e of entries) {
         guardPaid(e.workerId, mo);
-        const existing = data.logs.filter((l) => l.workerId === e.workerId && l.objectId === objectId && l.monthly && monthKey(l.date) === mo);
+        const existing = data.logs.filter((l) => l.workerId === e.workerId && l.objectId === objectId && l.monthly && monthKey(l.date) === mo && (l.position || "") === (e.position || ""));
         if (e.hours > 0) {
           if (existing.length) {
             const { error } = await supabase.from("work_logs").update({ hours: e.hours }).eq("id", existing[0].id);
@@ -1109,7 +1120,7 @@ export default function App() {
           } else {
             await ins("work_logs", {
               worker_id: e.workerId, object_id: objectId, work_date: mo + "-01",
-              from_t: "", to_t: "", hours: e.hours, monthly: true, created_by: session.user.id,
+              from_t: "", to_t: "", hours: e.hours, monthly: true, created_by: session.user.id, position: e.position || "",
             });
           }
         } else if (existing.length) {
@@ -1125,15 +1136,18 @@ export default function App() {
     updLog: (l, patch, wName) => act(() => {
       guardPaid(l.workerId, l.date);
       guardPaid(l.workerId, patch.date);
-      return upd("work_logs", l.id, { work_date: patch.date, from_t: patch.from, to_t: patch.to, hours: patch.hours });
-    }, `Ispravio sate: ${wName} ${fmtH(patch.hours)} (${fmtDate(l.date)} → ${fmtDate(patch.date)})`),
+      return upd("work_logs", l.id, { work_date: patch.date, from_t: patch.from, to_t: patch.to, hours: patch.hours,
+        ...(patch.position !== undefined ? { position: patch.position || "" } : {}) });
+    }, `Ispravio sate: ${wName} ${fmtH(patch.hours)}${patch.position ? " [" + patch.position + "]" : ""} (${fmtDate(l.date)} → ${fmtDate(patch.date)})`),
+    setPositionRates: (w, rates) => act(() => upd("workers", w.id, { position_rates: rates }),
+      `Postavio satnice po poziciji radniku ${w.name}: ${Object.entries(rates).map(([k, v]) => k + " " + v).join(", ") || "—"}`),
     copyDay: (object, fromDate, toDate) => act(async () => {
       const src = data.logs.filter((l) => l.objectId === object.id && l.date === fromDate && !l.monthly);
       if (!src.length) throw new Error(tr("Za {0} nema upisa na ovom objektu.", fmtDate(fromDate)));
       for (const l of src) {
         guardPaid(l.workerId, toDate);
         await ins("work_logs", { worker_id: l.workerId, object_id: object.id, work_date: toDate,
-          from_t: l.from, to_t: l.to, hours: l.hours, note: l.note || "", created_by: session.user.id });
+          from_t: l.from, to_t: l.to, hours: l.hours, note: l.note || "", position: l.position || "", created_by: session.user.id });
       }
     }, `Kopirao dan ${fmtDate(fromDate)} → ${fmtDate(toDate)} (${object.name})`),
     addPayment: (p, name) => act(() => { if (p.workerId) guardPaid(p.workerId, p.date); return ins("payments", {
@@ -1596,13 +1610,43 @@ function MiniBars({ items, fmt, color }) {
   );
 }
 /* Uređivanje postojećeg upisa sati (ispravak datuma/vremena) */
-function LogEditor({ log, onSave, onCancel }) {
-  const [f, setF] = useState({ date: log.date, from: log.from || "", to: log.to || "", hours: String(log.hours) });
+// satnice po poziciji: samo pozicije s imenom i satnicom > 0, bez glavne pozicije radnika (ona ide po osnovnoj satnici)
+function cleanPositionRates(rates, mainPos) {
+  const out = {};
+  Object.entries(rates || {}).forEach(([k, v]) => {
+    const key = String(k || "").trim(); const n = parseNum(String(v ?? ""));
+    if (key && key !== (mainPos || "") && n > 0) out[key] = round2(n);
+  });
+  return out;
+}
+function PositionRatesEditor({ value, onChange, positions = [], cur }) {
+  const rows = Object.entries(value || {});
+  const set = (i, k, v) => {
+    const next = rows.map((r, j) => (j === i ? [k, v] : r));
+    onChange(Object.fromEntries(next));
+  };
+  return (
+    <Field label={tr("Satnica za druge pozicije ({0} / sat) — npr. bílá; sati te pozicije idu po ovoj satnici", cur === "CZK" ? "Kč" : "€")}>
+      {rows.map(([k, v], i) => (
+        <div key={i} style={{ display: "flex", gap: 6, marginBottom: 6 }}>
+          <input list="posrate-list" value={k} onChange={(e) => set(i, e.target.value, v)} placeholder={tr("Pozicija")} style={{ flex: 2 }} />
+          <input inputMode="decimal" value={String(v ?? "")} onChange={(e) => set(i, k, e.target.value)} placeholder={tr("satnica")} style={{ flex: 1 }} />
+          <button onClick={() => onChange(Object.fromEntries(rows.filter((_, j) => j !== i)))} style={{ background: "none", border: "none", color: S.red, fontSize: 16, cursor: "pointer" }}>✕</button>
+        </div>
+      ))}
+      <datalist id="posrate-list">{positions.map((p) => <option key={p} value={p} />)}</datalist>
+      <Btn small kind="ghost" onClick={() => onChange({ ...(value || {}), "": "" })}>{tr("＋ Dodaj poziciju")}</Btn>
+    </Field>
+  );
+}
+
+function LogEditor({ log, onSave, onCancel, positions = [] }) {
+  const [f, setF] = useState({ date: log.date, from: log.from || "", to: log.to || "", hours: String(log.hours), position: log.position || "" });
   const save = () => {
     let hours = parseNum(f.hours);
     if (f.from && f.to && String(log.hours) === f.hours) hours = hoursBetween(f.from, f.to);
     if (!hours || hours <= 0 || !f.date) return;
-    onSave({ date: f.date, from: f.from && f.to ? f.from : "", to: f.from && f.to ? f.to : "", hours: round2(hours) });
+    onSave({ date: f.date, from: f.from && f.to ? f.from : "", to: f.from && f.to ? f.to : "", hours: round2(hours), position: f.position.trim() });
   };
   return (
     <div style={{ background: S.amberSoft, borderRadius: 10, padding: "8px 10px", margin: "4px 0 8px" }}>
@@ -1615,6 +1659,11 @@ function LogEditor({ log, onSave, onCancel }) {
           </>
         )}
         <input inputMode="decimal" value={f.hours} onChange={(e) => setF({ ...f, hours: e.target.value })} placeholder={tr("sati")} style={{ flex: "1 1 60px", padding: "8px" }} />
+      </div>
+      <div style={{ marginTop: 6 }}>
+        <input list={"logpos-" + log.id} value={f.position} onChange={(e) => setF({ ...f, position: e.target.value })}
+          placeholder={tr("Pozicija za ove sate (prazno = pozicija radnika)")} style={{ width: "100%", padding: "8px" }} />
+        <datalist id={"logpos-" + log.id}>{positions.map((p) => <option key={p} value={p} />)}</datalist>
       </div>
       <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
         <Btn small onClick={save}>{tr("Spremi ispravak")}</Btn>
@@ -5416,6 +5465,8 @@ function WorkerDetail({ worker, data, api, onBack }) {
             )}
             <Field label={tr("Glavni objekt")}><ObjectSelect data={data} api={api} value={form.objectId || ""} onChange={(v) => setForm({ ...form, objectId: v })} /></Field>
             <Field label={tr("Pozicija (npr. HSK, kuhinja, bar…)")}><input value={form.position || ""} onChange={(e) => setForm({ ...form, position: e.target.value })} placeholder={tr("npr. HSK")} /></Field>
+            <PositionRatesEditor value={form.positionRates || {}} positions={allPositions(data).filter((p) => p !== (form.position || ""))}
+              cur={form.rateCur} onChange={(v) => setForm({ ...form, positionRates: v })} />
             <div style={{ display: "flex", gap: 10 }}>
               <div style={{ flex: 1 }}><Field label={tr("Istek radne dozvole")}><input type="date" value={form.permitExpiry || ""} onChange={(e) => setForm({ ...form, permitExpiry: e.target.value })} /></Field></div>
               <div style={{ flex: 1 }}><Field label={tr("Istek ugovora")}><input type="date" value={form.contractExpiry || ""} onChange={(e) => setForm({ ...form, contractExpiry: e.target.value })} /></Field></div>
@@ -5545,7 +5596,7 @@ function WorkerDetail({ worker, data, api, onBack }) {
             <div key={l.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 0", borderBottom: `1px solid ${S.line}`, fontSize: 14 }}>
               <span style={{ flex: 1 }}>{fmtDate(l.date)} · <LogSpanLabel l={l} />{objName(l.objectId) ? " · " + objName(l.objectId) : ""}</span>
               <span className="num" style={{ fontWeight: 700, color: !l.monthly && isDayHoursSuspicious(l.hours) ? S.red : "inherit" }}>
-                {!l.monthly && isDayHoursSuspicious(l.hours) && "⚠️ "}{fmtH(l.hours)}
+                {!l.monthly && isDayHoursSuspicious(l.hours) && "⚠️ "}{fmtH(l.hours)}{l.position ? <span style={{ color: S.sub, fontWeight: 500 }}> · {posShort(l.position)}</span> : null}
               </span>
               {(api.admin || l.createdBy === api.uid()) && (
                 <button onClick={() => api.delLog(l, worker.name)} title={tr("Obriši")} style={{ background: "none", border: "none", color: S.red, fontSize: 16, cursor: "pointer", padding: 4 }}>✕</button>
@@ -6217,7 +6268,7 @@ function ObjectDetail({ object, data, api, onBack, onOpenWorker }) {
         let costE = 0, costK = 0;
         objLogs.forEach((l) => {
           const wk = data.workers.find((x) => x.id === l.workerId);
-          const v = l.hours * rateFor(data, wk, l.date) + extraPayForLog(data, wk, l);
+          const v = l.hours * rateFor(data, wk, l.date, l.position) + extraPayForLog(data, wk, l);
           if (wCur(wk) === "CZK") costK += v; else costE += v;
         });
         costE = round2(costE); costK = round2(costK);
@@ -6714,7 +6765,7 @@ function ObjectDetail({ object, data, api, onBack, onOpenWorker }) {
                   <div className="num" style={{ fontSize: 12.5, color: S.sub }}>{mode === "month" ? fmtDate(l.date) + " · " : ""}<LogSpanLabel l={l} /></div>
                 </div>
                 <div className="num" style={{ fontWeight: 700, color: !l.monthly && isDayHoursSuspicious(l.hours) ? S.red : "inherit" }}>
-                  {!l.monthly && isDayHoursSuspicious(l.hours) && "⚠️ "}{fmtH(l.hours)}
+                  {!l.monthly && isDayHoursSuspicious(l.hours) && "⚠️ "}{fmtH(l.hours)}{l.position ? <span style={{ color: S.sub, fontWeight: 500 }}> · {posShort(l.position)}</span> : null}
                 </div>
                 {(api.admin || l.createdBy === api.uid()) ? (
                   <>
@@ -6724,7 +6775,7 @@ function ObjectDetail({ object, data, api, onBack, onOpenWorker }) {
                 ) : <span title={tr("Upisao kolega")} style={{ fontSize: 13, color: S.sub, padding: 4 }}>👤</span>}
               </div>
               {editLog === l.id && (
-                <LogEditor log={l} onCancel={() => setEditLog(null)}
+                <LogEditor log={l} positions={allPositions(data)} onCancel={() => setEditLog(null)}
                   onSave={async (patch) => { if (await api.updLog(l, patch, wName(l.workerId))) setEditLog(null); }} />
               )}
             </div>
@@ -6901,7 +6952,7 @@ function HoursTab({ data, api, onOpenWorker }) {
                   </div>
                 </div>
                 <div className="num" style={{ fontWeight: 700, color: !l.monthly && isDayHoursSuspicious(l.hours) ? S.red : "inherit" }}>
-                  {!l.monthly && isDayHoursSuspicious(l.hours) && "⚠️ "}{fmtH(l.hours)}
+                  {!l.monthly && isDayHoursSuspicious(l.hours) && "⚠️ "}{fmtH(l.hours)}{l.position ? <span style={{ color: S.sub, fontWeight: 500 }}> · {posShort(l.position)}</span> : null}
                 </div>
                 {(api.admin || l.createdBy === api.uid()) ? (
                   <>
@@ -6911,7 +6962,7 @@ function HoursTab({ data, api, onOpenWorker }) {
                 ) : <span title={tr("Upisao kolega")} style={{ fontSize: 13, color: S.sub, padding: 4 }}>👤</span>}
               </div>
               {editLog === l.id && (
-                <LogEditor log={l} onCancel={() => setEditLog(null)}
+                <LogEditor log={l} positions={allPositions(data)} onCancel={() => setEditLog(null)}
                   onSave={async (patch) => { if (await api.updLog(l, patch, wName(l.workerId))) setEditLog(null); }} />
               )}
             </div>
@@ -7163,8 +7214,10 @@ function printEnvelopesDoc(data, list, { view = "month", month, admin, title }) 
         netK !== 0 ? czk(netK) : "",
       ].filter(Boolean);
       const noteLabel = note?.note || MZDY_NOTE_LABEL;
+      const multiPos = (r.byPos || []).length > 1;
+      const posLines = multiPos ? r.byPos.map((b) => `<div>${esc(posShort(b.position) || "sati")}: ${fmtH(b.hours)} × ${money(b.rate, gc)} = ${money(b.amount, gc)}</div>`).join("") : "";
       const breakdown = [
-        gc === "CZK" ? (r.grossKc ? "zarada " + czk(r.grossKc) : "") : (r.gross ? "zarada " + eur(r.gross) : ""),
+        multiPos ? "" : gc === "CZK" ? (r.grossKc ? "zarada " + czk(r.grossKc) : "") : (r.gross ? "zarada " + eur(r.gross) : ""),
         r.extraPay ? "vikend/praznik +" + eur(r.extraPay) : "", r.extraPayKc ? "vikend/praznik +" + czk(r.extraPayKc) : "",
         ...r.pays.filter((p) => p.type === "bonus").map((p) => `${p.note || "bonus"} +${money(p.amount, p.currency)}`),
         r.advances ? "avans −" + eur(r.advances) : "", r.czk.advances ? "avans −" + czk(r.czk.advances) : "",
@@ -7176,7 +7229,7 @@ function printEnvelopesDoc(data, list, { view = "month", month, admin, title }) 
         <div class="env-top">${envPeriodLabel}${objLine ? "<br>" + objLine : ""}</div>
         <div class="env-mid">
           <div class="env-name">${r.w.name}</div>
-          <div class="env-hours">${fmtH(r.hours)}</div>
+          <div class="env-hours">${multiPos ? posLines : fmtH(r.hours)}</div>
         </div>
         ${breakdown && breakdown !== ("zarada " + amounts[0]) ? `<div class="env-break">${breakdown}</div>` : ""}
         ${bankAmounts(r).length ? `<div class="env-bank">${esc(bankLabel(r))}&nbsp;&nbsp;${bankAmounts(r).join(" + ")}</div>` : ""}
@@ -7207,13 +7260,25 @@ function calcRows(data, filterFn, objFilters) {
     const logs = data.logs.filter((l) => l.workerId === w.id && filterFn(l.date) && matchObj(l.objectId));
     const pays = data.payments.filter((p) => p.workerId === w.id && filterFn(p.date));
     const hours = round2(logs.reduce((s, l) => s + l.hours, 0));
-    const grossAll = round2(logs.reduce((s, l) => s + l.hours * rateFor(data, w, l.date), 0));
+    const grossAll = round2(logs.reduce((s, l) => s + l.hours * rateFor(data, w, l.date, l.position), 0));
     const gross = wCur(w) === "CZK" ? 0 : grossAll;
     const grossKc = wCur(w) === "CZK" ? grossAll : 0;
     const extraAll = round2(logs.reduce((s, l) => s + extraPayForLog(data, w, l), 0));
     const extraPay = wCur(w) === "CZK" ? 0 : extraAll;
     const extraPayKc = wCur(w) === "CZK" ? extraAll : 0;
-    const rateSet = [...new Set(logs.map((l) => rateFor(data, w, l.date)))];
+    const rateSet = [...new Set(logs.map((l) => rateFor(data, w, l.date, l.position)))];
+    // sati po poziciji (bílá / studená …) s vlastitom satnicom — za kovertu i obračun
+    const posMap = new Map();
+    logs.forEach((l) => {
+      const pos = l.position || w.position || "";
+      const rate = rateFor(data, w, l.date, l.position);
+      const k = pos + "|" + rate;
+      const row = posMap.get(k) || { position: pos, rate, hours: 0, amount: 0 };
+      row.hours = round2(row.hours + l.hours);
+      row.amount = round2(row.amount + l.hours * rate);
+      posMap.set(k, row);
+    });
+    const byPos = [...posMap.values()].sort((a, b) => a.position.localeCompare(b.position, "hr") || a.rate - b.rate);
     const by = (c) => {
       const mine = pays.filter((p) => (p.currency || "EUR") === c);
       return {
@@ -7225,7 +7290,7 @@ function calcRows(data, filterFn, objFilters) {
       };
     };
     const e = by("EUR"), k = by("CZK");
-    return { w, logs, pays, hours, gross, grossKc, rateSet, extraPay, extraPayKc,
+    return { w, logs, pays, hours, gross, grossKc, rateSet, byPos, extraPay, extraPayKc,
       bonuses: e.bonuses, advances: e.advances, deductions: e.deductions, firmCosts: e.firmCosts, bank: e.bank,
       net: round2(gross + extraPay + e.bonuses - e.advances - e.deductions - e.bank),
       czk: { ...k, gross: grossKc, net: round2(grossKc + extraPayKc + k.bonuses - k.advances - k.deductions - k.bank) } };
@@ -7501,9 +7566,9 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
     const ob = data.objects.find((o) => o.id === l.objectId);
     const cur = byObject.get(key) || { hours: 0, gross: 0, grossKc: 0, revenue: 0, revenueKc: 0, costs: 0, costsKc: 0 };
     cur.hours = round2(cur.hours + l.hours);
-    const gv = l.hours * rateFor(data, wk, l.date) + extraPayForLog(data, wk, l);
+    const gv = l.hours * rateFor(data, wk, l.date, l.position) + extraPayForLog(data, wk, l);
     if (wCur(wk) === "CZK") cur.grossKc = round2(cur.grossKc + gv); else cur.gross = round2(cur.gross + gv);
-    const { rate: brate, cur: bcur } = billRateForLog(data, ob, wk, l.date);
+    const { rate: brate, cur: bcur } = billRateForLog(data, ob, wk, l.date, l.position);
     const rv = l.hours * brate;
     if (bcur === "CZK") cur.revenueKc = round2(cur.revenueKc + rv); else cur.revenue = round2(cur.revenue + rv);
     byObject.set(key, cur);
@@ -7546,10 +7611,10 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
       ls.forEach((l) => {
         const ob = data.objects.find((o) => o.id === l.objectId);
         const wk = data.workers.find((x) => x.id === l.workerId);
-        const { rate: brate, cur: bcur } = billRateForLog(data, ob, wk, l.date);
+        const { rate: brate, cur: bcur } = billRateForLog(data, ob, wk, l.date, l.position);
         const rv = l.hours * brate;
         if (bcur === "CZK") revK += rv; else revE += rv;
-        const cv = l.hours * rateFor(data, wk, l.date) + extraPayForLog(data, wk, l);
+        const cv = l.hours * rateFor(data, wk, l.date, l.position) + extraPayForLog(data, wk, l);
         if (wCur(wk) === "CZK") costK2 += cv; else costE2 += cv;
       });
       const extraOf = (c) => data.payments.filter((p) => monthKey(p.date) === mk2 && (p.currency || "EUR") === c && (!p.workerId ? !!p.objectId : (p.type === "bonus" || (!p.deduct && p.type !== "avans")))).reduce((s, p) => s + p.amount, 0);
@@ -7588,7 +7653,7 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
     const docNo = `${view === "month" ? `${y}-${String(m).padStart(2, "0")}` : y}/${String(r.w.id).replace(/-/g, "").slice(0, 6).toUpperCase()}`;
     const logs = [...r.logs].sort((a, b) => a.date.localeCompare(b.date));
     const logsHtml = logs.map((l) =>
-      `<tr><td>${fmtDate(l.date)}</td><td>${logSpan(l)}</td><td>${objName(l.objectId) || ""}</td><td class="right">${fmtH(l.hours)}</td><td class="right">${money(round2(l.hours * rateFor(data, r.w, l.date) + extraPayForLog(data, r.w, l)), gc)}</td></tr>`).join("");
+      `<tr><td>${fmtDate(l.date)}</td><td>${logSpan(l)}</td><td>${objName(l.objectId) || ""}${l.position ? " · " + posShort(l.position) : ""}</td><td class="right">${fmtH(l.hours)}</td><td class="right">${money(round2(l.hours * rateFor(data, r.w, l.date, l.position) + extraPayForLog(data, r.w, l)), gc)}</td></tr>`).join("");
     const logsTotal = round2((gc === "CZK" ? r.grossKc + r.extraPayKc : r.gross + r.extraPay));
     const itemsHtml = bd.items.map((it) =>
       `<tr><td>${esc(it.label)}${it.hint ? ` (${it.hint})` : ""}</td><td class="right">${it.sign}${amtText(it.e, it.k, gc)}</td></tr>`).join("");
@@ -7640,7 +7705,7 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
     const brig = periodBrigade.filter((bg) => bg.objectId === key).sort((a, b) => a.date.localeCompare(b.date));
     const rowsHtml = ls.map((l) => {
       const wk = data.workers.find((x) => x.id === l.workerId);
-      return `<tr><td>${fmtDate(l.date)}</td><td>${wk?.name || ""}${wk?.position ? " · " + wk.position : ""}</td><td>${logSpan(l)}</td><td class="right">${fmtH(l.hours)}</td></tr>`;
+      return `<tr><td>${fmtDate(l.date)}</td><td>${wk?.name || ""}${(l.position || wk?.position) ? " · " + (l.position || wk.position) : ""}</td><td>${logSpan(l)}</td><td class="right">${fmtH(l.hours)}</td></tr>`;
     }).join("") + brig.map((bg) =>
       `<tr><td>${fmtDate(bg.date)}</td><td>Brigada (bez imena)</td><td>—</td><td class="right">${fmtH(bg.hours)}</td></tr>`).join("");
     const rv = objRevenue(data, ob, ls, brig);
@@ -7717,7 +7782,7 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
           ],
           rows: periodLogs.filter((l) => !scoped || targetIds.has(l.workerId)).sort((a, b) => a.date.localeCompare(b.date) || wName(a.workerId).localeCompare(wName(b.workerId), "hr")).map((l) => {
             const wk = data.workers.find((x) => x.id === l.workerId);
-            const rate = rateFor(data, wk, l.date);
+            const rate = rateFor(data, wk, l.date, l.position);
             return { date: l.date, w: wk?.name || "", obj: objName(l.objectId) || "", from: l.from || "", to: l.to || "", hours: l.hours, rate, amount: round2(l.hours * rate), cur: cur(wCur(wk)) };
           }),
           emptyText: "Nema upisanih sati za ovo razdoblje." },
@@ -7998,7 +8063,9 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
                       </div>
                       <div className="num" style={{ fontSize: 13, color: S.sub, marginTop: 3 }}>
                         {view === "month" && isHoursSuspicious(r.hours) && <span title={tr("Više od {0}h u mjesecu — provjeri unos", MONTH_HOURS_WARN)} style={{ color: S.red }}>⚠️ </span>}
-                        {fmtH(r.hours)}{r.rateSet.length === 1 ? <> × {money(r.rateSet[0], gc)}</> : r.rateSet.length > 1 ? <> {tr("(više satnica)")}</> : null} = {gc === "CZK" ? czk(r.grossKc) : eur(r.gross)}
+                        {(r.byPos || []).length > 1
+                          ? r.byPos.map((b, i) => <span key={i}>{i ? " · " : ""}{posShort(b.position) || tr("sati")} {fmtH(b.hours)} × {money(b.rate, gc)}</span>)
+                          : <>{fmtH(r.hours)}{r.rateSet.length === 1 ? <> × {money(r.rateSet[0], gc)}</> : r.rateSet.length > 1 ? <> {tr("(više satnica)")}</> : null}</>} = {gc === "CZK" ? czk(r.grossKc) : eur(r.gross)}
                         {open !== r.w.id && bdHead.items.length > 1 && <span> · {tr("otvori za razradu")}</span>}
                       </div>
                     </div>
@@ -8011,7 +8078,7 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
                         {r.logs.sort((a, b) => a.date.localeCompare(b.date)).map((l) => (
                           <div key={l.id} className="num" style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13.5, padding: "4px 0" }}>
                             <span style={{ flex: 1 }}>{fmtDate(l.date)} · <LogSpanLabel l={l} />{objName(l.objectId) ? " · " + objName(l.objectId) : ""}</span>
-                            <span style={{ fontWeight: 600 }}>{fmtH(l.hours)}</span>
+                            <span style={{ fontWeight: 600 }}>{fmtH(l.hours)}{l.position ? <span style={{ color: S.sub, fontWeight: 500 }}> · {posShort(l.position)}</span> : null}</span>
                             {(admin || l.createdBy === api.uid()) && (
                               <button onClick={(e) => { e.stopPropagation(); api.delLog(l, r.w.name); }} title={tr("Obriši")}
                                 style={{ background: "none", border: "none", color: S.red, fontSize: 15, cursor: "pointer", padding: "0 2px" }}>✕</button>
