@@ -7460,6 +7460,14 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
   /* razrada obračuna jednog radnika — ista za ekran i PDF (oznake su hrvatske, na ekranu idu kroz tr) */
   const noteFor = (r) => (view === "month" ? (data.payrollNotes || []).find((n) => n.workerId === r.w.id && n.month === month) : null);
   const amtText = (e, k, gc) => [e ? eur(e) : "", k ? czk(k) : ""].filter(Boolean).join(" + ") || money(0, gc);
+  /* BANK redak: broj računa (iz worker_bank) vidi samo admin; "?" na kraju ostaje kako je upisano (treba provjeriti) */
+  const bankLabel = (r) => {
+    if (!admin) return "BANK";
+    const acc = (r.w.bankAccount || "").trim();
+    return `BANK (${acc || "račun nije upisan"})`;
+  };
+  const esc = (x) => String(x).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+  const bankAmounts = (r) => [r.bank ? eur(r.bank) : "", r.czk.bank ? czk(r.czk.bank) : ""].filter(Boolean);
   const breakdownOf = (r) => {
     const note = noteFor(r);
     const gc = wCur(r.w);
@@ -7469,7 +7477,7 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
       { label: "Bonus", e: r.bonuses, k: r.czk.bonuses, sign: "+" },
       { label: "Avans", e: r.advances, k: r.czk.advances, sign: "−" },
       { label: "Odbici", e: r.deductions, k: r.czk.deductions, sign: "−" },
-      { label: "Na račun (banka)", e: r.bank, k: r.czk.bank, sign: "−" },
+      { label: admin ? bankLabel(r) : "Na račun (banka)", e: r.bank, k: r.czk.bank, sign: "−" },
       note ? { label: note.note || MZDY_NOTE_LABEL, e: note.currency === "EUR" ? note.amount : 0, k: note.currency === "CZK" ? note.amount : 0, sign: "−" } : null,
     ].filter((x) => x && (x.always || x.e || x.k));
     const netE = round2(r.net - (note && note.currency === "EUR" ? note.amount : 0));
@@ -7487,7 +7495,7 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
       `<tr><td>${fmtDate(l.date)}</td><td>${logSpan(l)}</td><td>${objName(l.objectId) || ""}</td><td class="right">${fmtH(l.hours)}</td><td class="right">${money(round2(l.hours * rateFor(data, r.w, l.date) + extraPayForLog(data, r.w, l)), gc)}</td></tr>`).join("");
     const logsTotal = round2((gc === "CZK" ? r.grossKc + r.extraPayKc : r.gross + r.extraPay));
     const itemsHtml = bd.items.map((it) =>
-      `<tr><td>${it.label}${it.hint ? ` (${it.hint})` : ""}</td><td class="right">${it.sign}${amtText(it.e, it.k, gc)}</td></tr>`).join("");
+      `<tr><td>${esc(it.label)}${it.hint ? ` (${it.hint})` : ""}</td><td class="right">${it.sign}${amtText(it.e, it.k, gc)}</td></tr>`).join("");
     const paysHtml = r.pays.length ? `
       <h3>Isplate i odbici u razdoblju</h3>
       <table><tr><th style="width:90px">Datum</th><th>Vrsta</th><th>Napomena</th><th class="right">Iznos</th></tr>
@@ -7578,7 +7586,6 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
         ...r.pays.filter((p) => p.type === "bonus").map((p) => `${p.note || "bonus"} +${money(p.amount, p.currency)}`),
         r.advances ? "avans −" + eur(r.advances) : "", r.czk.advances ? "avans −" + czk(r.czk.advances) : "",
         ...r.pays.filter((p) => p.type !== "avans" && p.type !== "bonus" && p.type !== "racun" && p.deduct).map((p) => `${p.note || "odbitak"} −${money(p.amount, p.currency)}`),
-        r.bank ? "na račun −" + eur(r.bank) : "", r.czk.bank ? "na račun −" + czk(r.czk.bank) : "",
         note ? `${noteLabel} −${money(note.amount, note.currency)}` : "",
       ].filter(Boolean).join(" · ");
       const envPeriodLabel = view === "month" ? `${m}. ${y}.` : `${y}.`;
@@ -7589,6 +7596,7 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
           <div class="env-hours">${fmtH(r.hours)}</div>
         </div>
         ${breakdown && breakdown !== ("zarada " + amounts[0]) ? `<div class="env-break">${breakdown}</div>` : ""}
+        ${bankAmounts(r).length ? `<div class="env-bank">${esc(bankLabel(r))}&nbsp;&nbsp;${bankAmounts(r).join(" + ")}</div>` : ""}
         <div class="env-total">${amounts.join("<br>")}</div>
       </div>`;
     }).join("");
@@ -7601,6 +7609,7 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
       .env-name{font-size:19pt;font-weight:bold;letter-spacing:.5px;margin-bottom:1mm;text-transform:uppercase}
       .env-hours{font-size:11.5pt}
       .env-break{font-size:9pt;color:#444;line-height:1.25;margin-bottom:1mm}
+      .env-bank{font-size:12.5pt;font-weight:bold;margin-top:2mm}
       .env-total{border-top:2px solid #000;width:70%;margin:4mm auto 0;padding-top:2mm;font-size:17pt;font-weight:bold;line-height:1.2}
     </style>${pages}`);
   };
