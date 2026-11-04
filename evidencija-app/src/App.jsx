@@ -6976,6 +6976,108 @@ function HoursTab({ data, api, onOpenWorker }) {
 /* ================================================================== */
 /*  AVANSI, BONUSI I TROŠKOVI                                          */
 /* ================================================================== */
+
+/* ---------- Pregled avansa, goriva, bonusa… za mjesec, po objektu / vrsti / radniku ---------- */
+const PAY_TYPES = ["avans", "gorivo", "bonus", "racun", "ostalo"];
+// objekt uplate: upisani objekt → objekt gdje je radnik taj mjesec imao najviše sati → glavni objekt radnika
+function paymentObjectId(data, p) {
+  if (p.objectId) return p.objectId;
+  const w = data.workers.find((x) => x.id === p.workerId);
+  if (!w) return "";
+  const mo = monthKey(p.date);
+  const byObj = new Map();
+  data.logs.forEach((l) => { if (l.workerId === w.id && monthKey(l.date) === mo && l.objectId) byObj.set(l.objectId, (byObj.get(l.objectId) || 0) + l.hours); });
+  if (byObj.size) return [...byObj.entries()].sort((a, b) => b[1] - a[1])[0][0];
+  return w.objectId || "";
+}
+function PaymentsMonthOverview({ data, onOpenWorker }) {
+  const [month, setMonth] = useState(todayISO().slice(0, 7));
+  const [obj, setObj] = useState(""); // "" = svi, "__none__" = bez objekta
+  const [types, setTypes] = useState(new Set(PAY_TYPES));
+  const [group, setGroup] = useState("objekt"); // objekt | vrsta | radnik
+  const [openKey, setOpenKey] = useState("");
+  const wName = (id) => data.workers.find((x) => x.id === id)?.name || tr("Obrisan radnik");
+  const oName = (id) => (id ? data.objects.find((o) => o.id === id)?.name || tr("Obrisan objekt") : tr("Bez objekta"));
+  const rows = data.payments
+    .filter((p) => monthKey(p.date) === month && types.has(p.type))
+    .map((p) => ({ ...p, oid: paymentObjectId(data, p) }))
+    .filter((p) => !obj || (obj === "__none__" ? !p.oid : p.oid === obj))
+    .sort((a, b) => a.date.localeCompare(b.date));
+  const sums = (list) => {
+    const out = {};
+    list.forEach((p) => { const c = p.currency || "EUR"; out[c] = round2((out[c] || 0) + p.amount); });
+    return Object.entries(out).map(([c, v]) => money(v, c)).join(" + ") || "—";
+  };
+  const keyOf = (p) => group === "objekt" ? p.oid : group === "vrsta" ? p.type : (p.workerId || "obj:" + p.oid);
+  const labelOf = (k, p) => group === "objekt" ? "🏨 " + oName(k) : group === "vrsta" ? tr(TYPE_LABEL[k] || k) : (p.workerId ? wName(p.workerId) : "🏨 " + oName(p.oid) + " (" + tr("trošak objekta") + ")");
+  const groups = new Map();
+  rows.forEach((p) => { const k = keyOf(p); const g = groups.get(k) || { key: k, label: labelOf(k, p), list: [] }; g.list.push(p); groups.set(k, g); });
+  const glist = [...groups.values()].sort((a, b) => a.label.localeCompare(b.label, "hr"));
+  // tablica po vrsti za zaglavlje
+  const byType = PAY_TYPES.filter((t) => types.has(t)).map((t) => ({ t, list: rows.filter((p) => p.type === t) })).filter((x) => x.list.length);
+  const objOptions = sortedObjects(data.objects.filter((o) => !o.archived || data.payments.some((p) => monthKey(p.date) === month && paymentObjectId(data, p) === o.id)));
+  const chip = (on) => ({ padding: "6px 11px", borderRadius: 999, fontWeight: 700, fontSize: 12.5, cursor: "pointer",
+    background: on ? S.blue : "#fff", color: on ? "#fff" : S.sub, border: `1px solid ${on ? S.blue : S.line}` });
+  const toggleType = (t) => setTypes((prev) => { const n = new Set(prev); n.has(t) ? n.delete(t) : n.add(t); return n.size ? n : new Set(PAY_TYPES); });
+  return (
+    <Card>
+      <div style={{ fontWeight: 700, marginBottom: 8 }}>{tr("📊 Pregled za mjesec")}</div>
+      <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+        <input type="month" value={month} onChange={(e) => e.target.value && setMonth(e.target.value)} style={{ flex: 1 }} />
+        <select value={obj} onChange={(e) => setObj(e.target.value)} style={{ flex: 1 }}>
+          <option value="">{tr("Svi objekti")}</option>
+          {objOptions.map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}
+          <option value="__none__">{tr("Bez objekta")}</option>
+        </select>
+      </div>
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 8 }}>
+        {PAY_TYPES.map((t) => <button key={t} type="button" onClick={() => toggleType(t)} style={chip(types.has(t))}>{tr(TYPE_LABEL[t])}</button>)}
+      </div>
+      <div style={{ display: "flex", gap: 6, marginBottom: 10, alignItems: "center", fontSize: 12.5, color: S.sub }}>
+        {tr("Grupiraj:")}
+        {[["objekt", tr("po objektu")], ["vrsta", tr("po vrsti")], ["radnik", tr("po radniku")]].map(([id, l]) => (
+          <button key={id} type="button" onClick={() => { setGroup(id); setOpenKey(""); }} style={{ ...chip(group === id), background: group === id ? S.green : "#fff", borderColor: group === id ? S.green : S.line }}>{l}</button>
+        ))}
+      </div>
+      {rows.length === 0 ? <Empty text={tr("Za {0} nema upisa.", monthLong(month))} /> : (
+        <>
+          <div style={{ background: S.blueSoft, borderRadius: 10, padding: "8px 10px", marginBottom: 10, fontSize: 13.5 }}>
+            {byType.map(({ t, list }) => (
+              <div key={t} style={{ display: "flex", justifyContent: "space-between" }}><span>{tr(TYPE_LABEL[t])} ({list.length})</span><b className="num">{sums(list)}</b></div>
+            ))}
+            <div style={{ display: "flex", justifyContent: "space-between", borderTop: `1px solid ${S.line}`, marginTop: 4, paddingTop: 4 }}>
+              <span>{tr("Ukupno")} ({rows.length})</span><b className="num">{sums(rows)}</b>
+            </div>
+          </div>
+          {glist.map((g) => (
+            <div key={g.key} style={{ borderBottom: `1px solid ${S.line}` }}>
+              <div onClick={() => setOpenKey(openKey === g.key ? "" : g.key)} style={{ display: "flex", justifyContent: "space-between", padding: "9px 0", cursor: "pointer" }}>
+                <span style={{ fontWeight: 600, fontSize: 14 }}>{openKey === g.key ? "▾ " : "▸ "}{g.label} <span style={{ color: S.sub, fontWeight: 500 }}>({g.list.length})</span></span>
+                <b className="num">{sums(g.list)}</b>
+              </div>
+              {openKey === g.key && g.list.map((p) => (
+                <div key={p.id} style={{ display: "flex", gap: 8, alignItems: "center", padding: "5px 0 5px 14px", fontSize: 13 }}>
+                  <span style={{ color: S.sub, minWidth: 44 }}>{Number(p.date.slice(8, 10))}.{Number(p.date.slice(5, 7))}.</span>
+                  <span style={{ flex: 1 }}>
+                    {group !== "vrsta" && <b>{tr(TYPE_LABEL[p.type] || p.type)} </b>}
+                    {group !== "radnik" && (p.workerId
+                      ? <span onClick={() => onOpenWorker && onOpenWorker(p.workerId)} style={{ color: S.blue, cursor: "pointer" }}>{wName(p.workerId)}</span>
+                      : <span>🏨 {oName(p.oid)}</span>)}
+                    {group !== "objekt" && p.workerId && <span style={{ color: S.sub }}> · {oName(p.oid)}</span>}
+                    {p.note ? <span style={{ color: S.sub }}> · {p.note}</span> : null}
+                    {p.type !== "avans" && p.type !== "bonus" && p.type !== "racun" && p.workerId && !p.deduct ? <span style={{ color: S.sub }}> · {tr("trošak firme")}</span> : null}
+                  </span>
+                  <span className="num" style={{ fontWeight: 600 }}>{p.type === "bonus" ? "+" : ""}{money(p.amount, p.currency)}</span>
+                </div>
+              ))}
+            </div>
+          ))}
+        </>
+      )}
+    </Card>
+  );
+}
+
 function PaymentsTab({ data, api, onOpenWorker }) {
   const [target, setTarget] = useState("radnik"); // radnik | objekt
   const [filterObj, setFilterObj] = useState("");
@@ -7145,6 +7247,7 @@ function PaymentsTab({ data, api, onOpenWorker }) {
           )}
         </Card>
       )}
+      <PaymentsMonthOverview data={data} onOpenWorker={onOpenWorker} />
       {recentAll.length > 15 && (
         <input value={pq} onChange={(e) => setPq(e.target.value)} placeholder={tr("🔍 Traži stariji upis po imenu ili napomeni (za brisanje)…")} style={{ marginBottom: 10 }} />
       )}
