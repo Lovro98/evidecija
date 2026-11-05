@@ -566,6 +566,73 @@ const editDist = (a, b) => {
   return d[a.length][b.length];
 };
 const plainTokens = (s) => (s || "").normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().replace(/[^a-z\s]/g, " ").split(/\s+/).filter(Boolean);
+/* Mzdy PDF → zaposlenik ureda: doprinosi su trošak firme (soc. + zdrav. zaposlenika + pojistné firme),
+   "na račun" = Dobírka iz pásky, gotovina = fiksna plaća − banka (prijedlog, čeka odobrenje) */
+function mzdyOfficeRow(data, w, p, mo) {
+  const office = data.office || { payments: [], payouts: [], salaries: [] };
+  const sal = officeSalaryFor(office, w.id, mo);
+  const pays = office.payments.filter((x) => x.workerId === w.id && monthKey(x.date) === mo);
+  const exBank = round2(pays.filter((x) => x.type === "racun").reduce((t, x) => t + x.amount, 0));
+  const exContrib = round2(pays.filter((x) => x.type !== "racun" && x.type !== "bonus" && x.type !== "avans" && !x.deduct).reduce((t, x) => t + x.amount, 0));
+  const payout = office.payouts.find((x) => x.workerId === w.id && x.month === mo) || null;
+  const locked = !!payout?.approved;
+  const emp = round2((p.zdrav || 0) + (p.soc || 0)), firm = round2(p.pojist || 0);
+  const contrib = round2(emp + firm);
+  const bankNow = p.dobirka > 0 ? p.dobirka : exBank;
+  const cashPlan = sal ? round2(sal.salary - bankNow) : null;
+  return {
+    rawName: p.name, kat: p.kat, tarif: p.tarif, corrected: p.corrected, src: p, workerId: w.id, currency: "CZK", office: true,
+    socZdr: "0", bank: String(p.dobirka || 0), dobirkaKc: p.dobirka, contrib: String(contrib),
+    contribDetail: `zaposlenik ${czk(emp)} + firma ${czk(firm)}`, cashPlan,
+    include: !locked, addBank: p.dobirka > 0, exBank, exNote: 0, locked,
+    warn: [
+      sal && p.dobirka > 0 && Math.round(p.dobirka) !== Math.round(sal.bank) ? `Páska kaže ${czk(p.dobirka)} na račun, a u Uredu je dogovoreno ${czk(sal.bank)}` : "",
+      !sal ? "u Uredu nema upisane plaće za taj mjesec — gotovina se neće predložiti" : "",
+      exBank > 0 ? `već upisano na račun ${czk(exBank)}${Math.round(exBank) === Math.round(p.dobirka) ? " (isto)" : " — zamijenit će se iznosom iz pásky"}` : "",
+      exContrib > 0 ? `doprinosi već upisani ${czk(exContrib)} — zamijenit će se` : "",
+      sal && sal.salary > 0 && bankNow > sal.salary ? "na račun je više od plaće — provjeri" : "",
+      locked ? "gotovina za taj mjesec je odobrena i zaključana" : "",
+    ].filter(Boolean),
+  };
+}
+async function saveMzdyOfficeRow(data, r, mo, lastDay, tag, uid) {
+  const office = data.office || { payments: [], payouts: [], salaries: [] };
+  const del = async (ids) => { if (!ids.length) return; const { error } = await supabase.from("payments").update({ deleted_at: new Date().toISOString() }).in("id", ids); if (error) throw error; };
+  const pays = office.payments.filter((x) => x.workerId === r.workerId && monthKey(x.date) === mo);
+  // doprinosi: postojeći za taj mjesec se zamjenjuju
+  const contrib = round2(parseNum(r.contrib) || 0);
+  await del(pays.filter((x) => x.type !== "racun" && x.type !== "bonus" && x.type !== "avans" && !x.deduct).map((x) => x.id));
+  if (contrib > 0) {
+    const { error } = await supabase.from("payments").insert({ worker_id: r.workerId, object_id: null, pay_date: lastDay, type: "ostalo", amount: contrib,
+      currency: "CZK", note: `soc. i zdrav. – plaća ${monthLabel(mo)} (${tag}: ${r.contribDetail})`, deduct: false, created_by: uid });
+    if (error) throw error;
+  }
+  // na račun iz pásky: zamjenjuje dosadašnji upis za taj mjesec
+  let bank = round2(pays.filter((x) => x.type === "racun").reduce((t, x) => t + x.amount, 0));
+  const nb = round2(parseNum(r.bank) || 0);
+  if (r.addBank && nb > 0) {
+    await del(pays.filter((x) => x.type === "racun").map((x) => x.id));
+    const { error } = await supabase.from("payments").insert({ worker_id: r.workerId, object_id: null, pay_date: lastDay, type: "racun", amount: nb,
+      currency: "CZK", note: `banka – plaća ${monthLabel(mo)} (${tag})`, deduct: true, created_by: uid });
+    if (error) throw error;
+    bank = nb;
+  }
+  // gotovina = plaća − banka (+ dodaci − avansi/odbici); prijedlog čeka odobrenje
+  const sal = officeSalaryFor(office, r.workerId, mo);
+  if (!sal) return;
+  const other = pays.filter((x) => x.type !== "racun");
+  const plus = other.filter((x) => x.type === "bonus").reduce((t, x) => t + x.amount, 0);
+  const minus = other.filter((x) => x.type === "avans" || (x.type !== "bonus" && x.deduct)).reduce((t, x) => t + x.amount, 0);
+  const cash = round2(sal.salary + plus - bank - minus);
+  const payout = office.payouts.find((x) => x.workerId === r.workerId && x.month === mo);
+  if (payout && payout.approved) return;
+  if (payout) {
+    if (round2(payout.amountKc) !== cash) { const { error } = await supabase.from("payouts").update({ amount: 0, amount_czk: Math.max(cash, 0) }).eq("id", payout.id); if (error) throw error; }
+  } else if (cash > 0) {
+    const { error } = await supabase.from("payouts").insert({ worker_id: r.workerId, month: mo, amount: 0, amount_czk: cash, approved: false, created_by: uid });
+    if (error) throw error;
+  }
+}
 function matchWorkerFuzzy(workers, rawName) {
   const exact = findWorkerByName(workers, rawName);
   if (exact) return exact;
@@ -3204,6 +3271,17 @@ function FinancePanel({ data, api }) {
   const lev = payrollLevies({ txs, reminders: data.reminders || [], year, rate });
   const envelopeSocZdr = (data.payrollNotes || []).filter((n) => n.month?.startsWith(`${year}-`))
     .reduce((s, n) => s + (n.currency === "CZK" ? n.amount : n.sourceCzk || n.amount * rate), 0);
+  // po mjesecima: + odbijeno radnicima na koverti, − doprinosi ureda (trošak firme, ne odbija se od plaće)
+  const socByMonth = Array.from({ length: 12 }, (_, i) => {
+    const mo = `${year}-${String(i + 1).padStart(2, "0")}`;
+    const env = (data.payrollNotes || []).filter((n) => n.month === mo)
+      .reduce((t, n) => t + (n.currency === "CZK" ? n.amount : n.sourceCzk || n.amount * rate), 0);
+    const office = ((data.office && data.office.payments) || []).filter((x) => monthKey(x.date) === mo && x.type !== "racun" && x.type !== "bonus" && x.type !== "avans" && !x.deduct)
+      .reduce((t, x) => t + ((x.currency || "CZK") === "CZK" ? x.amount : x.amount * rate), 0);
+    const paid = lev.months[i] ? lev.months[i].soc + lev.months[i].zdr + (lev.months[i].mix || 0) : 0;
+    return { i, mo, env, office, net: env - office, paid };
+  });
+  const officeSocZdr = socByMonth.reduce((t, m) => t + m.office, 0);
   const adv = citAdvances(est.yCit);
   const Kc = (n) => czk(Math.round(n));
 
@@ -3494,6 +3572,7 @@ function FinancePanel({ data, api }) {
               {line("Dio zaposlenika (odbija se od bruto) + porez", lev.split.employees, lev.split12.employees)}
               {line("Ukupno uplaćeno ČSSZ, zdrav. i poreznom uredu", lev.split.all, lev.split12.all, { bold: true })}
               {envelopeSocZdr > 0 && line("Radnicima odbijeno na koverti (soc.-zdr.)", envelopeSocZdr, null, { hint: "zbroj napomena iz Mzdy PDF-a / ručnih soc.-zdr. odbitaka", color: S.green })}
+              {officeSocZdr > 0 && line("👔 Doprinosi ureda (trošak firme)", -officeSocZdr, null, { hint: "ne odbijaju se od plaće ureda — firma ih plaća sama", color: S.red })}
               <div style={{ fontSize: 11.5, color: S.sub, marginTop: 6, marginBottom: 8 }}>
                 Podjela firma / zaposlenik je izračunata po zakonskim stopama. Kao vlasnik od dividende ne plaćaš ni socijalno ni zdravstveno, samo 15 % poreza. Ako si i sam na plaći (ili primaš odměnu jednatele), tvoji odvodi su već u ovim brojkama.
               </div>
@@ -3507,6 +3586,36 @@ function FinancePanel({ data, api }) {
                 </div>
               ) : null)}
             </Card>
+
+            {socByMonth.some((m) => m.env || m.office) && (
+              <Card>
+                <div style={{ fontWeight: 700, marginBottom: 2 }}>Soc. + zdrav. po mjesecima — plus i minus</div>
+                <div style={{ fontSize: 12, color: S.sub, marginBottom: 8 }}>
+                  Plus: odbijeno radnicima na kovertama. Minus: doprinosi ureda (firma ih plaća sama). Saldo = plus − minus. Uplaćeno: soc. + zdrav. za te plaće (Mzdy PDF ili izvod), za usporedbu.
+                </div>
+                <div style={{ ...row, color: S.sub, fontSize: 12, fontWeight: 700 }}>
+                  <span style={{ flex: 1 }}>Plaće za</span><span style={{ width: 78, textAlign: "right" }}>+ Koverte</span><span style={{ width: 78, textAlign: "right" }}>− Ured</span>
+                  <span style={{ width: 78, textAlign: "right" }}>Saldo</span><span style={{ width: 78, textAlign: "right" }}>Uplaćeno</span>
+                </div>
+                {socByMonth.filter((m) => m.env || m.office).map((m) => (
+                  <div key={m.mo} style={row}>
+                    <span style={{ flex: 1 }}>{mName(m.i)}</span>
+                    <span className="num" style={{ width: 78, textAlign: "right", color: S.green }}>{Kc(m.env)}</span>
+                    <span className="num" style={{ width: 78, textAlign: "right", color: S.red }}>{m.office ? "− " + Kc(m.office) : "—"}</span>
+                    <b className="num" style={{ width: 78, textAlign: "right", color: m.net >= 0 ? S.green : S.red }}>{Kc(m.net)}</b>
+                    <span className="num" style={{ width: 78, textAlign: "right", color: S.sub }}>{m.paid ? Kc(m.paid) : "—"}</span>
+                  </div>
+                ))}
+                {(() => { const t = socByMonth.reduce((a, m) => ({ env: a.env + m.env, office: a.office + m.office, net: a.net + m.net, paid: a.paid + m.paid }), { env: 0, office: 0, net: 0, paid: 0 }); return (
+                  <div style={{ ...row, borderBottom: "none", fontWeight: 700 }}>
+                    <span style={{ flex: 1 }}>Ukupno {year}.</span>
+                    <span className="num" style={{ width: 78, textAlign: "right", color: S.green }}>{Kc(t.env)}</span>
+                    <span className="num" style={{ width: 78, textAlign: "right", color: S.red }}>{t.office ? "− " + Kc(t.office) : "—"}</span>
+                    <span className="num" style={{ width: 78, textAlign: "right", color: t.net >= 0 ? S.green : S.red }}>{Kc(t.net)}</span>
+                    <span className="num" style={{ width: 78, textAlign: "right", color: S.sub }}>{t.paid ? Kc(t.paid) : "—"}</span>
+                  </div>); })()}
+              </Card>
+            )}
 
             <Card>
               <div style={{ fontWeight: 700, marginBottom: 8 }}>Rokovi i zálohe</div>
@@ -9054,8 +9163,12 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
       const monthCounts = {};
       people.forEach((p) => { monthCounts[p.month] = (monthCounts[p.month] || 0) + 1; });
       const mo = Object.entries(monthCounts).sort((a, b) => b[1] - a[1])[0][0];
+      const officeWs = (data.office && data.office.workers) || [];
       const rows = [...people.values()].map((p) => {
-        const w = matchWorkerFuzzy(data.workers, p.name);
+        const hw = matchWorkerFuzzy(data.workers, p.name);
+        const ow = hw ? null : matchWorkerFuzzy(officeWs, p.name);
+        if (ow) return mzdyOfficeRow(data, ow, p, mo);
+        const w = hw;
         const cur = w ? wCur(w) : "CZK";
         const conv = (kc) => String(cur === "CZK" ? kc : round2(kc / czkRate));
         const soc = socZdrFor(p);
@@ -9065,8 +9178,9 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
         const exNote = w ? (data.payrollNotes || []).filter((n) => n.workerId === w.id && n.month === mo).reduce((s, n) => s + n.amount, 0) : 0;
         const locked = w ? !!paidFor(data, w.id, mo)?.approved : false;
         return {
-          rawName: p.name, kat: p.kat, tarif: p.tarif, corrected: p.corrected, workerId: w?.id || "", currency: cur,
+          rawName: p.name, kat: p.kat, tarif: p.tarif, corrected: p.corrected, workerId: w?.id || "", currency: cur, src: p,
           socZdr: conv(soc), bank: conv(p.dobirka), dobirkaKc: p.dobirka,
+          office: false, contrib: "0", contribDetail: "",
           include: !!w && !locked, addBank: !!w && p.dobirka > 0 && !(exBank > 0),
           exBank, exNote, locked,
           warn: [
@@ -9093,7 +9207,8 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
     const uid = api.uid();
     const tag = `Dobírka (Mzdy PDF ${String(mm).padStart(2, "0")}/${yy})`;
     const ok = await api.run(async () => {
-      for (const r of rows) {
+      for (const r of rows.filter((x) => x.office)) await saveMzdyOfficeRow(data, r, mo, lastDay, `Mzdy PDF ${String(mm).padStart(2, "0")}/${yy}`, uid);
+      for (const r of rows.filter((x) => !x.office)) {
         const soc = round2(parseNum(r.socZdr) || 0);
         // soc.-zdr.: stara napomena za taj mjesec se zamjenjuje novom
         const old = (data.payrollNotes || []).filter((n) => n.workerId === r.workerId && n.month === mo);
@@ -9127,7 +9242,7 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
           if (error) throw error;
         }
       }
-    }, `Uvezao Mzdy PDF za ${mo}: ${rows.length} radnika (soc.-zdr. i na račun)`);
+    }, `Uvezao Mzdy PDF za ${mo}: ${rows.filter((x) => !x.office).length} radnika (soc.-zdr. i na račun)${rows.some((x) => x.office) ? `, ured: ${rows.filter((x) => x.office).length} (doprinosi, banka, gotovina)` : ""}`);
     setMzdyBusy(false);
     if (ok) setMzdyReview(null);
   };
@@ -9501,7 +9616,7 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
                 <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
                   <input type="checkbox" checked={row.include} disabled={row.locked || !row.workerId} onChange={(e) => setRow(i, { include: e.target.checked })} style={{ width: 18, height: 18 }} />
                   <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontWeight: 700, fontSize: 14.5 }}>{row.rawName} {row.corrected && <Tag color={S.blue} bg={S.blueSoft}>{tr("oprava")}</Tag>}</div>
+                    <div style={{ fontWeight: 700, fontSize: 14.5 }}>{row.rawName} {row.office && <Tag color={S.blue} bg={S.blueSoft}>{tr("👔 Ured")}</Tag>} {row.corrected && <Tag color={S.blue} bg={S.blueSoft}>{tr("oprava")}</Tag>}</div>
                     <div className="num" style={{ fontSize: 12, color: S.sub }}>
                       {row.kat}{row.tarif ? tr(" · tarif {0} ({1} radno vrijeme)", czk(row.tarif), row.tarif >= FULL_TARIF ? tr("puno") : tr("pola")) : ""}
                     </div>
@@ -9509,20 +9624,30 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
                 </div>
                 <Field label={tr("Radnik u aplikaciji")}>
                   <select value={row.workerId} onChange={(e) => {
+                    const ow = ((data.office && data.office.workers) || []).find((x) => x.id === e.target.value);
+                    if (ow) { setRow(i, { ...mzdyOfficeRow(data, ow, row.src, mzdyReview.month), include: !row.locked }); return; }
                     const wk = data.workers.find((x) => x.id === e.target.value);
                     const cur = wk ? wCur(wk) : "CZK";
                     const toCur = (v) => String(cur === row.currency ? v : cur === "CZK" ? round2((parseNum(v) || 0) * czkRate) : round2((parseNum(v) || 0) / czkRate));
-                    setRow(i, { workerId: e.target.value, currency: cur, socZdr: toCur(row.socZdr), bank: toCur(row.bank), include: !!e.target.value && !row.locked });
+                    setRow(i, { workerId: e.target.value, currency: cur, office: false, socZdr: row.office ? String(socZdrFor(row.src)) : toCur(row.socZdr), bank: toCur(row.bank), include: !!e.target.value && !row.locked });
                   }}>
                     <option value="">{tr("— nije prepoznat, odaberi ručno —")}</option>
                     {sortedWorkers(data.workers).map((w) => <option key={w.id} value={w.id}>{w.name}{w.archived ? tr(" (bivši)") : ""}</option>)}
+                    {((data.office && data.office.workers) || []).length > 0 && <optgroup label={tr("👔 Ured")}>
+                      {sortedWorkers(data.office.workers).map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}
+                    </optgroup>}
                   </select>
                 </Field>
                 <div style={{ display: "flex", gap: 8 }}>
                   <div style={{ flex: 1 }}>
+                    {row.office ? (
+                      <Field label={tr("Doprinosi — trošak firme (Kč)")}>
+                        <input inputMode="decimal" value={row.contrib} onChange={(e) => setRow(i, { contrib: e.target.value })} />
+                      </Field>
+                    ) : (
                     <Field label={tr("soc.-zdr. ({0})", row.currency === "CZK" ? "Kč" : "€")}>
                       <input inputMode="decimal" value={row.socZdr} onChange={(e) => setRow(i, { socZdr: e.target.value })} />
-                    </Field>
+                    </Field>)}
                   </div>
                   <div style={{ flex: 1 }}>
                     <Field label={tr("Na račun ({0})", row.currency === "CZK" ? "Kč" : "€")}>
@@ -9534,6 +9659,7 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
                   <input type="checkbox" checked={row.addBank} onChange={(e) => setRow(i, { addBank: e.target.checked })} style={{ width: 16, height: 16 }} />
                   {tr("Upiši \"na račun\" iz pásky")}
                 </label>
+                {row.office && <div className="num" style={{ fontSize: 12, color: S.sub, marginTop: 4 }}>{row.contribDetail}{row.cashPlan != null ? " · " + tr("gotovina {0}", czk(row.cashPlan)) : ""}</div>}
                 {row.warn.map((w, k) => <div key={k} style={{ fontSize: 12, color: S.amber, marginTop: 4 }}>{w}</div>)}
               </div>
             ))}
