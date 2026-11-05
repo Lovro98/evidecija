@@ -1563,8 +1563,8 @@ export default function App() {
   const navTab = adminPanel || MORE_TABS.includes(tab) || tab === "vise" ? "vise" : tab;
   const resetDetail = () => { setOpenWorker(null); setOpenObject(null); setOpenProfile(null); };
   const goTab = (x) => { setAdminPanel(""); resetDetail(); setTab(x); setFabOpen(false); window.scrollTo({ top: 0 }); };
-  const openPanel = (p) => { resetDetail(); setAdminPanel(p); setFabOpen(false); window.scrollTo({ top: 0, behavior: "smooth" }); };
-  const moreBadge = (data.newCandidates || 0) + (admin ? (data.payouts || []).filter((p) => !p.approved).length : 0);
+  const openPanel = (p) => { markBadgeSeen(data, p); resetDetail(); setAdminPanel(p); setFabOpen(false); window.scrollTo({ top: 0, behavior: "smooth" }); };
+  const moreBadge = (data.newCandidates || 0) + (admin ? adminBadge(data, "approvals") + adminBadge(data, "office") : 0);
   // iPad/računalo: popis lijevo, detalji desno
   const splitList = wide && !adminPanel && ((tab === "radnici" && worker) || (tab === "objekti" && object));
   const showBackToMore = !detailOpen && (adminPanel || MORE_TABS.includes(tab));
@@ -2782,9 +2782,28 @@ const ADMIN_MENU = [
   ["firm", "🏢", "Podaci firme i postavke"], ["audit", "📜", "Povijest radnji"], ["logins", "🔐", "Prijave"],
   ["errors", "🐛", "Greške aplikacije"], ["trash", "🗑", "Koš (obrisano)"],
 ];
-const adminBadge = (data, id) => id === "candidates" ? (data.newCandidates || 0) : id === "approvals" ? (data.payouts || []).filter((p) => !p.approved).length
-  : id === "office" ? ((data.office && data.office.payouts) || []).filter((p) => !p.approved).length
-  : id === "errors" ? (data.errorLog || []).length : id === "trash" ? data.trash.length : 0;
+/* Crveni brojevi u Upravljanju: pokazuju samo NOVE stavke. Kad otvoriš odjeljak, sve trenutne
+   stavke se zapamte kao viđene (u ovom pregledniku), pa broj nestane dok ne stigne nešto novo. */
+const BADGE_SEEN_KEY = "evidencija.seenBadges.v1";
+let badgeSeen = (() => { try { return JSON.parse(localStorage.getItem(BADGE_SEEN_KEY) || "{}") || {}; } catch { return {}; } })();
+const badgeItems = (data, id) => id === "approvals" ? (data.payouts || []).filter((p) => !p.approved).map((p) => p.id)
+  : id === "office" ? ((data.office && data.office.payouts) || []).filter((p) => !p.approved).map((p) => p.id)
+  : id === "errors" ? (data.errorLog || []).map((e) => e.id)
+  : id === "trash" ? (data.trash || []).map((t) => t.table + ":" + t.row.id)
+  : null;
+const markBadgeSeen = (data, id) => {
+  const items = badgeItems(data, id);
+  if (!items) return;
+  badgeSeen = { ...badgeSeen, [id]: items };
+  try { localStorage.setItem(BADGE_SEEN_KEY, JSON.stringify(badgeSeen)); } catch { /* privatni prozor — samo do osvježavanja */ }
+};
+const adminBadge = (data, id) => {
+  if (id === "candidates") return data.newCandidates || 0;
+  const items = badgeItems(data, id);
+  if (!items) return 0;
+  const seen = new Set(badgeSeen[id] || []);
+  return items.filter((x) => !seen.has(x)).length;
+};
 /* ================================================================== */
 /*  NEISPLAĆENO — stare koverte i djelomične isplate                   */
 /*  Tablice: unpaid_wages (koverta = radnik + mjesec), unpaid_wage_payments */
