@@ -9284,20 +9284,21 @@ async function buildPayoutReceiptPage({ company, workerName, position, period, h
   const font = (px, bold) => `${bold ? "700 " : ""}${px}px "Segoe UI", system-ui, -apple-system, Roboto, Arial, sans-serif`;
   g.fillStyle = "#fff"; g.fillRect(0, 0, W, H); g.textBaseline = "top";
   g.fillStyle = "#55606E"; g.font = font(26); g.fillText(company || "", 100, 100);
-  g.fillStyle = "#10233F"; g.font = font(46, true); g.fillText("Potvrda o primitku isplate", 100, 140);
+  g.fillStyle = "#10233F"; g.font = font(46, true); g.fillText(tr("Potvrda o primitku isplate"), 100, 140);
+  if (CUR_LANG !== "HR") { g.fillStyle = "#7A8594"; g.font = font(22); g.fillText("Potvrda o primitku isplate", W - 100 - g.measureText("Potvrda o primitku isplate").width, 108); }
   g.fillStyle = "#55606E"; g.font = font(26); g.fillText(`${workerName}${position ? " · " + position : ""} · ${period}`.slice(0, 80), 100, 205);
   g.strokeStyle = "#D9DEE5"; g.lineWidth = 2; g.beginPath(); g.moveTo(100, 260); g.lineTo(W - 100, 260); g.stroke();
   let y = 290;
   g.font = font(28);
-  [["Odrađeni sati", hours], ...items].forEach(([k, v]) => {
+  [[tr("Odrađeni sati"), hours], ...items].forEach(([k, v]) => {
     g.fillStyle = "#10233F"; g.fillText(String(k).slice(0, 55), 100, y);
     const t = String(v); g.fillText(t, W - 100 - g.measureText(t).width, y); y += 52;
   });
   g.strokeStyle = "#10233F"; g.lineWidth = 3; g.beginPath(); g.moveTo(100, y + 4); g.lineTo(W - 100, y + 4); g.stroke();
-  y += 26; g.font = font(36, true); g.fillText("ZA ISPLATU", 100, y);
+  y += 26; g.font = font(36, true); g.fillText(tr("ZA ISPLATU"), 100, y);
   g.fillText(net, W - 100 - g.measureText(net).width, y);
   y += 100; g.font = font(28); g.fillStyle = "#10233F";
-  const stmt = `Svojim potpisom potvrđujem da sam primio/la isplatu za ${period} u iznosu ${net}.`;
+  const stmt = tr("Svojim potpisom potvrđujem da sam primio/la isplatu za {0} u iznosu {1}.", period, net);
   const words = stmt.split(" "); let line = ""; const lines = [];
   words.forEach((w) => { const tt = line ? line + " " + w : w; if (g.measureText(tt).width > W - 200 && line) { lines.push(line); line = w; } else line = tt; });
   if (line) lines.push(line);
@@ -9306,9 +9307,9 @@ async function buildPayoutReceiptPage({ company, workerName, position, period, h
   const maxW = 700, maxH = 260, k = Math.min(maxW / img.width, maxH / img.height);
   g.drawImage(img, 100, y + maxH - img.height * k, img.width * k, img.height * k);
   y += maxH + 10; g.strokeStyle = "#10233F"; g.lineWidth = 2; g.beginPath(); g.moveTo(100, y); g.lineTo(820, y); g.stroke();
-  g.fillStyle = "#55606E"; g.font = font(24); g.fillText(`Potpis radnika · potpisano ${at}`, 100, y + 12);
+  g.fillStyle = "#55606E"; g.font = font(24); g.fillText(tr("Potpis radnika · potpisano {0}", at), 100, y + 12);
   g.fillStyle = "#7A8594"; g.font = font(20);
-  g.fillText("Potpisano vlastoručno na ekranu u aplikaciji Evidencija rada (digitalni obračun umjesto koverte).", 100, H - 140);
+  g.fillText(tr("Potpisano vlastoručno na ekranu u aplikaciji Evidencija rada (digitalni obračun umjesto koverte)."), 100, H - 140);
   const blob = await new Promise((r) => c.toBlob(r, "image/png"));
   return new Uint8Array(await blob.arrayBuffer());
 }
@@ -9323,7 +9324,12 @@ const PAYSLIP_CSS = `.dp-slip{font-family:Arial,Helvetica,sans-serif;color:#1C25
 
 const signedDocFor = (data, workerId, month) => (data.workerDocs || []).find((d) => d.workerId === workerId && d.type === "isplata" && (d.note || "").startsWith(`Isplata ${month}`));
 
-function DigitalPayroll({ ids, allRows, month, period, scopeLabel, data, api, admin, receiptOf, payslipHtml, onClose }) {
+function DigitalPayroll({ ids, allRows, month, scopeLabel, data, api, admin, receiptOf, payslipHtml, onClose: closeParent }) {
+  // radnik može prebaciti jezik (HR / CZ / UA); kad se digitalni obračun zatvori, vraća se jezik koji je bio prije
+  const startLang = useRef(api.lang);
+  const onClose = () => { if (api.setLang && api.lang !== startLang.current) api.setLang(startLang.current); closeParent(); };
+  const [py, pm] = month.split("-").map(Number);
+  const period = `${mName(pm - 1)} ${py}.`;
   const rowOf = (id) => allRows.find((r) => r.w.id === id);
   const list = ids.filter((id) => rowOf(id));
   const statusOf = (id) => {
@@ -9395,12 +9401,13 @@ function DigitalPayroll({ ids, allRows, month, period, scopeLabel, data, api, ad
         .dp-doc{overflow:auto;-webkit-overflow-scrolling:touch;padding:14px}
         .dp-side{overflow:auto;background:#fff;border-left:1px solid ${S.line};padding:16px;display:flex;flex-direction:column;gap:12px}
         @media (max-width:900px){.dp-body{grid-template-columns:1fr;grid-template-rows:minmax(220px,1fr) auto}.dp-side{border-left:0;border-top:1px solid ${S.line};max-height:60vh}}`}</style>
-      <div style={{ background: S.ink, color: "#fff", padding: "10px 14px", display: "flex", alignItems: "center", gap: 10, paddingTop: "calc(10px + env(safe-area-inset-top))" }}>
+      <div style={{ background: S.ink, color: "#fff", padding: "10px 14px", display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", paddingTop: "calc(10px + env(safe-area-inset-top))" }}>
         <button onClick={() => !signing && !busy && onClose()} disabled={signing || busy} style={{ background: "rgba(255,255,255,.12)", border: "none", color: "#fff", borderRadius: 10, padding: "8px 12px", fontWeight: 700, cursor: "pointer" }}>✕</button>
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ fontSize: 11, letterSpacing: 1.2, textTransform: "uppercase", color: "#9DB3A8", fontWeight: 700 }}>{tr("Digitalni obračun")} · {period}</div>
           <div style={{ fontSize: 16, fontWeight: 800, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{scopeLabel}</div>
         </div>
+        {api.setLang && <LangSwitch lang={api.lang} setLang={(l) => !busy && api.setLang(l)} dark labeled />}
         <div style={{ fontWeight: 800, fontSize: 14 }}>{tr("{0} / {1} potpisano", doneN, list.length)}</div>
       </div>
       <div style={{ display: "flex", flexWrap: "wrap", gap: 9, justifyContent: "center", padding: "9px 12px", background: "#fff", borderBottom: `1px solid ${S.line}` }}>
@@ -9416,7 +9423,7 @@ function DigitalPayroll({ ids, allRows, month, period, scopeLabel, data, api, ad
           onTouchEnd={(e) => { const t0 = touch.current; touch.current = null; if (!t0) return; const t = e.changedTouches[0]; const dx = t.clientX - t0.x, dy = t.clientY - t0.y;
             if (Math.abs(dx) > 60 && Math.abs(dx) > Math.abs(dy) * 1.5 && Date.now() - t0.t < 800) go(idx + (dx < 0 ? 1 : -1)); }}>
           <div className="dp-doc">
-            <div key={id} className="dp-slip" dangerouslySetInnerHTML={{ __html: payslipHtml(r) }} />
+            <div key={id} className="dp-slip" dangerouslySetInnerHTML={{ __html: payslipHtml(r, period) }} />
           </div>
           <div className="dp-side">
             <div>
@@ -9486,6 +9493,7 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
   const [payStatusFilter, setPayStatusFilter] = useState("all"); // all | paid | pending | unpaid
   const [signatures, setSignatures] = useState({}); // workerId -> dataURL, samo za trenutnu sesiju (ne sprema se u bazu)
   const [sigTarget, setSigTarget] = useState(null); // { id, name } radnika koji trenutno potpisuje
+  const [mergeBusy, setMergeBusy] = useState(false);
   const [digiIds, setDigiIds] = useState(null); // digitalni obračun: popis radnika (id) u trenutku otvaranja
   const [selected, setSelected] = useState(() => new Set());
   const [bulkBusy, setBulkBusy] = useState(false);
@@ -9776,11 +9784,40 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
     return { items, netE, netK, note, gc, netText: amtText(netE, netK, gc) };
   };
 
-  const receiptOf = (r) => { const bd = breakdownOf(r); return { net: bd.netText,
-    items: bd.items.map((it) => [it.label + (it.hint ? ` (${it.hint})` : ""), (it.sign ? it.sign + " " : "") + amtText(it.e, it.k, bd.gc)]) }; };
+  const receiptOf = (r, L = (x) => x) => { const bd = breakdownOf(r); return { net: bd.netText,
+    items: bd.items.map((it) => [L(it.label) + (it.hint ? ` (${it.hint})` : ""), (it.sign ? it.sign + " " : "") + amtText(it.e, it.k, bd.gc)]) }; };
+
+  /* sve potpisane isplate (digitalni obračun) za prikaz → jedan PDF za ispis / preuzimanje */
+  const signedForView = view === "month" ? displayRows.map((r) => ({ r, d: signedDocFor(data, r.w.id, month) })).filter((x) => x.d) : [];
+  const downloadSigned = async () => {
+    if (!signedForView.length || mergeBusy) return;
+    const win = window.open("", "_blank"); // otvara se odmah na klik (iPad inače blokira prozor)
+    if (win) win.document.write(`<p style="font-family:sans-serif;padding:20px">${tr("Spajam PDF-ove…")}</p>`);
+    setMergeBusy(true);
+    try {
+      const { PDFDocument } = await import(/* @vite-ignore */ "https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/+esm");
+      const out = await PDFDocument.create();
+      const failed = [];
+      for (const { r, d } of signedForView) {
+        try {
+          const { data: blob, error } = await supabase.storage.from("docs").download(d.filePath);
+          if (error) throw error;
+          const src = await PDFDocument.load(new Uint8Array(await blob.arrayBuffer()), { ignoreEncryption: true });
+          (await out.copyPages(src, src.getPageIndices())).forEach((p) => out.addPage(p));
+        } catch { failed.push(r.w.name); }
+      }
+      if (!out.getPageCount()) throw new Error(tr("Nijedna potpisana isplata se nije mogla učitati."));
+      out.setTitle(`Potpisane isplate ${month}${objFilterName ? " " + objFilterName : ""}`);
+      const url = URL.createObjectURL(new Blob([await out.save()], { type: "application/pdf" }));
+      if (win && !win.closed) win.location.href = url;
+      else { const a = document.createElement("a"); a.href = url; a.download = `Potpisane_isplate_${month}.pdf`; document.body.appendChild(a); a.click(); a.remove(); }
+      if (failed.length) uiAlert(tr("Neke datoteke nisu učitane: {0}", failed.join(", ")));
+    } catch (e) { if (win && !win.closed) win.close(); uiAlert(tr("Greška: ") + (e.message || e)); }
+    setMergeBusy(false);
+  };
 
   /* PDF obračun za radnika */
-  const payslipBody = (r, st) => {
+  const payslipBody = (r, st, L = (x) => x, period = periodLabel) => {
     const gc = wCur(r.w);
     const bd = breakdownOf(r);
     const docNo = `${view === "month" ? `${y}-${String(m).padStart(2, "0")}` : y}/${String(r.w.id).replace(/-/g, "").slice(0, 6).toUpperCase()}`;
@@ -9789,32 +9826,32 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
       `<tr><td>${fmtDate(l.date)}</td><td>${logSpan(l)}</td><td>${objName(l.objectId) || ""}${l.position ? " · " + posShort(l.position) : ""}</td><td class="right">${fmtH(l.hours)}</td><td class="right">${money(round2(l.hours * rateFor(data, r.w, l.date, l.position) + extraPayForLog(data, r.w, l)), gc)}</td></tr>`).join("");
     const logsTotal = round2((gc === "CZK" ? r.grossKc + r.extraPayKc : r.gross + r.extraPay));
     const itemsHtml = bd.items.map((it) =>
-      `<tr><td>${esc(it.label)}${it.hint ? ` (${it.hint})` : ""}</td><td class="right">${it.sign}${amtText(it.e, it.k, gc)}</td></tr>`).join("");
+      `<tr><td>${esc(L(it.label))}${it.hint ? ` (${it.hint})` : ""}</td><td class="right">${it.sign}${amtText(it.e, it.k, gc)}</td></tr>`).join("");
     const paysHtml = r.pays.length ? `
-      <h3>Isplate i odbici u razdoblju</h3>
-      <table><tr><th style="width:90px">Datum</th><th>Vrsta</th><th>Napomena</th><th class="right">Iznos</th></tr>
+      <h3>${L("Isplate i odbici u razdoblju")}</h3>
+      <table><tr><th style="width:90px">${L("Datum")}</th><th>${L("Vrsta")}</th><th>${L("Napomena")}</th><th class="right">${L("Iznos")}</th></tr>
       ${[...r.pays].sort((a, b) => a.date.localeCompare(b.date)).map((p) =>
-        `<tr><td>${fmtDate(p.date)}</td><td>${TYPE_LABEL[p.type] || p.type}</td><td>${p.note || ""}</td><td class="right">${p.type === "bonus" ? "+" : p.deduct ? "−" : ""}${money(p.amount, p.currency)}</td></tr>`).join("")}</table>` : "";
+        `<tr><td>${fmtDate(p.date)}</td><td>${L(TYPE_LABEL[p.type] || p.type)}</td><td>${p.note || ""}</td><td class="right">${p.type === "bonus" ? "+" : p.deduct ? "−" : ""}${money(p.amount, p.currency)}</td></tr>`).join("")}</table>` : "";
     return `
       ${firmHead(st)}
       <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:16px">
-        <div><h1>Pregled sati i isplate</h1><h2>${r.w.name}${r.w.position ? " · " + r.w.position : ""} · ${periodLabel}</h2></div>
-        <div class="muted" style="text-align:right;white-space:nowrap">Broj: <b>${docNo}</b><br>Datum izdavanja: ${fmtDate(todayISO())}</div>
+        <div><h1>${L("Pregled sati i isplate")}</h1><h2>${r.w.name}${r.w.position ? " · " + r.w.position : ""} · ${period}</h2></div>
+        <div class="muted" style="text-align:right;white-space:nowrap">${L("Broj")}: <b>${docNo}</b><br>${L("Datum izdavanja")}: ${fmtDate(todayISO())}</div>
       </div>
-      <h3>Evidencija sati</h3>
-      <table><tr><th style="width:90px">Datum</th><th>Vrijeme</th><th>Objekt</th><th class="right">Sati</th><th class="right">Iznos</th></tr>
-      ${logsHtml || `<tr><td colspan="5" class="muted">Nema upisanih sati.</td></tr>`}
-      <tr class="tot"><td colspan="3">Ukupno</td><td class="right">${fmtH(r.hours)}</td><td class="right">${money(logsTotal, gc)}</td></tr></table>
+      <h3>${L("Evidencija sati")}</h3>
+      <table><tr><th style="width:90px">${L("Datum")}</th><th>${L("Vrijeme")}</th><th>${L("Objekt")}</th><th class="right">${L("Sati")}</th><th class="right">${L("Iznos")}</th></tr>
+      ${logsHtml || `<tr><td colspan="5" class="muted">${L("Nema upisanih sati.")}</td></tr>`}
+      <tr class="tot"><td colspan="3">${L("Ukupno")}</td><td class="right">${fmtH(r.hours)}</td><td class="right">${money(logsTotal, gc)}</td></tr></table>
       ${paysHtml}
-      <h3>Obračun</h3>
+      <h3>${L("Obračun")}</h3>
       <table style="max-width:420px;margin-left:auto">${itemsHtml}
-      <tr class="tot"><td>Za isplatu (gotovina)</td><td class="right">${bd.netText}</td></tr></table>
+      <tr class="tot"><td>${L("Za isplatu (gotovina)")}</td><td class="right">${bd.netText}</td></tr></table>
       <div style="margin-top:40px;display:grid;grid-template-columns:1fr 1fr 1fr;gap:24px;font-size:12px;color:#5C6862">
-        <div><div style="border-bottom:1px solid #1C2521;height:60px"></div>Mjesto i datum</div>
-        <div><div style="border-bottom:1px solid #1C2521;height:60px;display:flex;align-items:flex-end">${signatures[r.w.id] ? `<img src="${signatures[r.w.id]}" style="height:56px" />` : ""}</div>Potpis radnika</div>
-        <div><div style="border-bottom:1px solid #1C2521;height:60px"></div>Potpis poslodavca</div>
+        <div><div style="border-bottom:1px solid #1C2521;height:60px"></div>${L("Mjesto i datum")}</div>
+        <div><div style="border-bottom:1px solid #1C2521;height:60px;display:flex;align-items:flex-end">${signatures[r.w.id] ? `<img src="${signatures[r.w.id]}" style="height:56px" />` : ""}</div>${L("Potpis radnika")}</div>
+        <div><div style="border-bottom:1px solid #1C2521;height:60px"></div>${L("Potpis poslodavca")}</div>
       </div>
-      <div class="muted" style="margin-top:28px;font-size:10.5px">Interni pregled odrađenih sati i gotovinske isplate. Ne zamjenjuje službenu výplatní pásku.</div>`;
+      <div class="muted" style="margin-top:28px;font-size:10.5px">${L("Interni pregled odrađenih sati i gotovinske isplate. Ne zamjenjuje službenu výplatní pásku.")}</div>`;
   };
   const printPayslip = (r) => printDoc(`Obračun ${r.w.name}`, payslipBody(r, api.settings));
   // dijeli tekstualni sažetak (ne i sam PDF — pravo dijeljenje PDF datoteke traži dodatnu biblioteku)
@@ -10160,6 +10197,11 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
               {view === "month" && displayRows.length > 0 && (
                 <Btn onClick={() => setDigiIds(displayRows.map((r) => r.w.id))} style={{ width: "100%", marginBottom: 10, minHeight: 52, fontSize: 16 }}>
                   {tr("✍ Digitalni obračun ({0})", displayRows.length)}{objFilterName ? " · " + objFilterName : ""}
+                </Btn>
+              )}
+              {view === "month" && signedForView.length > 0 && (
+                <Btn kind="ghost" onClick={downloadSigned} disabled={mergeBusy} style={{ width: "100%", marginBottom: 10 }}>
+                  {mergeBusy ? tr("Spajam PDF-ove…") : tr("🖨️ Preuzmi / ispiši potpisane isplate ({0})", signedForView.length)}
                 </Btn>
               )}
               {view === "month" && (
@@ -10555,8 +10597,8 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
       )}
 
       {digiIds && (
-        <DigitalPayroll ids={digiIds} allRows={rows} month={month} period={periodLabel} scopeLabel={objFilterName || api.t("allObjects")}
-          data={data} api={api} admin={admin} receiptOf={receiptOf} payslipHtml={(r) => payslipBody(r, api.settings)} onClose={() => setDigiIds(null)} />
+        <DigitalPayroll ids={digiIds} allRows={rows} month={month} scopeLabel={objFilterName || api.t("allObjects")}
+          data={data} api={api} admin={admin} receiptOf={(r) => receiptOf(r, tr)} payslipHtml={(r, per) => payslipBody(r, api.settings, tr, per)} onClose={() => setDigiIds(null)} />
       )}
       {sigTarget && (
         <SignaturePad title={tr("Potpis — {0}", sigTarget.name)}
