@@ -965,3 +965,24 @@ begin
 end $$;
 revoke execute on function public.make_backup() from public, anon, authenticated;
 -- select cron.schedule('nightly-backup', '15 1 * * *', $$select public.make_backup()$$);
+
+-- ============================================================
+-- URED (2026-11-05): zaposlenici ureda odvojeni od objekata
+-- ============================================================
+alter table public.workers add column if not exists is_office boolean not null default false;
+create table if not exists public.office_salaries (
+  id uuid primary key default gen_random_uuid(),
+  worker_id uuid not null references public.workers(id),
+  from_month text not null check (from_month ~ '^\d{4}-\d{2}$'),
+  salary_czk numeric not null default 0,
+  bank_czk numeric not null default 0,
+  note text not null default '',
+  created_by uuid default auth.uid(),
+  created_at timestamptz not null default now(),
+  deleted_at timestamptz,
+  check (salary_czk >= 0 and bank_czk >= 0 and bank_czk <= salary_czk)
+);
+create index if not exists office_salaries_worker_idx on public.office_salaries(worker_id, from_month);
+alter table public.office_salaries enable row level security;
+create policy os_admin_all on public.office_salaries for all
+  using ((select public.is_admin())) with check ((select public.is_admin()));

@@ -129,6 +129,7 @@ const swapNameOrder = (name) => {
 };
 const monthKey = (iso) => (iso || "").slice(0, 7);
 const todayISO = () => new Date().toISOString().slice(0, 10);
+const lastDayOfMonth = (mo) => { const [y, m] = mo.split("-").map(Number); return `${mo}-${String(new Date(y, m, 0).getDate()).padStart(2, "0")}`; };
 const curMonth = () => { const n = new Date(); return `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, "0")}`; };
 const logSpan = (l) => (l.from && l.to ? `${l.from}–${l.to}` : l.monthly ? "mjesečni zbroj" : "upis sati");
 // vizualno istakni zbirne mjesečne upise — to NISU pojedinačne smjene pa se ne mogu provjeriti po danu
@@ -807,14 +808,22 @@ async function fetchAll(isAdmin) {
     ].sort((a, b) => (b.row.deleted_at || "").localeCompare(a.row.deleted_at || ""));
   }
   const billMap = Object.fromEntries(billing.map((b) => [b.object_id, { rate: Number(b.bill_rate) || 0, cur: b.bill_currency === "CZK" ? "CZK" : "EUR", budget: Number(b.monthly_budget) || 0 }]));
+  // fiksne mjesečne plaće ureda (RLS: samo admin)
+  let officeSalaries = [];
+  if (isAdmin) {
+    const os = await supabase.from("office_salaries").select("*").is("deleted_at", null).order("from_month");
+    if (!os.error) officeSalaries = (os.data || []).map((r) => ({ id: r.id, workerId: r.worker_id, fromMonth: r.from_month,
+      salary: Number(r.salary_czk) || 0, bank: Number(r.bank_czk) || 0, note: r.note || "" }));
+  }
 
-  return {
+  const out = {
     workers: (workers.data || []).map((w) => ({
       id: w.id, name: w.name, phone: w.phone || "", rate: Number(w.base_rate) || 0,
       objectId: w.object_id || "", note: w.note || "", archived: !!w.archived, archivedDate: w.archived_date || "",
       permitExpiry: w.permit_expiry || "", contractExpiry: w.contract_expiry || "", position: w.position || "", bankAccount: bankMap[w.id] || "",
       rateCurrency: w.rate_currency === "CZK" ? "CZK" : "EUR",
       positionRates: (w.position_rates && typeof w.position_rates === "object") ? w.position_rates : {},
+      isOffice: !!w.is_office,
     })),
     objects: (objects.data || []).map((o) => ({
       id: o.id, name: o.name, billRate: billMap[o.id]?.rate || 0, billCur: billMap[o.id]?.cur || countryCur(o.country || "HR"), country: o.country || "HR",
@@ -882,6 +891,30 @@ async function fetchAll(isAdmin) {
     profiles: profiles.data || [],
     objectMembers: members,
     audit, trash,
+  };
+  return splitOffice(out, officeSalaries);
+}
+
+/* Ured nije objekt: uredski zaposlenici (workers.is_office) i njihove isplate/payouti/napomene
+   izdvajaju se u data.office, pa ih hoteli, obračun, koverte, fakture i izvještaji uopće ne vide. */
+function splitOffice(out, salaries) {
+  const ids = new Set(out.workers.filter((w) => w.isOffice).map((w) => w.id));
+  const not = (x) => !ids.has(x.workerId);
+  const is = (x) => ids.has(x.workerId);
+  return {
+    ...out,
+    workers: out.workers.filter((w) => !w.isOffice),
+    logs: out.logs.filter(not),
+    payments: out.payments.filter(not),
+    payouts: out.payouts.filter(not),
+    payrollNotes: out.payrollNotes.filter(not),
+    assignments: out.assignments.filter(not),
+    office: {
+      workers: out.workers.filter((w) => w.isOffice),
+      payments: out.payments.filter(is),
+      payouts: out.payouts.filter(is),
+      salaries,
+    },
   };
 }
 
@@ -1280,6 +1313,42 @@ export default function App() {
     approvePayout: (payout, wName) => act(() => upd("payouts", payout.id, { approved: true, approved_by: session.user.id, approved_at: new Date().toISOString() }),
       `Odobrio isplatu: ${wName} za ${payout.month}`),
     unmarkPaid: (payout, wName) => act(() => softDel("payouts", payout.id), `Otključao/odbacio isplatu: ${wName} za ${payout.month}`),
+    /* ---- Ured (fiksne mjesečne plaće, odvojeno od hotela) ---- */
+    officeAddWorker: (f) => act(async () => {
+      const { data: row, error } = await supabase.from("workers").insert({ name: f.name.trim(), position: (f.position || "").trim(), phone: (f.phone || "").trim(),
+        rate_currency: "CZK", is_office: true, created_by: session.user.id }).select("id").single();
+      if (error) throw error;
+      if ((f.bankAccount || "").trim()) await saveBank(row.id, f.bankAccount);
+      if (Number(f.salary) > 0) await ins("office_salaries", { worker_id: row.id, from_month: f.fromMonth, salary_czk: Number(f.salary), bank_czk: Number(f.bank) || 0, created_by: session.user.id });
+    }, `Dodao zaposlenika ureda: ${f.name.trim()}`),
+    officeUpdateWorker: (w, f) => act(async () => {
+      await upd("workers", w.id, { name: f.name.trim(), position: (f.position || "").trim(), phone: (f.phone || "").trim() });
+      if ((w.bankAccount || "") !== (f.bankAccount || "").trim()) await saveBank(w.id, f.bankAccount);
+    }, `Uredio zaposlenika ureda: ${f.name.trim()}`),
+    officeArchiveWorker: (w, archived) => act(() => upd("workers", w.id, { archived, archived_date: archived ? todayISO() : null }),
+      `${archived ? "Arhivirao" : "Vratio"} zaposlenika ureda: ${w.name}`),
+    officeSetSalary: (w, fromMonth, salary, bank) => act(async () => {
+      const { error } = await supabase.from("office_salaries").update({ deleted_at: new Date().toISOString() })
+        .eq("worker_id", w.id).eq("from_month", fromMonth).is("deleted_at", null);
+      if (error) throw error;
+      await ins("office_salaries", { worker_id: w.id, from_month: fromMonth, salary_czk: salary, bank_czk: bank, created_by: session.user.id });
+    }, `Plaća ureda: ${w.name} od ${fromMonth} — ${czk(salary)} (banka ${czk(bank)})`),
+    // upiše za mjesec: dio na banku (payments "racun") + prijedlog gotovine (payouts, čeka odobrenje)
+    officeBookMonth: (entries, mo) => act(async () => {
+      const d = lastDayOfMonth(mo); const tag = monthLabel(mo);
+      const pays = entries.filter((e) => e.bank > 0).map((e) => ({ worker_id: e.w.id, object_id: null, pay_date: d, type: "racun", amount: e.bank,
+        currency: "CZK", note: `banka – plaća ${tag}`, deduct: true, created_by: session.user.id }));
+      if (pays.length) { const { error } = await supabase.from("payments").insert(pays); if (error) throw error; }
+      const outs = entries.filter((e) => e.cash > 0).map((e) => ({ worker_id: e.w.id, month: mo, amount: 0, amount_czk: e.cash, approved: false, created_by: session.user.id }));
+      if (outs.length) { const { error } = await supabase.from("payouts").insert(outs); if (error) throw error; }
+    }, `Upisao plaće ureda za ${mo}: ${entries.map((e) => e.w.name).join(", ")}`),
+    // doprinosi (soc. i zdrav.) s mzdy — trošak firme, NE odbija se od gotovine
+    officeAddContribution: (w, mo, amount) => act(() => ins("payments", { worker_id: w.id, object_id: null, pay_date: lastDayOfMonth(mo), type: "ostalo",
+      amount, currency: "CZK", note: `soc. i zdrav. – plaća ${monthLabel(mo)}`, deduct: false, created_by: session.user.id }),
+      `Upisao doprinose (ured): ${w.name} ${czk(amount)} za ${mo}`),
+    officeDelPayment: (p, wName) => act(() => softDel("payments", p.id), `Obrisao stavku ureda: ${wName} ${p.note || p.type} ${czk(p.amount)}`),
+    officeSetPayout: (payout, amountKc, wName) => act(() => upd("payouts", payout.id, { amount: 0, amount_czk: amountKc }),
+      `Osvježio gotovinu ureda: ${wName} za ${payout.month} (${czk(amountKc)})`),
     refreshPayout: (payout, amount, amountKc, wName) => act(() => upd("payouts", payout.id, { amount, amount_czk: amountKc || 0 }),
       `Osvježio predloženi iznos isplate: ${wName} za ${payout.month} (sati/isplate su se promijenili nakon prijedloga)`),
     addInvoicePayment: (o, mo, amount) => act(() => ins("invoice_payments", { object_id: o.id, month: mo, amount }),
@@ -2642,11 +2711,12 @@ function CandidatesPanel({ data, api }) {
   );
 }
 const ADMIN_MENU = [
-  ["ai", "🤖", "AI asistent"], ["candidates", "🧑‍🍳", "Kandidati (prijave)"], ["approvals", "⏳", "Odobravanje isplata"], ["cash", "💵", "Gotovina kod koordinatora"], ["finance", "💼", "Financije (banka i porezi)"], ["unpaid", "💰", "Neisplaćeno (dugovi radnicima)"], ["vat", "🧾", "DPH"], ["users", "👥", "Korisnici i provizije"],
+  ["ai", "🤖", "AI asistent"], ["candidates", "🧑‍🍳", "Kandidati (prijave)"], ["approvals", "⏳", "Odobravanje isplata"], ["office", "👔", "Ured (zaposlenici i plaće)"], ["cash", "💵", "Gotovina kod koordinatora"], ["finance", "💼", "Financije (banka i porezi)"], ["unpaid", "💰", "Neisplaćeno (dugovi radnicima)"], ["vat", "🧾", "DPH"], ["users", "👥", "Korisnici i provizije"],
   ["firm", "🏢", "Podaci firme i postavke"], ["audit", "📜", "Povijest radnji"], ["logins", "🔐", "Prijave"],
   ["errors", "🐛", "Greške aplikacije"], ["trash", "🗑", "Koš (obrisano)"],
 ];
 const adminBadge = (data, id) => id === "candidates" ? (data.newCandidates || 0) : id === "approvals" ? (data.payouts || []).filter((p) => !p.approved).length
+  : id === "office" ? ((data.office && data.office.payouts) || []).filter((p) => !p.approved).length
   : id === "errors" ? (data.errorLog || []).length : id === "trash" ? data.trash.length : 0;
 /* ================================================================== */
 /*  NEISPLAĆENO — stare koverte i djelomične isplate                   */
@@ -3983,6 +4053,7 @@ function AdminPanels({ data, api, panel, setPanel, onOpenWorker, onOpenProfile }
       {panel === "ai" && <AiAssistantPanel data={data} />}
       {panel === "finance" && <FinancePanel data={data} api={api} />}
       {panel === "cash" && <CashPanel data={data} api={api} />}
+      {panel === "office" && <OfficePanel data={data} api={api} />}
 
       {panel === "users" && (
         <Card style={{ marginTop: 8 }}>
@@ -6955,6 +7026,170 @@ function BrigadeCard({ object, data, api, monthBrigade, defaultDate }) {
   );
 }
 
+/* ================================================================== */
+/*  URED — zaposlenici ureda s fiksnom mjesečnom plaćom (nije objekt)  */
+/*  Tablice: workers.is_office, office_salaries; isplate u payments/payouts */
+/* ================================================================== */
+const officeSalaryFor = (office, wid, mo) => [...office.salaries].filter((s) => s.workerId === wid && s.fromMonth <= mo)
+  .sort((a, b) => b.fromMonth.localeCompare(a.fromMonth))[0] || null;
+function officeRows(office, mo) {
+  return [...office.workers].filter((w) => !w.archived || office.payments.some((p) => p.workerId === w.id && monthKey(p.date) === mo))
+    .sort((a, b) => a.name.localeCompare(b.name, "hr")).map((w) => {
+      const sal = officeSalaryFor(office, w.id, mo);
+      const salary = sal ? sal.salary : 0;
+      const plannedBank = sal ? sal.bank : 0;
+      const pays = office.payments.filter((p) => p.workerId === w.id && monthKey(p.date) === mo && (p.currency || "CZK") === "CZK");
+      const sum = (f) => round2(pays.filter(f).reduce((t, p) => t + p.amount, 0));
+      const bankPaid = sum((p) => p.type === "racun");
+      const bonuses = sum((p) => p.type === "bonus");
+      const advances = sum((p) => p.type === "avans");
+      const deductions = sum((p) => p.type !== "racun" && p.type !== "bonus" && p.type !== "avans" && p.deduct);
+      const contrib = sum((p) => p.type !== "racun" && p.type !== "bonus" && p.type !== "avans" && !p.deduct);
+      const booked = pays.some((p) => p.type === "racun") || office.payouts.some((x) => x.workerId === w.id && x.month === mo);
+      const bank = booked ? bankPaid : plannedBank;
+      const cash = round2(salary + bonuses - bank - advances - deductions);
+      const payout = office.payouts.find((x) => x.workerId === w.id && x.month === mo) || null;
+      return { w, sal, salary, plannedBank, bank, cash, contrib, bonuses, advances, deductions, pays, booked, payout };
+    });
+}
+function OfficePanel({ data, api }) {
+  const office = data.office || { workers: [], payments: [], payouts: [], salaries: [] };
+  const [mo, setMo] = useState(prevMonthKey(curMonth()));
+  const [edit, setEdit] = useState(null);      // worker | "new"
+  const [form, setForm] = useState({});
+  const [salEdit, setSalEdit] = useState(null); // { w, fromMonth, salary, bank }
+  const [contrib, setContrib] = useState({});   // workerId -> iznos
+  const rows = officeRows(office, mo);
+  const tot = rows.reduce((t, r) => ({ salary: t.salary + r.salary, bank: t.bank + r.bank, cash: t.cash + r.cash, contrib: t.contrib + r.contrib }),
+    { salary: 0, bank: 0, cash: 0, contrib: 0 });
+  const toBook = rows.filter((r) => !r.booked && r.salary > 0 && !r.w.archived);
+  const openEdit = (w) => { setEdit(w || "new"); setForm(w ? { name: w.name, position: w.position, phone: w.phone, bankAccount: w.bankAccount }
+    : { name: "", position: "", phone: "", bankAccount: "", salary: "", bank: "", fromMonth: mo }); };
+  const saveEdit = async () => {
+    if (!(form.name || "").trim()) return;
+    const ok = edit === "new"
+      ? await api.officeAddWorker({ ...form, salary: parseNum(form.salary) || 0, bank: parseNum(form.bank) || 0 })
+      : await api.officeUpdateWorker(edit, form);
+    if (ok) setEdit(null);
+  };
+  const saveSalary = async () => {
+    const salary = round2(parseNum(salEdit.salary) || 0), bank = round2(parseNum(salEdit.bank) || 0);
+    if (salary < 0 || bank < 0 || bank > salary || !/^\d{4}-\d{2}$/.test(salEdit.fromMonth)) return;
+    if (await api.officeSetSalary(salEdit.w, salEdit.fromMonth, salary, bank)) setSalEdit(null);
+  };
+  const envRow = (r) => ({ w: r.w, logs: [], pays: r.pays, hours: 0, byPos: [], gross: 0, grossKc: r.salary, extraPay: 0, extraPayKc: 0,
+    bank: 0, net: 0, czk: { bank: r.bank, net: r.cash }, objLabel: "Ured", hoursLabel: r.w.position || "", grossLabel: "plaća" });
+  const printEnv = (list) => printEnvelopesDoc({ ...data, payrollNotes: [] }, list.map(envRow), { month: mo, admin: api.admin, title: `Koverte ured ${monthLong(mo)}` });
+  const cell = { fontSize: 13, display: "flex", justifyContent: "space-between", gap: 8 };
+
+  return (
+    <div style={{ marginTop: 8 }}>
+      <Card>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 6 }}>
+          <div style={{ fontWeight: 700, flex: "1 1 160px" }}>{tr("👔 Ured — fiksne mjesečne plaće")}</div>
+          <input type="month" value={mo} onChange={(e) => e.target.value && setMo(e.target.value)} style={{ width: 150 }} />
+        </div>
+        <div style={{ fontSize: 11.5, color: S.sub, marginBottom: 8 }}>
+          {tr("Ured nije objekt: ovi zaposlenici se ne vide u hotelima, obračunu po objektima ni fakturama. Plaća je fiksna (nije sati × satnica). Doprinosi (soc. i zdrav.) su trošak firme i ne odbijaju se od gotovine.")}
+        </div>
+        <div className="num" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(120px,1fr))", gap: 6, fontSize: 13 }}>
+          <div><div style={{ color: S.sub, fontSize: 11.5 }}>{tr("Plaće ukupno")}</div><b>{czk(round2(tot.salary))}</b></div>
+          <div><div style={{ color: S.sub, fontSize: 11.5 }}>{tr("Na banku")}</div><b style={{ color: S.blue }}>{czk(round2(tot.bank))}</b></div>
+          <div><div style={{ color: S.sub, fontSize: 11.5 }}>{tr("Gotovina")}</div><b>{czk(round2(tot.cash))}</b></div>
+          <div><div style={{ color: S.sub, fontSize: 11.5 }}>{tr("Doprinosi (mzdy)")}</div><b>{tot.contrib ? czk(round2(tot.contrib)) : "—"}</b></div>
+        </div>
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 10 }}>
+          {toBook.length > 0 && <Btn small onClick={() => api.officeBookMonth(toBook, mo)}>{tr("Upiši plaće za {0} ({1})", monthLabel(mo), toBook.length)}</Btn>}
+          {rows.some((r) => r.salary > 0) && <Btn small kind="ghost" onClick={() => printEnv(rows.filter((r) => r.salary > 0))}>{tr("✉️ Koverte (svi)")}</Btn>}
+          <Btn small kind="ghost" onClick={() => openEdit(null)}>{tr("+ Zaposlenik ureda")}</Btn>
+        </div>
+      </Card>
+
+      {edit && (
+        <Card style={{ marginTop: 8 }}>
+          <div style={{ fontWeight: 700, marginBottom: 8 }}>{edit === "new" ? tr("Novi zaposlenik ureda") : tr("Uredi: {0}", edit.name)}</div>
+          <Field label={tr("Prezime i ime")}><input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /></Field>
+          <Field label={tr("Pozicija")}><input value={form.position} onChange={(e) => setForm({ ...form, position: e.target.value })} /></Field>
+          <Field label={tr("Telefon")}><input value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} /></Field>
+          {api.admin && <Field label={tr("Broj bankovnog računa (Číslo účtu) — za knjigovođu")}><input value={form.bankAccount} onChange={(e) => setForm({ ...form, bankAccount: e.target.value })} placeholder={tr("npr. 123456789/0800")} /></Field>}
+          {edit === "new" && (<div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <Field label={tr("Plaća (Kč/mj.)")}><input inputMode="decimal" value={form.salary} onChange={(e) => setForm({ ...form, salary: e.target.value })} /></Field>
+            <Field label={tr("Od toga na banku")}><input inputMode="decimal" value={form.bank} onChange={(e) => setForm({ ...form, bank: e.target.value })} /></Field>
+            <Field label={tr("Od mjeseca")}><input type="month" value={form.fromMonth} onChange={(e) => setForm({ ...form, fromMonth: e.target.value })} /></Field>
+          </div>)}
+          <div style={{ display: "flex", gap: 6 }}>
+            <Btn small onClick={saveEdit}>{tr("Spremi")}</Btn>
+            <Btn small kind="ghost" onClick={() => setEdit(null)}>{tr("Odustani")}</Btn>
+            {edit !== "new" && <Btn small kind="ghost" onClick={async () => { if (await api.officeArchiveWorker(edit, !edit.archived)) setEdit(null); }}>{edit.archived ? tr("Vrati u ured") : tr("Arhiviraj (otišao)")}</Btn>}
+          </div>
+        </Card>
+      )}
+
+      {rows.length === 0 && <Empty text={tr("Nema zaposlenika ureda.")} />}
+      {rows.map((r) => (
+        <Card key={r.w.id} style={{ marginTop: 8 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "flex-start" }}>
+            <div>
+              <div style={{ fontWeight: 800 }}>{r.w.name}{r.w.archived ? tr(" (bivši)") : ""}</div>
+              <div style={{ fontSize: 12.5, color: S.sub }}>{r.w.position || tr("bez pozicije")}</div>
+              {api.admin && <div style={{ fontSize: 12, color: S.sub }}>{tr("Račun:")}{" "}{r.w.bankAccount || tr("račun nije upisan")}</div>}
+            </div>
+            <Btn small kind="ghost" onClick={() => openEdit(r.w)}>{tr("Uredi")}</Btn>
+          </div>
+          <div className="num" style={{ marginTop: 8, display: "grid", gap: 3 }}>
+            <div style={cell}><span>{tr("Plaća")}{r.sal ? " (" + tr("od {0}", monthLabel(r.sal.fromMonth)) + ")" : ""}</span><b>{r.sal ? czk(r.salary) : tr("nije upisana")}</b></div>
+            <div style={cell}><span>{tr("Na banku")}{r.booked ? "" : tr(" (plan)")}</span><b style={{ color: S.blue }}>{czk(r.bank)}</b></div>
+            {r.bonuses > 0 && <div style={cell}><span>{tr("Dodaci")}</span><b>+{czk(r.bonuses)}</b></div>}
+            {(r.advances + r.deductions) > 0 && <div style={cell}><span>{tr("Avansi i odbici")}</span><b>−{czk(round2(r.advances + r.deductions))}</b></div>}
+            <div style={cell}><span>{tr("Gotovina")}</span><b>{czk(r.cash)}</b></div>
+            <div style={cell}><span>{tr("Doprinosi (soc. i zdrav.)")}</span><span>{r.contrib ? czk(r.contrib) : tr("čeka mzdy")}</span></div>
+            {r.booked && <div style={{ ...cell, color: r.payout?.approved ? S.green : r.cash > 0 ? S.amber : S.sub }}>
+              <span>{tr("Gotovina — status")}</span>
+              <span>{r.cash <= 0 && !r.payout ? tr("nema gotovine") : r.payout ? (r.payout.approved ? tr("✓ Isplaćeno / odobreno") : tr("⏳ Čeka odobrenje")) : tr("nije predloženo")}</span>
+            </div>}
+            {r.payout && !r.payout.approved && round2(r.payout.amountKc) !== r.cash && (
+              <div style={{ fontSize: 12, color: S.red }}>{tr("Predloženo {0}, a obračun sad daje {1}.", czk(r.payout.amountKc), czk(r.cash))}{" "}
+                <a onClick={() => api.officeSetPayout(r.payout, r.cash, r.w.name)} style={{ cursor: "pointer", textDecoration: "underline" }}>{tr("Osvježi")}</a></div>
+            )}
+          </div>
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 8, alignItems: "center" }}>
+            <Btn small kind="ghost" onClick={() => setSalEdit({ w: r.w, fromMonth: mo, salary: String(r.salary || ""), bank: String(r.plannedBank || "") })}>{tr("Promijeni plaću")}</Btn>
+            {r.salary > 0 && <Btn small kind="ghost" onClick={() => printEnv([r])}>{tr("✉️ Koverta")}</Btn>}
+            {r.payout && !r.payout.approved && <Btn small kind="ghost" onClick={() => api.approvePayout(r.payout, r.w.name)}>{tr("Odobri gotovinu")}</Btn>}
+            {r.payout && <Btn small kind="ghost" onClick={() => api.unmarkPaid(r.payout, r.w.name)}>{r.payout.approved ? tr("Otključaj") : tr("Odbaci prijedlog")}</Btn>}
+          </div>
+          {salEdit && salEdit.w.id === r.w.id && (
+            <div style={{ marginTop: 8, borderTop: `1px solid ${S.line}`, paddingTop: 8 }}>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                <Field label={tr("Plaća (Kč/mj.)")}><input inputMode="decimal" value={salEdit.salary} onChange={(e) => setSalEdit({ ...salEdit, salary: e.target.value })} /></Field>
+                <Field label={tr("Od toga na banku")}><input inputMode="decimal" value={salEdit.bank} onChange={(e) => setSalEdit({ ...salEdit, bank: e.target.value })} /></Field>
+                <Field label={tr("Vrijedi od mjeseca")}><input type="month" value={salEdit.fromMonth} onChange={(e) => setSalEdit({ ...salEdit, fromMonth: e.target.value })} /></Field>
+              </div>
+              <div style={{ fontSize: 11.5, color: S.sub, marginBottom: 6 }}>{tr("Gotovina = plaća − banka. Raniji mjeseci ostaju po staroj plaći.")}</div>
+              <div style={{ display: "flex", gap: 6 }}><Btn small onClick={saveSalary}>{tr("Spremi plaću")}</Btn><Btn small kind="ghost" onClick={() => setSalEdit(null)}>{tr("Odustani")}</Btn></div>
+            </div>
+          )}
+          <div style={{ marginTop: 8, borderTop: `1px solid ${S.line}`, paddingTop: 6 }}>
+            {r.pays.map((p) => (
+              <div key={p.id} className="num" style={{ ...cell, fontSize: 12, color: S.sub }}>
+                <span>{fmtDate(p.date)} · {p.note || TYPE_LABEL[p.type] || p.type}</span>
+                <span>{czk(p.amount)} <a onClick={() => api.officeDelPayment(p, r.w.name)} style={{ cursor: "pointer", color: S.red, marginLeft: 6 }}>✕</a></span>
+              </div>
+            ))}
+            {r.contrib === 0 && (
+              <div style={{ display: "flex", gap: 6, alignItems: "center", marginTop: 4 }}>
+                <input inputMode="decimal" value={contrib[r.w.id] || ""} onChange={(e) => setContrib({ ...contrib, [r.w.id]: e.target.value })}
+                  placeholder={tr("doprinosi s mzdy (Kč)")} style={{ flex: 1, fontSize: 13 }} />
+                <Btn small kind="ghost" onClick={async () => { const a = round2(parseNum(contrib[r.w.id]) || 0); if (a > 0 && await api.officeAddContribution(r.w, mo, a)) setContrib({ ...contrib, [r.w.id]: "" }); }}>{tr("Upiši")}</Btn>
+              </div>
+            )}
+          </div>
+        </Card>
+      ))}
+    </div>
+  );
+}
+
 function CashPanel({ data, api }) {
   const coordinators = [...(data.profiles || [])].filter((p) => p.role !== "admin").sort((a, b) => (a.name || "").localeCompare(b.name || "", "hr"));
   const bal = cashBalances(data);
@@ -8494,7 +8729,7 @@ function printEnvelopesDoc(data, list, { view = "month", month, admin, title }) 
     const esc = escHtml;
     const pages = list.map((r) => {
       const objs = [...new Set(r.logs.map((l) => objName(l.objectId)).filter(Boolean))];
-      const objLine = objs.length ? objs.join(", ") : (objName(r.w.objectId) || "");
+      const objLine = r.objLabel || (objs.length ? objs.join(", ") : (objName(r.w.objectId) || ""));
       const note = view === "month" ? (data.payrollNotes || []).find((n) => n.workerId === r.w.id && n.month === month) : null;
       const netE = round2(r.net - (note && note.currency === "EUR" ? note.amount : 0));
       const netK = round2(r.czk.net - (note && note.currency === "CZK" ? note.amount : 0));
@@ -8509,7 +8744,7 @@ function printEnvelopesDoc(data, list, { view = "month", month, admin, title }) 
       const multiPos = (r.byPos || []).length > 1;
       const posLines = multiPos ? r.byPos.map((b) => `<div>${esc(posShort(b.position) || "sati")}: ${fmtH(b.hours)} × ${money(b.rate, gc)} = ${money(b.amount, gc)}</div>`).join("") : "";
       const breakdown = [
-        multiPos ? "" : gc === "CZK" ? (r.grossKc ? "zarada " + czk(r.grossKc) : "") : (r.gross ? "zarada " + eur(r.gross) : ""),
+        multiPos ? "" : gc === "CZK" ? (r.grossKc ? (r.grossLabel || "zarada") + " " + czk(r.grossKc) : "") : (r.gross ? "zarada " + eur(r.gross) : ""),
         r.extraPay ? "vikend/praznik +" + eur(r.extraPay) : "", r.extraPayKc ? "vikend/praznik +" + czk(r.extraPayKc) : "",
         ...r.pays.filter((p) => p.type === "bonus").map((p) => `${p.note || "bonus"} +${money(p.amount, p.currency)}`),
         r.advances ? "avans −" + eur(r.advances) : "", r.czk.advances ? "avans −" + czk(r.czk.advances) : "",
@@ -8521,7 +8756,7 @@ function printEnvelopesDoc(data, list, { view = "month", month, admin, title }) 
         <div class="env-top">${envPeriodLabel}${objLine ? "<br>" + objLine : ""}</div>
         <div class="env-mid">
           <div class="env-name">${r.w.name}</div>
-          <div class="env-hours">${multiPos ? posLines : fmtH(r.hours)}</div>
+          <div class="env-hours">${r.hoursLabel != null ? esc(r.hoursLabel) : multiPos ? posLines : fmtH(r.hours)}</div>
         </div>
         ${breakdown && breakdown !== ("zarada " + amounts[0]) ? `<div class="env-break">${breakdown}</div>` : ""}
         ${bankAmounts(r).length ? `<div class="env-bank">${esc(bankLabel(r))}&nbsp;&nbsp;${bankAmounts(r).join(" + ")}</div>` : ""}
