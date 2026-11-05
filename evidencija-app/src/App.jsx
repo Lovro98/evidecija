@@ -142,8 +142,11 @@ const LANGS = ["HR", "UK"];
 // trenutni jezik za tr() — postavlja ga useLang pri svakom renderu
 let CUR_LANG = "HR";
 // tr("hrvatski tekst {0}", x) → prijevod na odabrani jezik (ili hrvatski ako prijevoda nema)
+// vodeći emoji u oznakama uklanja se pri prikazu (novi izgled koristi ikone); ✓ ✕ i zastave ostaju
+const LEAD_EMOJI = /^(?:(?:[\u{1F300}-\u{1FAFF}\u{2600}-\u{2712}\u{2717}-\u{27BF}\u{2B00}-\u{2BFF}\u{231A}-\u{23FF}](?:\u200D[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}])*[\uFE0E\uFE0F]?)\s*)+/u;
 function tr(s, ...args) {
-  const out = (CUR_LANG === "UK" && TR_UK[s]) || s;
+  let out = (CUR_LANG === "UK" && TR_UK[s]) || s;
+  if (typeof out === "string" && out.length > 2) { const st = out.replace(LEAD_EMOJI, ""); if (st) out = st; }
   return args.length ? out.replace(/\{(\d+)\}/g, (m, i) => (args[i] ?? m)) : out;
 }
 const LANG_FLAG = { HR: "🇭🇷", CZ: "🇨🇿", UK: "🇺🇦", RU: "🇷🇺" };
@@ -234,7 +237,7 @@ function useLang() {
   const [lang, setLang] = useState(() => { try { const l = localStorage.getItem("evidencija_lang"); return LANGS.includes(l) ? l : "HR"; } catch { return "HR"; } });
   CUR_LANG = lang;
   useEffect(() => { try { localStorage.setItem("evidencija_lang", lang); } catch {} }, [lang]);
-  const t = (k) => (DICT[lang] && DICT[lang][k]) || DICT.HR[k] || k;
+  const t = (k) => { const v = (DICT[lang] && DICT[lang][k]) || DICT.HR[k] || k; const st = typeof v === "string" ? v.replace(LEAD_EMOJI, "") : v; return st || v; };
   return { lang, setLang, t };
 }
 function LangSwitch({ lang, setLang, dark, labeled }) {
@@ -1453,7 +1456,7 @@ export default function App() {
         {offlineQueue.length > 0 && (
           <div style={{ background: S.amberSoft, color: S.amber, borderRadius: 12, padding: "9px 12px", marginBottom: 12, fontSize: 13, fontWeight: 600,
             display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
-            <span>📴 {offlineQueue.length} {offlineQueue.length === 1 ? tr("upis čeka") : tr("upisa čeka")} {tr("slanje (nema interneta)")}</span>
+            <span>{offlineQueue.length} {offlineQueue.length === 1 ? tr("upis čeka") : tr("upisa čeka")} {tr("slanje (nema interneta)")}</span>
             <button onClick={flushOfflineQueue} style={{ background: "none", border: `1px solid ${S.amber}`, color: S.amber, borderRadius: 8, padding: "4px 9px", fontWeight: 700, cursor: "pointer", fontSize: 12.5 }}>
               {tr("Pokušaj sad")}
             </button>
@@ -2061,7 +2064,7 @@ function SignaturePad({ title, onSave, onClose }) {
     <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(10,14,12,.92)", zIndex: 60,
       display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>
       <div onClick={(e) => e.stopPropagation()} style={{ background: "#fff", borderRadius: 14, padding: 16, maxWidth: 420, width: "100%" }}>
-        <div style={{ fontWeight: 700, marginBottom: 8 }}>✍️ {title || tr("Potpis")}</div>
+        <div style={{ fontWeight: 700, marginBottom: 8 }}>{title || tr("Potpis")}</div>
         <canvas ref={canvasRef} width={380} height={180}
           onMouseDown={start} onMouseMove={move} onMouseUp={end} onMouseLeave={end}
           onTouchStart={start} onTouchMove={move} onTouchEnd={end}
@@ -2552,14 +2555,14 @@ function CandidatesPanel({ data, api }) {
                 <span style={{ background: st.bg, color: st.color, borderRadius: 999, padding: "3px 9px", fontSize: 12, fontWeight: 700, whiteSpace: "nowrap" }}>{tr(st.label)}</span>
               </div>
               <div style={{ display: "flex", flexWrap: "wrap", gap: 5, marginTop: 7 }}>
-                {stale && <span style={tag(stale.level === "red" ? S.redSoft : S.amberSoft, stale.level === "red" ? S.red : S.amber)}>⏰ {stale.text}</span>}
-                {asWorker && <span style={tag(S.blueSoft, S.blue)}>⚠ {tr("Već radnik:")} {asWorker.name}</span>}
+                {stale && <span style={tag(stale.level === "red" ? S.redSoft : S.amberSoft, stale.level === "red" ? S.red : S.amber)}>{stale.text}</span>}
+                {asWorker && <span style={tag(S.blueSoft, S.blue)}>{tr("Već radnik:")} {asWorker.name}</span>}
                 {repeats && <span style={tag(S.amberSoft, S.amber)}>{tr("Ponovljena prijava")}</span>}
                 {(c.positions || []).map((p) => (
                   <span key={p} style={{ background: POSITIONS.find((x) => x.id === p)?.focus ? S.amberSoft : S.bg, color: S.ink, borderRadius: 6, padding: "2px 7px", fontSize: 12 }}>{labelOf(POSITIONS, p, LL())}</span>
                 ))}
-                {c.object_id && <span style={tag(S.greenSoft, S.green)}>🏨 {objName(c.object_id)}</span>}
-                {c.source_tag && <span style={{ ...tag(S.bg, S.sub), fontWeight: 500 }}>🔗 {c.source_tag}</span>}
+                {c.object_id && <span style={tag(S.greenSoft, S.green)}>{objName(c.object_id)}</span>}
+                {c.source_tag && <span style={{ ...tag(S.bg, S.sub), fontWeight: 500 }}>{c.source_tag}</span>}
               </div>
             </div>
 
@@ -3252,7 +3255,7 @@ function FinancePanel({ data, api }) {
   const sel = { width: "auto", padding: "6px 8px", fontSize: 13 };
   const catSelect = (value, onChange, style) => (
     <select value={value} onChange={(e) => onChange(e.target.value)} style={{ ...sel, ...style }}>
-      <option value="">❔ Nerazvrstano</option>
+      <option value="">Nerazvrstano</option>
       {FIN_CATS.map(([k, label]) => <option key={k} value={k}>{label}</option>)}
     </select>
   );
@@ -3262,7 +3265,7 @@ function FinancePanel({ data, api }) {
     <div style={{ marginTop: 8 }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, marginBottom: 10, flexWrap: "wrap" }}>
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-          {[["pregled", "📊 Pregled"], ["obveze", "🧮 Kraj godine"], ["transakcije", "📋 Transakcije"], ["uvoz", "📥 Uvoz izvoda"], ["pravila", "⚙️ Pravila"]].map(([id, label]) => (
+          {[["pregled", "Pregled"], ["obveze", "Kraj godine"], ["transakcije", "Transakcije"], ["uvoz", "Uvoz izvoda"], ["pravila", "Pravila"]].map(([id, label]) => (
             <button key={id} onClick={() => setView(id)} style={chip(view === id)}>{label}</button>
           ))}
         </div>
@@ -3283,7 +3286,7 @@ function FinancePanel({ data, api }) {
             <Card style={{ background: S.blueSoft, borderColor: S.blueSoft }}>
               <div style={{ fontWeight: 700, marginBottom: 4 }}>Još nema transakcija za {year}.</div>
               <div style={{ fontSize: 13.5, marginBottom: 8 }}>Izvezi izvod iz internet bankarstva kao CSV (ili Excel) i učitaj ga ovdje. Svaki mjesec samo dodaš novi — duplikati se preskaču sami.</div>
-              <Btn small onClick={() => setView("uvoz")}>📥 Uvezi izvod</Btn>
+              <Btn small onClick={() => setView("uvoz")}>Uvezi izvod</Btn>
             </Card>
           )}
           {(uncat > 0 || autoCount > 0) && (
@@ -3296,7 +3299,7 @@ function FinancePanel({ data, api }) {
 
           <Card>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 8 }}>
-              <div style={{ fontWeight: 700 }}>💼 {year}. do sada (bez DPH)</div>
+              <div style={{ fontWeight: 700 }}>{year}. do sada (bez DPH)</div>
               <div style={{ display: "flex", gap: 4 }}>
                 <button onClick={() => setRevBasis("banka")} style={chip(revBasis === "banka")}>prihod po banci</button>
                 <button onClick={() => setRevBasis("fakture")} style={chip(revBasis === "fakture")}>po fakturama</button>
@@ -3312,7 +3315,7 @@ function FinancePanel({ data, api }) {
           </Card>
 
           <Card>
-            <div style={{ fontWeight: 700, marginBottom: 8 }}>🏛 Procjena poreza na dobit ({Math.round(CZ_CIT * 100)} %)</div>
+            <div style={{ fontWeight: 700, marginBottom: 8 }}>Procjena poreza na dobit ({Math.round(CZ_CIT * 100)} %)</div>
             <div style={row}><span>Do sada: osnovica {Kc(est.base)}</span><b className="num">{Kc(est.cit)}</b></div>
             {est.factor > 1 && <div style={row}><span>Ako nastavi ovako cijelu godinu ({covered} mj. s podacima → 12): dobit {Kc(est.yProfit)}</span><b className="num">{Kc(est.yCit)}</b></div>}
             {citPaid !== 0 && <div style={row}><span>Već plaćene zálohe ove godine</span><b className="num" style={{ color: S.green }}>− {Kc(citPaid)}</b></div>}
@@ -3326,7 +3329,7 @@ function FinancePanel({ data, api }) {
           </Card>
 
           <Card>
-            <div style={{ fontWeight: 700, marginBottom: 8 }}>👤 Ako dobit isplatiš sebi (dividenda {Math.round(CZ_DIVIDEND * 100)} %)</div>
+            <div style={{ fontWeight: 700, marginBottom: 8 }}>Ako dobit isplatiš sebi (dividenda {Math.round(CZ_DIVIDEND * 100)} %)</div>
             <div style={row}><span>Dobit nakon poreza (procjena za cijelu godinu)</span><b className="num">{Kc(est.afterTax)}</b></div>
             <div style={row}><span>Porez na dividendu (sráží firma)</span><b className="num" style={{ color: S.amber }}>{Kc(est.dividendTax)}</b></div>
             <div style={{ ...row, borderBottom: "none" }}><b>Tebi ostaje na ruke</b><b className="num" style={{ color: S.green }}>{Kc(est.afterTax - est.dividendTax)}</b></div>
@@ -3334,16 +3337,16 @@ function FinancePanel({ data, api }) {
           </Card>
 
           <Card>
-            <div style={{ fontWeight: 700, marginBottom: 8 }}>🧾 DPH {year}. (iz faktura u 🧾 DPH)</div>
+            <div style={{ fontWeight: 700, marginBottom: 8 }}>DPH {year}. (iz faktura u 🧾 DPH)</div>
             <div style={row}><span>Obračunato za platiti (izdane − primljene fakture)</span><b className="num">{Kc(vatOwed)}</b></div>
             <div style={row}><span>Plaćeno poreznom uredu (s izvoda)</span><b className="num" style={{ color: S.green }}>− {Kc(vatPaid)}</b></div>
             <div style={{ ...row, borderBottom: "none" }}><b>Razlika (otvoreno)</b><b className="num" style={{ color: vatOwed - vatPaid > 0 ? S.amber : S.green }}>{Kc(vatOwed - vatPaid)}</b></div>
-            {nextVat && <div style={{ fontSize: 13, marginTop: 4 }}>📅 Sljedeće: <b>{Kc(nextVat.v.payable)}</b> za {monthName(nextVat.mo)} do <b>{fmtDate(nextVat.v.due)}</b></div>}
+            {nextVat && <div style={{ fontSize: 13, marginTop: 4 }}>Sljedeće: <b>{Kc(nextVat.v.payable)}</b> za {monthName(nextVat.mo)} do <b>{fmtDate(nextVat.v.due)}</b></div>}
             <div style={{ fontSize: 11.5, color: S.sub, marginTop: 4 }}>DPH za mjesec se plaća do 25. idućeg, pa je zadnji mjesec obično još otvoren. Primljene fakture s DPH-om upiši u 🧾 DPH da se odbiju.</div>
           </Card>
 
           <Card>
-            <div style={{ fontWeight: 700, marginBottom: 8 }}>📅 Po mjesecima</div>
+            <div style={{ fontWeight: 700, marginBottom: 8 }}>Po mjesecima</div>
             <div style={{ ...row, color: S.sub, fontSize: 12, fontWeight: 700 }}><span style={{ flex: 1 }}>Mjesec</span><span style={{ width: 90, textAlign: "right" }}>Prihodi</span><span style={{ width: 90, textAlign: "right" }}>Troškovi</span><span style={{ width: 90, textAlign: "right" }}>Rezultat</span></div>
             {months.map((m, i) => (m.count || invNet[i]) ? (
               <div key={m.month} onClick={() => { setFMonth(m.month); setFCat("all"); setView("transakcije"); }} style={{ ...row, cursor: "pointer" }}>
@@ -3356,7 +3359,7 @@ function FinancePanel({ data, api }) {
           </Card>
 
           <Card>
-            <div style={{ fontWeight: 700, marginBottom: 8 }}>🗂 Po kategorijama ({year}.)</div>
+            <div style={{ fontWeight: 700, marginBottom: 8 }}>Po kategorijama ({year}.)</div>
             {Object.entries(byCat).sort((a, b) => a[1].gross - b[1].gross).map(([k, v]) => (
               <div key={k} onClick={() => { setFMonth(""); setFCat(k || "none"); setView("transakcije"); }} style={{ ...row, cursor: "pointer" }}>
                 <span>{catLabel(k)} <span style={{ color: S.sub, fontSize: 12 }}>({v.count})</span></span>
@@ -3390,7 +3393,7 @@ function FinancePanel({ data, api }) {
               </Card>
             )}
             <Card>
-              <div style={{ fontWeight: 700, marginBottom: 2 }}>🧮 Što firma plaća državi za {year}.</div>
+              <div style={{ fontWeight: 700, marginBottom: 2 }}>Što firma plaća državi za {year}.</div>
               <div style={{ fontSize: 12, color: S.sub, marginBottom: 8 }}>
                 {lev.covered ? `Odvodi iz plaća: ${lev.covered} mj. s podacima${lev.factor > 1 ? " → procjena za 12 mjeseci" : ""}.` : ""} Procjena — konačne iznose potvrđuje knjigovođa.
               </div>
@@ -3411,7 +3414,7 @@ function FinancePanel({ data, api }) {
             </Card>
 
             <Card>
-              <div style={{ fontWeight: 700, marginBottom: 8 }}>👷 Soc. + zdrav. + porez iz plaća — tko to plaća</div>
+              <div style={{ fontWeight: 700, marginBottom: 8 }}>Soc. + zdrav. + porez iz plaća — tko to plaća</div>
               <div style={{ ...row, color: S.sub, fontSize: 12, fontWeight: 700 }}><span style={{ flex: 1 }}></span><span style={col}>do sada</span><span style={col}>cijela godina</span></div>
               {line("Trošak firme (dio poslodavca)", lev.split.firm, lev.split12.firm, { hint: "ide preko bruto plaće — to je stvarni dodatni trošak firme", color: S.red })}
               {line("Dio zaposlenika (odbija se od bruto) + porez", lev.split.employees, lev.split12.employees)}
@@ -3432,7 +3435,7 @@ function FinancePanel({ data, api }) {
             </Card>
 
             <Card>
-              <div style={{ fontWeight: 700, marginBottom: 8 }}>📅 Rokovi i zálohe</div>
+              <div style={{ fontWeight: 700, marginBottom: 8 }}>Rokovi i zálohe</div>
               {[
                 ["svaki mjesec do 20.", "Soc. i zdrav. osiguranje + porez iz plaća za prošli mjesec (ČSSZ, zdravstvena, porezni ured)"],
                 ["svaki mjesec do 25.", "DPH prijava, kontrolní hlášení i uplata DPH za prošli mjesec"],
@@ -3464,8 +3467,8 @@ function FinancePanel({ data, api }) {
             </select>
             <select value={fCat} onChange={(e) => setFCat(e.target.value)} style={sel}>
               <option value="all">Sve kategorije</option>
-              <option value="none">❔ Nerazvrstano</option>
-              <option value="auto">🤖 Automatski prijedlozi</option>
+              <option value="none">Nerazvrstano</option>
+              <option value="auto">Automatski prijedlozi</option>
               {FIN_CATS.map(([k, label]) => <option key={k} value={k}>{label}</option>)}
             </select>
             <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="traži partnera, VS, poruku…" style={{ flex: "1 1 150px", width: "auto", padding: "6px 10px", fontSize: 13 }} />
@@ -3477,7 +3480,7 @@ function FinancePanel({ data, api }) {
             </label>
             <span style={{ flex: 1 }} />
             {filtered.some((t) => t.category_auto) && <Btn small kind="ghost" onClick={confirmAuto}>✓ Potvrdi prijedloge</Btn>}
-            <Btn small kind="ghost" onClick={() => setManual(manual ? null : { date: todayISO(), amount: "", sign: "-", currency: "CZK", counterparty: "", category: "" })}>➕ Ručno</Btn>
+            <Btn small kind="ghost" onClick={() => setManual(manual ? null : { date: todayISO(), amount: "", sign: "-", currency: "CZK", counterparty: "", category: "" })}>Ručno</Btn>
           </div>
           {manual && (
             <div style={{ background: S.bg, borderRadius: 10, padding: 10, marginBottom: 8 }}>
@@ -3513,7 +3516,7 @@ function FinancePanel({ data, api }) {
                 <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap", marginTop: 5 }}>
                   {catSelect(t.category || "", (c) => setCat(t, c),
                     { borderColor: !t.category ? S.amber : t.category_auto ? S.blue : S.line, maxWidth: 230 })}
-                  {t.category_auto && <Tag color={S.blue} bg={S.blueSoft}>🤖 prijedlog</Tag>}
+                  {t.category_auto && <Tag color={S.blue} bg={S.blueSoft}>prijedlog</Tag>}
                   {(kind === "in" || kind === "cost") && (
                     <span style={{ display: "flex", gap: 3, alignItems: "center", fontSize: 11.5, color: S.sub }}>
                       DPH
@@ -3535,7 +3538,7 @@ function FinancePanel({ data, api }) {
       {view === "uvoz" && (
         <>
           <Card>
-            <div style={{ fontWeight: 700, marginBottom: 6 }}>📥 Učitaj bankovni izvod</div>
+            <div style={{ fontWeight: 700, marginBottom: 6 }}>Učitaj bankovni izvod</div>
             <div style={{ fontSize: 13, color: S.sub, marginBottom: 8 }}>
               U internet bankarstvu izvezi pohyby za mjesec kao <b>CSV</b> (ili Excel). Prepoznaju se Fio, KB, ČSOB, Česká spořitelna, Raiffeisen, Air Bank, Moneta, UniCredit i slični.
               Ako učitaš isti izvod dvaput, iste transakcije se preskaču.
@@ -3592,7 +3595,7 @@ function FinancePanel({ data, api }) {
 
       {view === "pravila" && (
         <Card>
-          <div style={{ fontWeight: 700, marginBottom: 6 }}>⚙️ Pravila za automatsko razvrstavanje</div>
+          <div style={{ fontWeight: 700, marginBottom: 6 }}>Pravila za automatsko razvrstavanje</div>
           <div style={{ fontSize: 12.5, color: S.sub, marginBottom: 8 }}>
             Ako ime partnera, broj računa ili poruka sadrži zadani tekst, transakcija dobije tu kategoriju. Pravila nastaju sama kad promijeniš kategoriju (uz kvačicu „Zapamti“).
             Uz tvoja pravila postoje i ugrađena (ČSSZ, VZP, finanční úřad, poplatek, benzinske…).
@@ -3608,7 +3611,7 @@ function FinancePanel({ data, api }) {
               <button onClick={() => delRule(r)} style={{ background: "none", border: "none", color: S.red, cursor: "pointer", fontSize: 15 }}>✕</button>
             </div>
           ))}
-          <Btn small kind="ghost" style={{ marginTop: 10 }} onClick={applyRules}>🤖 Primijeni pravila na nerazvrstane i prijedloge ({year}.)</Btn>
+          <Btn small kind="ghost" style={{ marginTop: 10 }} onClick={applyRules}>Primijeni pravila na nerazvrstane i prijedloge ({year}.)</Btn>
         </Card>
       )}
     </div>
@@ -3775,7 +3778,7 @@ function AiAssistantPanel({ data }) {
         <div key={i} style={{ display: "flex", justifyContent: m.role === "user" ? "flex-end" : "flex-start", marginBottom: 10 }}>
           <div style={{ maxWidth: "88%", background: m.role === "user" ? S.green : S.card, color: m.role === "user" ? "#fff" : S.ink,
             border: m.role === "user" ? "none" : `1px solid ${S.line}`, borderRadius: 14, padding: "10px 12px" }}>
-            {m.files?.length > 0 && <div style={{ fontSize: 12, opacity: 0.85, marginBottom: 4 }}>📎 {m.files.join(", ")}</div>}
+            {m.files?.length > 0 && <div style={{ fontSize: 12, opacity: 0.85, marginBottom: 4 }}>{m.files.join(", ")}</div>}
             {m.role === "user" ? <div style={{ whiteSpace: "pre-wrap", fontSize: 14.5 }}>{m.text}</div> : <AiText text={m.text} />}
             {m.role === "assistant" && (
               <button onClick={() => copy(m.text, i)} style={{ background: "none", border: "none", color: S.sub, fontSize: 12, fontWeight: 700, cursor: "pointer", padding: "6px 0 0" }}>
@@ -4401,6 +4404,7 @@ function rateStaleWarnings(workers, rateChanges) {
 /* ================================================================== */
 /*  📌 DANAS — sve što traži pažnju na jednom mjestu                   */
 /* ================================================================== */
+const SECTION_ICON = { "✅": "check", "💶": "wallet", "📌": "doc", "🔎": "alert", "🕒": "clock", "🧑‍🍳": "userPlus", "🧩": "grid", "🧾": "receipt", "🪪": "doc" };
 function TodaySection({ icon, title, count, tone = "amber", children, items, render, limit = 5, action }) {
   const [all, setAll] = useState(false);
   const col = { red: [S.red, S.redSoft], amber: [S.amber, S.amberSoft], blue: [S.blue, S.blueSoft], green: [S.green, S.greenSoft] }[tone];
@@ -4408,8 +4412,10 @@ function TodaySection({ icon, title, count, tone = "amber", children, items, ren
   return (
     <Card style={{ padding: "12px 14px" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
-        <span style={{ fontSize: 18 }}>{icon}</span>
-        <span style={{ fontWeight: 700, flex: 1, fontSize: 14.5 }}>{title}</span>
+        <span style={{ width: 34, height: 34, borderRadius: 10, background: col[1], color: col[0], display: "flex", alignItems: "center", justifyContent: "center", flex: "0 0 auto" }}>
+          {SECTION_ICON[icon] ? <Ico name={SECTION_ICON[icon]} size={18} /> : <span style={{ fontSize: 16 }}>{icon}</span>}
+        </span>
+        <span style={{ fontWeight: 800, flex: 1, fontSize: 14.5 }}>{title}</span>
         {count !== undefined && <Tag color={col[0]} bg={col[1]}>{count}</Tag>}
       </div>
       {children}
@@ -4533,7 +4539,7 @@ function TodayTab({ data, api, admin, onOpenWorker, onOpenObject, openAdminPanel
         <TodaySection icon="🧑‍🍳" title={tr("Kandidati")} tone={data.staleCandidates ? "red" : data.newCandidates ? "amber" : "blue"} count={data.newCandidates ? `${data.newCandidates} ${tr("novih")}` : undefined}
           action={<Btn small onClick={() => { goTab("kandidati"); window.scrollTo({ top: 0 }); }} style={{ width: "100%" }}>{tr("Otvori kandidate")}</Btn>}>
           <div style={{ fontSize: 13.5 }}>{data.newCandidates ? tr("Nove prijave s prijavnice čekaju da im se javiš.") : tr("Nema novih prijava.")}</div>
-          {data.staleCandidates > 0 && <div style={{ fontSize: 13.5, color: S.red, fontWeight: 600, marginTop: 4 }}>⏰ {data.staleCandidates} {tr("čeka dulje od 24 h — javi im se danas.")}</div>}
+          {data.staleCandidates > 0 && <div style={{ fontSize: 13.5, color: S.red, fontWeight: 600, marginTop: 4 }}>{data.staleCandidates} {tr("čeka dulje od 24 h — javi im se danas.")}</div>}
         </TodaySection>
       )}
 
@@ -4542,7 +4548,7 @@ function TodayTab({ data, api, admin, onOpenWorker, onOpenObject, openAdminPanel
           action={pending.length > 0 && <Btn small onClick={() => openAdminPanel("approvals")} style={{ width: "100%" }}>{tr("Otvori odobravanje isplata")}</Btn>}>
           <div style={{ fontSize: 13.5, display: "grid", gap: 4 }}>
             {daysToPayday !== null && (
-              <div>📅 {daysToPayday === 0 ? <b>{tr("Danas je dan isplate.")}</b> : <>{tr("Dan isplate je za")}{" "}<b>{daysToPayday} {daysToPayday === 1 ? tr("dan") : tr("dana")}</b> ({paydayDay}{tr(". u mjesecu).")}</>}</div>
+              <div>{daysToPayday === 0 ? <b>{tr("Danas je dan isplate.")}</b> : <>{tr("Dan isplate je za")}{" "}<b>{daysToPayday} {daysToPayday === 1 ? tr("dan") : tr("dana")}</b> ({paydayDay}{tr(". u mjesecu).")}</>}</div>
             )}
             {pending.length > 0 && <div>⏳ <b>{pending.length}</b> {tr("predloženih isplata čeka odobrenje.")}</div>}
             {notProposedPrev > 0 && (
@@ -5507,7 +5513,7 @@ function WorkersTab({ data, api, onOpen, onOpenObject }) {
 
       {data.workers.some((w) => w.archived) && (
         <>
-          <div style={{ fontSize: 15, fontWeight: 700, color: S.sub, margin: "18px 0 8px" }}>📁 {api.t("formerWorkers")} ({formerWorkers.length})</div>
+          <div style={{ fontSize: 15, fontWeight: 700, color: S.sub, margin: "18px 0 8px" }}>{api.t("formerWorkers")} ({formerWorkers.length})</div>
           {formerWorkers.map((w) => (
             <Card key={w.id} style={{ cursor: "pointer", opacity: 0.8 }}>
               <div onClick={() => onOpen(w.id)} style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
@@ -5797,7 +5803,7 @@ function ObjectsTab({ data, api, onOpenObject }) {
 
   return (
     <>
-      <div style={{ fontSize: 17, fontWeight: 700, marginBottom: 10 }}>🏨 {api.t("objectsTitle")} ({list.length})</div>
+      <div style={{ fontSize: 17, fontWeight: 700, marginBottom: 10 }}>{api.t("objectsTitle")} ({list.length})</div>
       <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
         {["HR", "CZ"].map((c) => (
           <button key={c} onClick={() => setCountry(c)} style={{ flex: 1, padding: "10px 8px", borderRadius: 10, fontWeight: 700, fontSize: 13.5, cursor: "pointer",
@@ -5837,7 +5843,7 @@ function ObjectsTab({ data, api, onOpenObject }) {
                   <span style={{ flex: 1, fontSize: 12.5, fontWeight: 700, color: S.sub }}>{r.fileName}</span>
                   <button onClick={() => removeInvRow(r.id)} style={{ background: "none", border: "none", color: S.red, fontSize: 15, cursor: "pointer", padding: 2 }}>✕</button>
                 </div>
-                {r.error && <div style={{ fontSize: 12, color: S.red, marginBottom: 6 }}>⚠️ {r.error}</div>}
+                {r.error && <div style={{ fontSize: 12, color: S.red, marginBottom: 6 }}>{r.error}</div>}
                 {r.ocr && !r.error && (
                   <div style={{ fontSize: 11.5, color: S.amber, fontWeight: 600, marginBottom: 6 }}>
                     {tr("🔍 Pročitano OCR-om sa skena — manje pouzdano, pažljivo provjeri brojeve ispod prije uvoza.")}
@@ -5975,7 +5981,7 @@ function DirectoryTab({ data, api, onOpen }) {
   return (
     <>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
-        <div style={{ fontSize: 17, fontWeight: 700 }}>📇 {api.t("directoryTitle")}</div>
+        <div style={{ fontSize: 17, fontWeight: 700 }}>{api.t("directoryTitle")}</div>
         <div style={{ fontSize: 12.5, color: S.sub }}>
           <span style={{ color: S.green, fontWeight: 700 }}>{active} {tr("aktivnih")}</span>{former > 0 && <> · {former} {tr("bivših")}</>}
         </div>
@@ -5992,7 +5998,7 @@ function DirectoryTab({ data, api, onOpen }) {
                 <div style={{ flex: 1 }}>
                   <div style={{ fontWeight: 700, fontSize: 15 }}>{w.name}{w.position && <span style={{ marginLeft: 6, fontWeight: 600, fontSize: 12, color: S.blue }}>· {w.position}</span>}</div>
                   <div style={{ fontSize: 12.5, color: S.sub, marginTop: 1 }}>
-                    {w.phone ? <a href={"tel:" + w.phone} onClick={(e) => e.stopPropagation()} style={{ color: S.sub }}>📞 {w.phone}</a> : tr("bez broja")}
+                    {w.phone ? <a href={"tel:" + w.phone} onClick={(e) => e.stopPropagation()} style={{ color: S.sub }}>{w.phone}</a> : tr("bez broja")}
                   </div>
                 </div>
                 {w.archived
@@ -6485,7 +6491,7 @@ function WorkerDetail({ worker, data, api, onBack }) {
                 ? <Tag color={S.green} bg={S.greenSoft}>{money(rateNow(data, worker), wCur(worker))}/h</Tag>
                 : <Tag color={S.amber} bg={S.amberSoft}>{tr("bez satnice")}</Tag>}
             </div>
-            <div style={{ marginTop: 10, fontSize: 14.5 }}>📞 {worker.phone ? <a href={"tel:" + worker.phone} style={{ color: S.ink }}>{worker.phone}</a> : "—"}</div>
+            <div style={{ marginTop: 10, fontSize: 14.5 }}>{worker.phone ? <a href={"tel:" + worker.phone} style={{ color: S.ink }}>{worker.phone}</a> : "—"}</div>
             {(worker.permitExpiry || worker.contractExpiry) && (
               <div className="num" style={{ marginTop: 6, fontSize: 13, color: S.sub }}>
                 {worker.permitExpiry && <>{tr("Radna dozvola do")}{" "}{fmtDate(worker.permitExpiry)}</>}
@@ -7415,12 +7421,12 @@ function ObjectDetail({ object, data, api, onBack, onOpenWorker }) {
     <>
       <button onClick={onBack} style={{ background: "none", border: "none", color: S.green, fontWeight: 700, fontSize: 14.5, padding: "2px 0 12px", cursor: "pointer" }}>{tr("← Natrag")}</button>
       <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10, flexWrap: "wrap" }}>
-        <div style={{ fontSize: 19, fontWeight: 800 }}>🏨 {object.name}{object.archived && <Tag color={S.sub} bg="#EEF0ED"> {tr("📁 zatvoren")}</Tag>}</div>
+        <div style={{ fontSize: 19, fontWeight: 800 }}>{object.name}{object.archived && <Tag color={S.sub} bg="#EEF0ED"> {tr("📁 zatvoren")}</Tag>}</div>
         <Tag color={S.blue} bg={S.blueSoft}>{FLAG[object.country || "HR"]} {object.country || tr("HR")}</Tag>
       </div>
 
       <div style={{ display: "flex", background: "#E9ECE6", borderRadius: 12, padding: 3, marginBottom: 12, gap: 2 }}>
-        {[["pregled", "📊 Pregled"], ["sati", "🕒 Sati"], ...(api.admin ? [["fakture", "🧾 Fakture"], ["postavke", "⚙️ Postavke"]] : [])].map(([id, label]) => (
+        {[["pregled", "Pregled"], ["sati", "Sati"], ...(api.admin ? [["fakture", "Fakture"], ["postavke", "Postavke"]] : [])].map(([id, label]) => (
           <button key={id} onClick={() => setSection(id)} style={{ flex: 1, border: "none", borderRadius: 10, padding: "9px 4px", cursor: "pointer", fontSize: 13,
             fontWeight: section === id ? 700 : 500, background: section === id ? "#fff" : "transparent", color: section === id ? S.green : S.sub,
             boxShadow: section === id ? "0 1px 3px rgba(0,0,0,.08)" : "none", whiteSpace: "nowrap" }}>{label}</button>
@@ -8241,7 +8247,7 @@ function PaymentsMonthOverview({ data, onOpenWorker }) {
                     {group !== "vrsta" && <b>{tr(TYPE_LABEL[p.type] || p.type)} </b>}
                     {group !== "radnik" && (p.workerId
                       ? <span onClick={() => onOpenWorker && onOpenWorker(p.workerId)} style={{ color: S.blue, cursor: "pointer" }}>{wName(p.workerId)}</span>
-                      : <span>🏨 {oName(p.oid)}</span>)}
+                      : <span>{oName(p.oid)}</span>)}
                     {group !== "objekt" && p.workerId && <span style={{ color: S.sub }}> · {oName(p.oid)}</span>}
                     {p.note ? <span style={{ color: S.sub }}> · {p.note}</span> : null}
                     {p.type !== "avans" && p.type !== "bonus" && p.type !== "racun" && p.workerId && !p.deduct ? <span style={{ color: S.sub }}> · {tr("trošak firme")}</span> : null}
@@ -9289,7 +9295,7 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
                   <input type="checkbox" checked={row.addBank} onChange={(e) => setRow(i, { addBank: e.target.checked })} style={{ width: 16, height: 16 }} />
                   {tr("Upiši \"na račun\" iz pásky")}
                 </label>
-                {row.warn.map((w, k) => <div key={k} style={{ fontSize: 12, color: S.amber, marginTop: 4 }}>⚠️ {w}</div>)}
+                {row.warn.map((w, k) => <div key={k} style={{ fontSize: 12, color: S.amber, marginTop: 4 }}>{w}</div>)}
               </div>
             ))}
             {mzdyReview.prikazy.length > 0 && (
@@ -9360,7 +9366,7 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
             <>
               {view === "month" && (
                 <div style={{ display: "flex", gap: 8, marginBottom: 10, flexWrap: "wrap" }}>
-                  {[["all", "Svi"], ["paid", "✓ Isplaćeno"], ["pending", "⏳ Predloženo"], ["unpaid", "Bez isplate"]].map(([id, label]) => (
+                  {[["all", "Svi"], ["paid", "✓ Isplaćeno"], ["pending", "Predloženo"], ["unpaid", "Bez isplate"]].map(([id, label]) => (
                     <button key={id} onClick={() => setPayStatusFilter(id)} style={{ padding: "6px 12px", borderRadius: 999, fontWeight: 700, fontSize: 12.5, cursor: "pointer",
                       background: payStatusFilter === id ? S.ink : "#fff", color: payStatusFilter === id ? "#fff" : S.sub, border: `1px solid ${payStatusFilter === id ? S.ink : S.line}` }}>{tr(label)}</button>
                   ))}
