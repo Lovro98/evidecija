@@ -993,4 +993,6 @@ export const TR_UK = {
  "Mjesto i datum": "Місце і дата",
  "Potpis poslodavca": "Підпис роботодавця",
  "Interni pregled odrađenih sati i gotovinske isplate. Ne zamjenjuje službenu výplatní pásku.": "Внутрішній огляд відпрацьованих годин і готівкової виплати. Не замінює офіційну výplatní pásku.",
+ "račun nije upisan": "рахунок не вказано",
+ "soc. + zdr.": "соц. + мед. страхування",
 };

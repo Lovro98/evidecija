@@ -9052,7 +9052,7 @@ const escHtml = (x) => String(x).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<":
 const bankLabelFor = (r, admin) => {
   if (!admin) return "BANK";
   const acc = (r.w.bankAccount || "").trim();
-  return `BANK (${acc || "račun nije upisan"})`;
+  return `BANK (${acc || tr("račun nije upisan")})`;
 };
 const bankAmountsFor = (r) => [r.bank ? eur(r.bank) : "", r.czk.bank ? czk(r.czk.bank) : ""].filter(Boolean);
 // view: "month" | "year"; month: "YYYY-MM"

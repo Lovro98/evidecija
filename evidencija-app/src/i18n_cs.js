@@ -967,4 +967,6 @@ export const TR_CS = {
  "Bonus": "Bonus",
  "Odbici": "Srážky",
  "Na račun (banka)": "Na účet (banka)",
+ "račun nije upisan": "účet není zadán",
+ "soc. + zdr.": "soc. + zdrav.",
 };
