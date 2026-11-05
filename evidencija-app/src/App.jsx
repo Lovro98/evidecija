@@ -1384,6 +1384,9 @@ export default function App() {
     }, `Upisao ${TYPE_LABEL[meta.type]?.toLowerCase() || meta.type} za ${entries.length} radnika (${money(round2(entries.reduce((s, e) => s + e.amount, 0)), meta.currency)})`),
     markPaid: (w, mo, amount, amountKc) => act(() => ins("payouts", { worker_id: w.id, month: mo, amount, amount_czk: amountKc || 0, approved: false, created_by: session.user.id }),
       `Predložio isplatu: ${w.name} za ${mo} (${[amount ? eur(amount) : "", amountKc ? czk(amountKc) : ""].filter(Boolean).join(" + ") || eur(0)}) — čeka odobrenje`),
+    markPaidApproved: (w, mo, amount, amountKc) => act(() => ins("payouts", { worker_id: w.id, month: mo, amount, amount_czk: amountKc || 0, approved: true,
+      approved_by: session.user.id, approved_at: new Date().toISOString(), created_by: session.user.id }),
+      `Isplata potpisana na ekranu i odobrena: ${w.name} za ${mo} (${[amount ? eur(amount) : "", amountKc ? czk(amountKc) : ""].filter(Boolean).join(" + ") || eur(0)})`),
     approvePayout: (payout, wName) => act(() => upd("payouts", payout.id, { approved: true, approved_by: session.user.id, approved_at: new Date().toISOString() }),
       `Odobrio isplatu: ${wName} za ${payout.month}`),
     unmarkPaid: (payout, wName) => act(() => softDel("payouts", payout.id), `Otključao/odbacio isplatu: ${wName} za ${payout.month}`),
@@ -4769,6 +4772,7 @@ const DOC_TYPES = [
   ["zdravstvena", "Zdravstvena potvrda"],
   ["osiguranje", "Zdravstveno osiguranje"],
   ["lijecnicki", "Liječnički pregled"],
+  ["isplata", "Potpisana isplata"],
   ["ostalo", "Ostalo"],
 ];
 const docTypeLabel = (id) => (DOC_TYPES.find((x) => x[0] === id) || DOC_TYPES[DOC_TYPES.length - 1])[1];
@@ -9270,6 +9274,204 @@ function HotelProfitability({ data }) {
   );
 }
 
+
+/* ---------- Digitalni obračun: radnik po radnik na tabletu, potpis umjesto koverte ---------- */
+// potvrda o primitku crta se na canvasu (rade hrvatska i češka slova) i sprema kao PDF u dokumente radnika
+async function buildPayoutReceiptPage({ company, workerName, position, period, hours, items, net, sig, at }) {
+  const W = 1240, H = 1754, c = document.createElement("canvas");
+  c.width = W; c.height = H;
+  const g = c.getContext("2d");
+  const font = (px, bold) => `${bold ? "700 " : ""}${px}px "Segoe UI", system-ui, -apple-system, Roboto, Arial, sans-serif`;
+  g.fillStyle = "#fff"; g.fillRect(0, 0, W, H); g.textBaseline = "top";
+  g.fillStyle = "#55606E"; g.font = font(26); g.fillText(company || "", 100, 100);
+  g.fillStyle = "#10233F"; g.font = font(46, true); g.fillText("Potvrda o primitku isplate", 100, 140);
+  g.fillStyle = "#55606E"; g.font = font(26); g.fillText(`${workerName}${position ? " · " + position : ""} · ${period}`.slice(0, 80), 100, 205);
+  g.strokeStyle = "#D9DEE5"; g.lineWidth = 2; g.beginPath(); g.moveTo(100, 260); g.lineTo(W - 100, 260); g.stroke();
+  let y = 290;
+  g.font = font(28);
+  [["Odrađeni sati", hours], ...items].forEach(([k, v]) => {
+    g.fillStyle = "#10233F"; g.fillText(String(k).slice(0, 55), 100, y);
+    const t = String(v); g.fillText(t, W - 100 - g.measureText(t).width, y); y += 52;
+  });
+  g.strokeStyle = "#10233F"; g.lineWidth = 3; g.beginPath(); g.moveTo(100, y + 4); g.lineTo(W - 100, y + 4); g.stroke();
+  y += 26; g.font = font(36, true); g.fillText("ZA ISPLATU", 100, y);
+  g.fillText(net, W - 100 - g.measureText(net).width, y);
+  y += 100; g.font = font(28); g.fillStyle = "#10233F";
+  const stmt = `Svojim potpisom potvrđujem da sam primio/la isplatu za ${period} u iznosu ${net}.`;
+  const words = stmt.split(" "); let line = ""; const lines = [];
+  words.forEach((w) => { const tt = line ? line + " " + w : w; if (g.measureText(tt).width > W - 200 && line) { lines.push(line); line = w; } else line = tt; });
+  if (line) lines.push(line);
+  lines.forEach((l, i) => g.fillText(l, 100, y + i * 40)); y += lines.length * 40 + 50;
+  const img = await loadImg(sig);
+  const maxW = 700, maxH = 260, k = Math.min(maxW / img.width, maxH / img.height);
+  g.drawImage(img, 100, y + maxH - img.height * k, img.width * k, img.height * k);
+  y += maxH + 10; g.strokeStyle = "#10233F"; g.lineWidth = 2; g.beginPath(); g.moveTo(100, y); g.lineTo(820, y); g.stroke();
+  g.fillStyle = "#55606E"; g.font = font(24); g.fillText(`Potpis radnika · potpisano ${at}`, 100, y + 12);
+  g.fillStyle = "#7A8594"; g.font = font(20);
+  g.fillText("Potpisano vlastoručno na ekranu u aplikaciji Evidencija rada (digitalni obračun umjesto koverte).", 100, H - 140);
+  const blob = await new Promise((r) => c.toBlob(r, "image/png"));
+  return new Uint8Array(await blob.arrayBuffer());
+}
+
+// isti izgled kao ispisani obračun (printDoc), ograničen na .dp-slip
+const PAYSLIP_CSS = `.dp-slip{font-family:Arial,Helvetica,sans-serif;color:#1C2521;padding:18px;max-width:720px;margin:0 auto;background:#fff;border:1px solid #E1E5DF;border-radius:8px}
+.dp-slip h1{font-size:20px;margin:0 0 2px} .dp-slip h2{font-size:14px;color:#5C6862;font-weight:normal;margin:0 0 14px}
+.dp-slip table{width:100%;border-collapse:collapse;margin:12px 0} .dp-slip th,.dp-slip td{border-bottom:1px solid #ddd;padding:6px 8px;text-align:left;font-size:13px}
+.dp-slip th{background:#f2f4f0;font-size:12px} .dp-slip .right{text-align:right} .dp-slip .tot td{font-weight:bold;font-size:14px;border-top:2px solid #1C2521}
+.dp-slip .muted{color:#5C6862;font-size:12px} .dp-slip .head{border-bottom:2px solid #1C2521;padding-bottom:10px;margin-bottom:14px}
+.dp-slip h3{font-size:12px;text-transform:uppercase;letter-spacing:.6px;color:#5C6862;margin:20px 0 0}`;
+
+const signedDocFor = (data, workerId, month) => (data.workerDocs || []).find((d) => d.workerId === workerId && d.type === "isplata" && (d.note || "").startsWith(`Isplata ${month}`));
+
+function DigitalPayroll({ ids, allRows, month, period, scopeLabel, data, api, admin, receiptOf, payslipHtml, onClose }) {
+  const rowOf = (id) => allRows.find((r) => r.w.id === id);
+  const list = ids.filter((id) => rowOf(id));
+  const statusOf = (id) => {
+    const p = paidFor(data, id, month);
+    if (signedDocFor(data, id, month)) return "signed";
+    return p ? (p.approved ? "paid" : "pending") : "open";
+  };
+  const firstOpen = () => { const i = list.findIndex((id) => statusOf(id) === "open" || statusOf(id) === "pending"); return i < 0 ? 0 : i; };
+  const [idx, setIdx] = useState(firstOpen);
+  const [signing, setSigning] = useState(false);
+  const [sig, setSig] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const [justSigned, setJustSigned] = useState(null);
+  const touch = useRef(null);
+  const id = list[Math.min(idx, list.length - 1)];
+  const r = id ? rowOf(id) : null;
+  const st = id ? statusOf(id) : "open";
+  const doneN = list.filter((x) => statusOf(x) === "signed" || statusOf(x) === "paid").length;
+
+  const go = (n) => { if (signing || busy || n < 0 || n >= list.length) return; setIdx(n); setErr(""); setJustSigned(null); setSig(null); };
+  const nextOpen = () => { for (let k = 1; k < list.length; k++) { const j = (idx + k) % list.length; const s = statusOf(list[j]); if (s === "open" || s === "pending") return j; } return -1; };
+  useEffect(() => {
+    const onKey = (e) => { if (signing || /INPUT|TEXTAREA|SELECT/.test(e.target.tagName)) return; if (e.key === "ArrowRight") go(idx + 1); if (e.key === "ArrowLeft") go(idx - 1); };
+    window.addEventListener("keydown", onKey); return () => window.removeEventListener("keydown", onKey);
+  });
+
+  const confirm = async () => {
+    if (!sig || !r) return;
+    setBusy(true); setErr("");
+    try {
+      const rc = receiptOf(r);
+      const at = nowStamp();
+      const { PDFDocument } = await import(/* @vite-ignore */ "https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/+esm");
+      const png = await buildPayoutReceiptPage({ company: data.settings?.company_name || BRAND, workerName: r.w.name, position: r.w.position || "",
+        period, hours: fmtH(r.hours), items: rc.items, net: rc.net, sig, at });
+      const doc = await PDFDocument.create();
+      const img = await doc.embedPng(png);
+      doc.addPage([595.28, 841.89]).drawImage(img, { x: 0, y: 0, width: 595.28, height: 841.89 });
+      const out = await doc.save();
+      const path = `${r.w.id}/${Date.now()}_Isplata_${month}_POTPISANO.pdf`;
+      const { error } = await supabase.storage.from("docs").upload(path, new Blob([out], { type: "application/pdf" }));
+      if (error) throw error;
+      const ok = await api.addWorkerDocs(r.w, [{ type: "isplata", filePath: path, note: `Isplata ${month} · ${rc.net} · potpisano ${at}` }]);
+      if (!ok) throw new Error(tr("Datoteka je spremljena, ali zapis dokumenta nije."));
+      const p = paidFor(data, r.w.id, month);
+      if (!p) { if (admin) await api.markPaidApproved(r.w, month, r.net, r.czk.net); else await api.markPaid(r.w, month, r.net, r.czk.net); }
+      else if (!p.approved && admin) await api.approvePayout(p, r.w.name);
+      setJustSigned(r.w.id); setSigning(false); setSig(null);
+    } catch (e) { setErr(tr("Greška pri spremanju: ") + (e.message || e)); }
+    setBusy(false);
+  };
+
+  const openSigned = async () => {
+    const d = signedDocFor(data, id, month); if (!d) return;
+    const { data: s } = await supabase.storage.from("docs").createSignedUrl(d.filePath, 300);
+    if (s?.signedUrl) window.open(s.signedUrl, "_blank");
+  };
+
+  const dotColor = (s) => s === "signed" || s === "paid" ? S.green : s === "pending" ? S.amber : "#fff";
+  const rc = r ? receiptOf(r) : null;
+  const signedDoc = id ? signedDocFor(data, id, month) : null;
+  const p = id ? paidFor(data, id, month) : null;
+  const nx = nextOpen();
+
+  return (
+    <div style={{ position: "fixed", inset: 0, background: S.bg, zIndex: 60, display: "flex", flexDirection: "column" }}>
+      <style>{PAYSLIP_CSS + `.dp-body{flex:1;min-height:0;display:grid;grid-template-columns:minmax(0,1fr) minmax(340px,420px)}
+        .dp-doc{overflow:auto;-webkit-overflow-scrolling:touch;padding:14px}
+        .dp-side{overflow:auto;background:#fff;border-left:1px solid ${S.line};padding:16px;display:flex;flex-direction:column;gap:12px}
+        @media (max-width:900px){.dp-body{grid-template-columns:1fr;grid-template-rows:minmax(220px,1fr) auto}.dp-side{border-left:0;border-top:1px solid ${S.line};max-height:60vh}}`}</style>
+      <div style={{ background: S.ink, color: "#fff", padding: "10px 14px", display: "flex", alignItems: "center", gap: 10, paddingTop: "calc(10px + env(safe-area-inset-top))" }}>
+        <button onClick={() => !signing && !busy && onClose()} disabled={signing || busy} style={{ background: "rgba(255,255,255,.12)", border: "none", color: "#fff", borderRadius: 10, padding: "8px 12px", fontWeight: 700, cursor: "pointer" }}>✕</button>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontSize: 11, letterSpacing: 1.2, textTransform: "uppercase", color: "#9DB3A8", fontWeight: 700 }}>{tr("Digitalni obračun")} · {period}</div>
+          <div style={{ fontSize: 16, fontWeight: 800, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{scopeLabel}</div>
+        </div>
+        <div style={{ fontWeight: 800, fontSize: 14 }}>{tr("{0} / {1} potpisano", doneN, list.length)}</div>
+      </div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 9, justifyContent: "center", padding: "9px 12px", background: "#fff", borderBottom: `1px solid ${S.line}` }}>
+        {list.map((x, k) => (
+          <button key={x} onClick={() => go(k)} title={rowOf(x)?.w.name} aria-label={rowOf(x)?.w.name} disabled={signing || busy}
+            style={{ width: 18, height: 18, borderRadius: "50%", padding: 0, cursor: "pointer", background: dotColor(statusOf(x)),
+              border: `2px solid ${statusOf(x) === "open" ? S.line : dotColor(statusOf(x))}`, outline: k === idx ? `3px solid ${S.ink}` : "none", outlineOffset: 2 }} />
+        ))}
+      </div>
+      {!r ? <Empty text={tr("Nema radnika za digitalni obračun.")} /> : (
+        <div className="dp-body"
+          onTouchStart={(e) => { if (signing || e.touches.length > 1 || e.target.closest("canvas,input,button")) { touch.current = null; return; } touch.current = { x: e.touches[0].clientX, y: e.touches[0].clientY, t: Date.now() }; }}
+          onTouchEnd={(e) => { const t0 = touch.current; touch.current = null; if (!t0) return; const t = e.changedTouches[0]; const dx = t.clientX - t0.x, dy = t.clientY - t0.y;
+            if (Math.abs(dx) > 60 && Math.abs(dx) > Math.abs(dy) * 1.5 && Date.now() - t0.t < 800) go(idx + (dx < 0 ? 1 : -1)); }}>
+          <div className="dp-doc">
+            <div key={id} className="dp-slip" dangerouslySetInnerHTML={{ __html: payslipHtml(r) }} />
+          </div>
+          <div className="dp-side">
+            <div>
+              <div style={{ fontSize: 22, fontWeight: 800 }}>{r.w.name}</div>
+              <div style={{ color: S.sub, fontSize: 13.5 }}>{[r.w.position, data.objects.find((o) => o.id === r.w.objectId)?.name].filter(Boolean).join(" · ")}</div>
+            </div>
+            <div>
+              <div style={{ fontSize: 11.5, letterSpacing: 1, textTransform: "uppercase", color: S.sub, fontWeight: 700 }}>{tr("Za isplatu")}</div>
+              <div style={{ fontSize: 30, fontWeight: 800 }}>{rc.net}</div>
+            </div>
+            {err && <div style={{ background: S.redSoft, color: S.red, borderRadius: 10, padding: "9px 12px", fontSize: 13.5, fontWeight: 600 }}>{err}</div>}
+            {signedDoc ? (
+              <>
+                {justSigned === id && <div style={{ fontSize: 20, fontWeight: 800, color: S.green }}>{tr("Hvala, {0}! ✓", r.w.name.split(" ")[0])}</div>}
+                <div style={{ background: S.greenSoft || "#E7F3EC", color: S.green, borderRadius: 12, padding: 14, fontWeight: 700 }}>
+                  {p?.approved ? tr("✓ Isplaćeno") : tr("Potpisano · čeka odobrenje")}
+                  <div style={{ fontWeight: 500, fontSize: 13, marginTop: 4 }}>{(signedDoc.note || "").split(" · ").slice(-1)[0]}</div>
+                </div>
+                <Btn kind="ghost" onClick={openSigned}>{tr("📄 Otvori potpisani PDF")}</Btn>
+                {justSigned === id && (
+                  <Btn onClick={() => (nx < 0 ? onClose() : go(nx))} style={{ minHeight: 56, fontSize: 16 }}>
+                    {nx < 0 ? tr("Svi su potpisali · Završi") : tr("Sljedeći: {0} ›", rowOf(list[nx])?.w.name || "")}
+                  </Btn>
+                )}
+              </>
+            ) : p?.approved ? (
+              <div style={{ background: "#F2F4F0", borderRadius: 12, padding: 14, fontSize: 13.5, color: S.sub }}>
+                {tr("Isplata je već odobrena (bez potpisa na ekranu). Radnik se i dalje može potpisati da potvrda ostane spremljena.")}
+                <Btn onClick={() => setSigning(true)} style={{ width: "100%", marginTop: 10 }} disabled={signing}>{tr("✍ Potpiši")}</Btn>
+              </div>
+            ) : !signing ? (
+              <Btn onClick={() => setSigning(true)} style={{ minHeight: 76, fontSize: 19 }}>{tr("✍ Potpiši")}</Btn>
+            ) : null}
+            {signing && (
+              <>
+                <div style={{ fontSize: 15 }}>{tr("Svojim potpisom potvrđujem da sam primio/la isplatu za {0} u iznosu", period)} <b>{rc.net}</b>.</div>
+                <InlineSignaturePad onChange={setSig} height={200} />
+                <div style={{ display: "flex", gap: 8 }}>
+                  <Btn kind="ghost" onClick={() => { setSigning(false); setSig(null); }} disabled={busy}>{tr("Odustani")}</Btn>
+                  <Btn onClick={confirm} disabled={!sig || busy} style={{ flex: 1, minHeight: 52 }}>{busy ? tr("Spremam…") : tr("Potvrdi potpis")}</Btn>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, padding: "8px 14px", paddingBottom: "calc(8px + env(safe-area-inset-bottom))", background: "#fff", borderTop: `1px solid ${S.line}` }}>
+        <Btn kind="ghost" onClick={() => go(idx - 1)} disabled={idx === 0 || signing || busy} style={{ minWidth: 80, fontSize: 22 }}>‹</Btn>
+        <span style={{ color: S.sub, fontWeight: 700 }}>{tr("{0} od {1}", Math.min(idx + 1, list.length), list.length)}</span>
+        <Btn kind="ghost" onClick={() => go(idx + 1)} disabled={idx >= list.length - 1 || signing || busy} style={{ minWidth: 80, fontSize: 22 }}>›</Btn>
+      </div>
+    </div>
+  );
+}
+
 function ReportTab({ data, api, admin, onOpenWorker }) {
   const [view, setView] = useState("month"); // month | year
   const [month, setMonth] = useState(workMonthDefault());
@@ -9284,6 +9486,7 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
   const [payStatusFilter, setPayStatusFilter] = useState("all"); // all | paid | pending | unpaid
   const [signatures, setSignatures] = useState({}); // workerId -> dataURL, samo za trenutnu sesiju (ne sprema se u bazu)
   const [sigTarget, setSigTarget] = useState(null); // { id, name } radnika koji trenutno potpisuje
+  const [digiIds, setDigiIds] = useState(null); // digitalni obračun: popis radnika (id) u trenutku otvaranja
   const [selected, setSelected] = useState(() => new Set());
   const [bulkBusy, setBulkBusy] = useState(false);
   const [mzdyBusy, setMzdyBusy] = useState(false);
@@ -9572,6 +9775,9 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
     const netK = round2(r.czk.net - (note && note.currency === "CZK" ? note.amount : 0));
     return { items, netE, netK, note, gc, netText: amtText(netE, netK, gc) };
   };
+
+  const receiptOf = (r) => { const bd = breakdownOf(r); return { net: bd.netText,
+    items: bd.items.map((it) => [it.label + (it.hint ? ` (${it.hint})` : ""), (it.sign ? it.sign + " " : "") + amtText(it.e, it.k, bd.gc)]) }; };
 
   /* PDF obračun za radnika */
   const payslipBody = (r, st) => {
@@ -9951,6 +10157,11 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
 
           {section === "radnici" && (
             <>
+              {view === "month" && displayRows.length > 0 && (
+                <Btn onClick={() => setDigiIds(displayRows.map((r) => r.w.id))} style={{ width: "100%", marginBottom: 10, minHeight: 52, fontSize: 16 }}>
+                  {tr("✍ Digitalni obračun ({0})", displayRows.length)}{objFilterName ? " · " + objFilterName : ""}
+                </Btn>
+              )}
               {view === "month" && (
                 <div style={{ display: "flex", gap: 8, marginBottom: 10, flexWrap: "wrap" }}>
                   {[["all", "Svi"], ["paid", "✓ Isplaćeno"], ["pending", "Predloženo"], ["unpaid", "Bez isplate"]].map(([id, label]) => (
@@ -10343,6 +10554,10 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
         </>
       )}
 
+      {digiIds && (
+        <DigitalPayroll ids={digiIds} allRows={rows} month={month} period={periodLabel} scopeLabel={objFilterName || api.t("allObjects")}
+          data={data} api={api} admin={admin} receiptOf={receiptOf} payslipHtml={(r) => payslipBody(r, api.settings)} onClose={() => setDigiIds(null)} />
+      )}
       {sigTarget && (
         <SignaturePad title={tr("Potpis — {0}", sigTarget.name)}
           onSave={(dataUrl) => { setSignatures((p) => ({ ...p, [sigTarget.id]: dataUrl })); setSigTarget(null); }}
