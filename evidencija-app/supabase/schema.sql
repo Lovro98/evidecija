@@ -986,3 +986,7 @@ create index if not exists office_salaries_worker_idx on public.office_salaries(
 alter table public.office_salaries enable row level security;
 create policy os_admin_all on public.office_salaries for all
   using ((select public.is_admin())) with check ((select public.is_admin()));
+
+-- Status plaćanja faktura (2026-11-05): rok, datum plaćanja i potvrda plaćanja (PDF u bucketu invoices, mapa payments/)
+alter table public.purchase_invoices add column if not exists due_date date, add column if not exists paid_date date, add column if not exists paid_file text default '';
+alter table public.object_invoices add column if not exists due_date date, add column if not exists paid_date date, add column if not exists paid_file text default '';

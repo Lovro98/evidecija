@@ -738,6 +738,11 @@ function parseInvoicePdf(lineItems) {
     || flatText.match(/(?:DUZP|zdaniteln\S*\s+plněn\S*|zdan\.\s*plněn\S*)\s*:?\s*(\d{1,2})\.\s*(\d{1,2})\.\s*(\d{4})/i);
   const duzp = duzpM ? `${duzpM[3]}-${duzpM[2].padStart(2, "0")}-${duzpM[1].padStart(2, "0")}` : "";
 
+  // rok plaćanja ("Datum splatnosti" / "Splatnost")
+  const dueRe = /(?:Datum\s+splatnosti|Splatnost)\s*:?\s*(\d{1,2})\.\s*(\d{1,2})\.\s*(\d{4})/i;
+  const dueM = fullText.match(dueRe) || flatText.match(dueRe);
+  const dueDate = dueM ? `${dueM[3]}-${dueM[2].padStart(2, "0")}-${dueM[1].padStart(2, "0")}` : "";
+
   let amount = 0, vatAmount = 0;
   // zbirni red "Sazba | Základ | DPH | Včetně DPH", npr. "21 % 613 060,00 Kč 128 742,60 Kč 741 802,60 Kč" —
   // NE oslanja se na to da je "Kč" ispravno pročitan (ponekad pdfjs razdvoji ili izgubi taj simbol),
@@ -781,7 +786,7 @@ function parseInvoicePdf(lineItems) {
     }
   }
 
-  return { number, issueDate, duzp, amount, vatAmount, period, customerName, currency: "CZK", rawText: flatText };
+  return { number, issueDate, duzp, dueDate, amount, vatAmount, period, customerName, currency: "CZK", rawText: flatText };
 }
 
 /* ================================================================== */
@@ -919,6 +924,7 @@ async function fetchAll(isAdmin) {
       hours: Number(i.hours) || 0, rate: Number(i.rate) || 0, amount: Number(i.amount) || 0,
       currency: i.currency === "CZK" ? "CZK" : "EUR", note: i.note || "",
       vatAmount: Number(i.vat_amount) || 0, vatCurrency: i.vat_currency === "CZK" ? "CZK" : "EUR", filePath: i.file_path || "",
+      dueDate: i.due_date || "", paidDate: i.paid_date || "", paidFile: i.paid_file || "",
     })),
     payrollNotes: payrollNotes.map((n) => ({
       id: n.id, workerId: n.worker_id, month: n.month, amount: Number(n.amount) || 0,
@@ -949,6 +955,7 @@ async function fetchAll(isAdmin) {
     purchaseInvoices: purchaseInvoices.map((p) => ({
       id: p.id, supplier: p.supplier || "", number: p.number || "", duzp: p.duzp, base: Number(p.base_amount) || 0,
       vat: Number(p.vat_amount) || 0, currency: p.currency === "EUR" ? "EUR" : "CZK", note: p.note || "", filePath: p.file_path || "",
+      dueDate: p.due_date || "", paidDate: p.paid_date || "", paidFile: p.paid_file || "",
     })),
     monthClose: monthClose.map((c) => ({ id: c.id, month: c.month, objectId: c.object_id || null, step: c.step, doneAt: c.done_at })),
     loginLog: loginLog.map((l) => ({ id: l.id, userName: l.user_name || "", at: l.at, userAgent: l.user_agent || "" })),
@@ -1426,7 +1433,7 @@ export default function App() {
         object_id: inv.objectId, number: inv.number, period: inv.period, issue_date: inv.issueDate, duzp: inv.duzp || null,
         hours: inv.hours || 0, rate: inv.rate || 0, amount: inv.amount, currency: inv.currency || "EUR", note: inv.note || "",
         vat_amount: inv.vatAmount || 0, vat_currency: inv.vatCurrency || "EUR", file_path: inv.filePath || "",
-        created_by: session.user.id,
+        due_date: inv.dueDate || null, created_by: session.user.id,
       })));
       if (error) throw error;
     }, `Uvezao ${invs.length} ${invs.length === 1 ? "fakturu" : "fakture"} iz PDF-a`),
@@ -1434,7 +1441,7 @@ export default function App() {
       object_id: inv.objectId, number: inv.number, period: inv.period, issue_date: inv.issueDate, duzp: inv.duzp || null,
       hours: inv.hours, rate: inv.rate, amount: inv.amount, currency: inv.currency, note: inv.note || "",
       vat_amount: inv.vatAmount || 0, vat_currency: inv.vatCurrency || inv.currency || "EUR", file_path: inv.filePath || "",
-      created_by: session.user.id,
+      due_date: inv.dueDate || null, created_by: session.user.id,
     }), `Generirao fakturu ${inv.number} za ${oName}: ${money(inv.amount, inv.currency)}${inv.vatAmount ? ` (PDV ${money(inv.vatAmount, inv.vatCurrency)})` : ""}`),
     delObjectInvoice: (inv, oName) => act(() => softDel("object_invoices", inv.id), `Obrisao fakturu ${inv.number} (${oName})`),
     setInvoiceFile: (inv, filePath, oName) => act(() => upd("object_invoices", inv.id, { file_path: filePath }),
@@ -1510,10 +1517,20 @@ export default function App() {
       `Zatvaranje ${month}: ${label || ""} — ${step === "done" ? "objekt" : step} ${on ? "✓" : "otvoreno ponovno"}`),
     addPurchaseInvoice: (f) => act(() => ins("purchase_invoices", {
       supplier: f.supplier, number: f.number, duzp: f.duzp, base_amount: f.base, vat_amount: f.vat, currency: f.currency || "CZK", note: f.note || "",
-      created_by: session.user.id,
+      due_date: f.dueDate || null, created_by: session.user.id,
     }), `Upisao primljenu fakturu: ${f.supplier} ${f.number} (DPH ${money(f.vat, f.currency)}, DUZP ${fmtDate(f.duzp)})`),
     setPurchaseInvoiceFile: (pi, filePath) => act(() => upd("purchase_invoices", pi.id, { file_path: filePath }),
       filePath ? `Dodao PDF uz primljenu fakturu ${pi.supplier} ${pi.number}` : `Uklonio PDF s primljene fakture ${pi.supplier} ${pi.number}`),
+    // status plaćanja — kind "in" = primljena (purchase_invoices), "out" = izdana (object_invoices)
+    setInvoicePaid: (kind, inv, paidDate, paidFile, label) => act(() => upd(kind === "in" ? "purchase_invoices" : "object_invoices", inv.id,
+      { paid_date: paidDate || todayISO(), ...(paidFile !== undefined ? { paid_file: paidFile } : {}) }),
+      `Označio plaćeno: ${label} (${fmtDate(paidDate || todayISO())})${paidFile ? " + potvrda plaćanja" : ""}`),
+    setInvoiceUnpaid: (kind, inv, label) => act(async () => {
+      if (inv.paidFile) await supabase.storage.from("invoices").remove([inv.paidFile]);
+      await upd(kind === "in" ? "purchase_invoices" : "object_invoices", inv.id, { paid_date: null, paid_file: "" });
+    }, `Vratio na neplaćeno: ${label}`),
+    setInvoiceDue: (kind, inv, dueDate, label) => act(() => upd(kind === "in" ? "purchase_invoices" : "object_invoices", inv.id, { due_date: dueDate || null }),
+      `Upisao rok plaćanja: ${label} → ${dueDate ? fmtDate(dueDate) : "bez roka"}`),
     delPurchaseInvoice: (pi) => act(() => softDel("purchase_invoices", pi.id),
       `Obrisao primljenu fakturu: ${pi.supplier} ${pi.number} (DPH ${money(pi.vat, pi.currency)})`),
     createEmployee: async (f) => {
@@ -1998,7 +2015,8 @@ function HomeTop({ data, admin, profile, goTab, openPanel, wide }) {
   const usedObjects = isNow ? new Set(activeWorkers.map((w) => w.objectId).filter(Boolean)).size : new Set(monthLogs.map((l) => l.objectId).filter(Boolean)).size;
   const warns = expiryWarnings(data.workers, data.settings?.expiry_warn_days, data.workerDocs);
   const pendingN = admin ? (data.payouts || []).filter((p) => !p.approved).length : 0;
-  const todo = warns.length + pendingN + (data.newCandidates || 0);
+  const overdueInv = admin ? overdueInvoices(data) : [];
+  const todo = warns.length + pendingN + (data.newCandidates || 0) + overdueInv.length;
   const urgent = warns.filter((w) => w.past).length;
   let profit = 0, rev = 0;
   if (admin) data.objects.forEach((o) => { const p = objMonthProfit(data, o, mk); profit += p.profitKc; rev += p.revKc; });
@@ -2064,6 +2082,12 @@ function HomeTop({ data, admin, profile, goTab, openPanel, wide }) {
           {tile(isNow ? tr("Aktivni radnici") : tr("Radilo radnika"), String(monthWorkers), `${tr("u")} ${usedObjects} ${tr("hotela")}`)}
           {tile(tr("Treba riješiti"), String(todo), urgent ? `${urgent} ${tr("hitno")}` : null, todo > 0)}
         </div>
+      )}
+      {overdueInv.length > 0 && (
+        <button onClick={() => openPanel("invoices")} className="c-in" style={{ width: "100%", textAlign: "left", marginTop: 12, background: S.red, color: "#fff", border: "none", borderRadius: 16, padding: "12px 14px", cursor: "pointer" }}>
+          <div style={{ fontWeight: 800, fontSize: 14.5 }}>⚠️ {tr("{0} faktura s prošlim rokom", overdueInv.length)}</div>
+          <div style={{ fontSize: 12.5, opacity: 0.9, marginTop: 2 }}>{overdueInv.slice(0, 3).map((r) => `${r.party} ${money(r.total, r.currency)}`).join(" · ")}{overdueInv.length > 3 ? " …" : ""}</div>
+        </button>
       )}
       <div style={{ fontSize: 15, fontWeight: 800, margin: "18px 2px 10px" }}>{tr("Brze radnje")}</div>
       <div style={{ display: "grid", gridTemplateColumns: `repeat(${admin ? 4 : 3}, minmax(0, 1fr))`, gap: 8 }}>
@@ -2778,7 +2802,7 @@ function CandidatesPanel({ data, api }) {
   );
 }
 const ADMIN_MENU = [
-  ["ai", "🤖", "AI asistent"], ["candidates", "🧑‍🍳", "Kandidati (prijave)"], ["approvals", "⏳", "Odobravanje isplata"], ["office", "👔", "Ured (zaposlenici i plaće)"], ["cash", "💵", "Gotovina kod koordinatora"], ["finance", "💼", "Financije (banka i porezi)"], ["unpaid", "💰", "Neisplaćeno (dugovi radnicima)"], ["vat", "🧾", "DPH"], ["users", "👥", "Korisnici i provizije"],
+  ["ai", "🤖", "AI asistent"], ["candidates", "🧑‍🍳", "Kandidati (prijave)"], ["approvals", "⏳", "Odobravanje isplata"], ["office", "👔", "Ured (zaposlenici i plaće)"], ["cash", "💵", "Gotovina kod koordinatora"], ["finance", "💼", "Financije (banka i porezi)"], ["unpaid", "💰", "Neisplaćeno (dugovi radnicima)"], ["invoices", "💳", "Fakture — plaćeno / neplaćeno"], ["vat", "🧾", "DPH"], ["users", "👥", "Korisnici i provizije"],
   ["firm", "🏢", "Podaci firme i postavke"], ["audit", "📜", "Povijest radnji"], ["logins", "🔐", "Prijave"],
   ["errors", "🐛", "Greške aplikacije"], ["trash", "🗑", "Koš (obrisano)"],
 ];
@@ -2799,6 +2823,7 @@ const markBadgeSeen = (data, id) => {
 };
 const adminBadge = (data, id) => {
   if (id === "candidates") return data.newCandidates || 0;
+  if (id === "invoices") return overdueInvoices(data).length;
   const items = badgeItems(data, id);
   if (!items) return 0;
   const seen = new Set(badgeSeen[id] || []);
@@ -4067,6 +4092,177 @@ function NightlyBackups() {
   );
 }
 
+/* ================================================================== */
+/*  FAKTURE — PLAĆENO / NEPLAĆENO                                      */
+/*  out = izdane (object_invoices), in = primljene (purchase_invoices) */
+/* ================================================================== */
+const invPayState = (inv) => {
+  if (inv.paidDate) return { paid: true, overdue: false, days: null };
+  if (!inv.dueDate) return { paid: false, overdue: false, days: null };
+  const days = daysUntil(inv.dueDate);
+  return { paid: false, overdue: days < 0, days };
+};
+const allInvoicesForPay = (data) => {
+  const objName = (id) => data.objects.find((o) => o.id === id)?.name || "Obrisan objekt";
+  const out = (data.objectInvoices || []).map((i) => ({ kind: "out", inv: i, party: objName(i.objectId), number: i.number,
+    date: i.duzp || i.issueDate, total: i.amount, currency: i.currency }));
+  const inn = (data.purchaseInvoices || []).map((p) => ({ kind: "in", inv: p, party: p.supplier, number: p.number,
+    date: p.duzp, total: round2((p.base || 0) + (p.vat || 0)), currency: p.currency }));
+  return [...out, ...inn];
+};
+const overdueInvoices = (data) => allInvoicesForPay(data).filter((r) => invPayState(r.inv).overdue);
+
+async function openStorageFile(path) {
+  const w = window.open("", "_blank");
+  const { data: s } = await supabase.storage.from("invoices").createSignedUrl(path, 300);
+  if (s?.signedUrl) { if (w) w.location.href = s.signedUrl; else window.location.href = s.signedUrl; }
+  else if (w) w.close();
+}
+
+function InvoicePayControl({ kind, inv, label, api }) {
+  const st = invPayState(inv);
+  const [open, setOpen] = useState(false);
+  const [date, setDate] = useState(todayISO());
+  const [file, setFile] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const [editDue, setEditDue] = useState(false);
+  const [due, setDue] = useState(inv.dueDate || "");
+  const fileRef = useRef(null);
+  const chip = (txt, color, bg) => <span style={{ display: "inline-block", fontSize: 11.5, fontWeight: 800, color, background: bg, borderRadius: 99, padding: "3px 9px", whiteSpace: "nowrap" }}>{txt}</span>;
+  const save = async () => {
+    setBusy(true); setErr("");
+    let path;
+    if (file) {
+      path = `payments/${kind}_${inv.id}_${Date.now()}_${file.name.replace(/[^\w.\-]+/g, "_")}`;
+      const { error } = await supabase.storage.from("invoices").upload(path, file);
+      if (error) { setErr(tr("Greška: ") + error.message); setBusy(false); return; }
+    }
+    const ok = await api.setInvoicePaid(kind, inv, date, path, label);
+    setBusy(false);
+    if (ok !== false) { setOpen(false); setFile(null); }
+  };
+  const undo = async () => {
+    if (await uiConfirm(tr("Vratiti {0} na neplaćeno?", label))) api.setInvoiceUnpaid(kind, inv, label);
+  };
+  const saveDue = async () => { await api.setInvoiceDue(kind, inv, due, label); setEditDue(false); };
+
+  if (st.paid) return (
+    <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+      {chip(`✓ ${tr("Plaćeno")} ${fmtDate(inv.paidDate)}`, S.green, S.greenSoft)}
+      {inv.paidFile && <button onClick={() => openStorageFile(inv.paidFile)} title={tr("Potvrda plaćanja")} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 14, padding: 2 }}>🧾</button>}
+      <button onClick={undo} title={tr("Vrati na neplaćeno")} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 12, color: S.sub, padding: 2 }}>↩</button>
+    </div>
+  );
+  return (
+    <div style={{ width: "100%" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+        {st.overdue ? chip(`⚠️ ${tr("Rok prošao")} ${fmtDate(inv.dueDate)} (${-st.days} ${-st.days === 1 ? tr("dan") : tr("dana")})`, "#fff", S.red)
+          : inv.dueDate ? chip(`${tr("Neplaćeno · rok")} ${fmtDate(inv.dueDate)}${st.days === 0 ? " · " + tr("danas") : st.days <= 3 ? ` · ${tr("za {0} d.", st.days)}` : ""}`, S.amber, S.amberSoft)
+          : chip(tr("Neplaćeno · bez roka"), S.sub, S.bg)}
+        <button onClick={() => setEditDue((v) => !v)} title={tr("Rok plaćanja")} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 12, color: S.sub, padding: 2 }}>📅</button>
+        <Btn small onClick={() => setOpen((v) => !v)}>{tr("✓ Plaćeno")}</Btn>
+      </div>
+      {editDue && (
+        <div style={{ display: "flex", gap: 6, alignItems: "center", marginTop: 6 }}>
+          <input type="date" value={due} onChange={(e) => setDue(e.target.value)} style={{ flex: "0 1 170px" }} />
+          <Btn small kind="ghost" onClick={saveDue}>{tr("Spremi rok")}</Btn>
+        </div>
+      )}
+      {open && (
+        <div style={{ background: S.greenSoft, borderRadius: 10, padding: 10, marginTop: 6 }}>
+          <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+            <label style={{ fontSize: 11.5, color: S.sub }}>{tr("Datum plaćanja")}
+              <input type="date" value={date} onChange={(e) => setDate(e.target.value)} style={{ display: "block" }} />
+            </label>
+            <input ref={fileRef} type="file" accept="application/pdf,image/*" onChange={(e) => setFile(e.target.files?.[0] || null)} style={{ display: "none" }} />
+            <Btn small kind="ghost" onClick={() => fileRef.current?.click()}>{file ? `📎 ${file.name.slice(0, 22)}` : tr("📎 Potvrda plaćanja (PDF)")}</Btn>
+          </div>
+          <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
+            <Btn small onClick={save} disabled={busy}>{busy ? tr("Spremam…") : tr("Spremi kao plaćeno")}</Btn>
+            <Btn small kind="ghost" onClick={() => setOpen(false)}>{tr("Odustani")}</Btn>
+          </div>
+          {err && <div style={{ color: S.red, fontSize: 12, marginTop: 6 }}>{err}</div>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function InvoicesPayPanel({ data, api }) {
+  const [filter, setFilter] = useState("unpaid"); // unpaid | overdue | paid | all
+  const [side, setSide] = useState("all"); // all | in | out
+  const rows = allInvoicesForPay(data);
+  const withSt = rows.map((r) => ({ ...r, st: invPayState(r.inv) }));
+  const shown = withSt
+    .filter((r) => side === "all" || r.kind === side)
+    .filter((r) => filter === "all" ? true : filter === "paid" ? r.st.paid : filter === "overdue" ? r.st.overdue : !r.st.paid)
+    .sort((a, b) => (filter === "paid"
+      ? (b.inv.paidDate || "").localeCompare(a.inv.paidDate || "")
+      : (Number(b.st.overdue) - Number(a.st.overdue)) || (a.inv.dueDate || "9999").localeCompare(b.inv.dueDate || "9999") || (b.date || "").localeCompare(a.date || "")));
+  const sumBy = (list) => { const t = {}; list.forEach((r) => { t[r.currency] = round2((t[r.currency] || 0) + r.total); }); return Object.entries(t).filter(([, v]) => v).map(([c, v]) => money(v, c)).join(" + ") || "0"; };
+  const unpaidOut = withSt.filter((r) => r.kind === "out" && !r.st.paid), unpaidIn = withSt.filter((r) => r.kind === "in" && !r.st.paid);
+  const overdueN = withSt.filter((r) => r.st.overdue).length;
+  const chipBtn = (val, cur, set, txt) => (
+    <button onClick={() => set(val)} style={{ border: `1px solid ${cur === val ? S.deep : S.line}`, background: cur === val ? S.deep : "#fff", color: cur === val ? "#fff" : S.ink,
+      borderRadius: 99, padding: "6px 12px", fontSize: 12.5, fontWeight: 700, cursor: "pointer" }}>{txt}</button>
+  );
+  return (
+    <Card style={{ marginTop: 8 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 10 }}>
+        <div style={{ background: S.blueSoft, borderRadius: 12, padding: 10 }}>
+          <div style={{ fontSize: 11.5, color: S.sub, fontWeight: 700 }}>{tr("Trebaju nam platiti (izdane)")}</div>
+          <div className="num" style={{ fontWeight: 800, fontSize: 15 }}>{sumBy(unpaidOut)}</div>
+          <div style={{ fontSize: 11.5, color: S.sub }}>{unpaidOut.length} {tr("faktura")}</div>
+        </div>
+        <div style={{ background: S.amberSoft, borderRadius: 12, padding: 10 }}>
+          <div style={{ fontSize: 11.5, color: S.sub, fontWeight: 700 }}>{tr("Mi trebamo platiti (primljene)")}</div>
+          <div className="num" style={{ fontWeight: 800, fontSize: 15 }}>{sumBy(unpaidIn)}</div>
+          <div style={{ fontSize: 11.5, color: S.sub }}>{unpaidIn.length} {tr("faktura")}</div>
+        </div>
+      </div>
+      {overdueN > 0 && (
+        <button onClick={() => setFilter("overdue")} style={{ width: "100%", textAlign: "left", background: S.red, color: "#fff", border: "none", borderRadius: 12, padding: "10px 12px", fontWeight: 800, fontSize: 13.5, marginBottom: 10, cursor: "pointer" }}>
+          ⚠️ {tr("{0} faktura s prošlim rokom — prikaži", overdueN)}
+        </button>
+      )}
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 6 }}>
+        {chipBtn("unpaid", filter, setFilter, tr("Neplaćene"))}
+        {chipBtn("overdue", filter, setFilter, tr("Prošao rok"))}
+        {chipBtn("paid", filter, setFilter, tr("Plaćene"))}
+        {chipBtn("all", filter, setFilter, tr("Sve"))}
+      </div>
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 10 }}>
+        {chipBtn("all", side, setSide, tr("Izdane i primljene"))}
+        {chipBtn("out", side, setSide, tr("Izdane"))}
+        {chipBtn("in", side, setSide, tr("Primljene"))}
+      </div>
+      {shown.length === 0 && <div style={{ color: S.sub, fontSize: 13 }}>{tr("Nema faktura za ovaj prikaz.")}</div>}
+      {shown.map((r) => {
+        const label = `${r.party} ${r.number}`;
+        return (
+          <div key={r.kind + r.inv.id} style={{ padding: "9px 0", borderBottom: `1px solid ${S.line}`, borderLeft: r.st.overdue ? `4px solid ${S.red}` : "4px solid transparent", paddingLeft: 8 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontWeight: 700, fontSize: 13.5, color: r.st.overdue ? S.red : S.ink }}>{r.party}</div>
+                <div style={{ fontSize: 11.5, color: S.sub }}>{r.kind === "out" ? tr("Izdana") : tr("Primljena")} · {r.number || "—"} · {fmtDate(r.date)}</div>
+              </div>
+              <div style={{ display: "flex", alignItems: "flex-start", gap: 4 }}>
+                <b className="num" style={{ fontSize: 13.5, whiteSpace: "nowrap", color: r.st.overdue ? S.red : S.ink }}>{money(r.total, r.currency)}</b>
+                {r.inv.filePath && <button onClick={() => openStorageFile(r.inv.filePath)} title={tr("Otvori PDF")} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 14, padding: 0 }}>📄</button>}
+              </div>
+            </div>
+            <div style={{ marginTop: 6 }}><InvoicePayControl key={r.inv.paidDate + r.inv.dueDate} kind={r.kind} inv={r.inv} label={label} api={api} /></div>
+          </div>
+        );
+      })}
+      <div style={{ fontSize: 11.5, color: S.sub, marginTop: 10 }}>
+        {tr("Rok i status plaćanja vidiš i u DPH i kod svakog objekta. Fakture s prošlim rokom su crvene i stižu ti kao obavijest na mobitel u 9:52 i 15:00.")}
+      </div>
+    </Card>
+  );
+}
+
 function AdminPanels({ data, api, panel, setPanel, onOpenWorker, onOpenProfile }) {
   const [firm, setFirm] = useState({ company_name: "", address: "", oib: "", iban: "", czk_rate: "25", czk_rate_auto: true, weekend_pct: "0", holiday_pct: "0", expiry_warn_days: "30", payday_day: "5", payday_reminder_days: "3" });
   const [auditQ, setAuditQ] = useState("");
@@ -4075,7 +4271,7 @@ function AdminPanels({ data, api, panel, setPanel, onOpenWorker, onOpenProfile }
   const [apprSel, setApprSel] = useState(() => new Set());
   const [apprBusy, setApprBusy] = useState(false);
   const [vatMonth, setVatMonth] = useState(prevMonthKey(curMonth()));
-  const [piForm, setPiForm] = useState({ supplier: "", number: "", duzp: todayISO(), base: "", vat: "", currency: "CZK" });
+  const [piForm, setPiForm] = useState({ supplier: "", number: "", duzp: todayISO(), dueDate: "", base: "", vat: "", currency: "CZK" });
   const [packBusy, setPackBusy] = useState(""); // "" | "zip" | "print"
   const [packMsg, setPackMsg] = useState("");
   const piFileRef = useRef(null);
@@ -4176,6 +4372,7 @@ function AdminPanels({ data, api, panel, setPanel, onOpenWorker, onOpenProfile }
         </Card>
       )}
 
+      {panel === "invoices" && <InvoicesPayPanel data={data} api={api} />}
       {panel === "unpaid" && <UnpaidPanel data={data} api={api} onOpenWorker={onOpenWorker} />}
       {panel === "candidates" && <CandidatesPanel data={data} api={api} />}
       {panel === "ai" && <AiAssistantPanel data={data} />}
@@ -4283,7 +4480,7 @@ function AdminPanels({ data, api, panel, setPanel, onOpenWorker, onOpenProfile }
           const base = round2(parseNum(piForm.base) || 0), vat = round2(parseNum(piForm.vat) || 0);
           if (!piForm.supplier.trim() || !piForm.duzp || !(vat > 0)) return;
           const ok = await api.addPurchaseInvoice({ ...piForm, supplier: piForm.supplier.trim(), number: piForm.number.trim(), base, vat });
-          if (ok) setPiForm({ supplier: "", number: "", duzp: piForm.duzp, base: "", vat: "", currency: piForm.currency });
+          if (ok) setPiForm({ supplier: "", number: "", duzp: piForm.duzp, dueDate: "", base: "", vat: "", currency: piForm.currency });
         };
         const row = { display: "flex", justifyContent: "space-between", gap: 8, padding: "5px 0", borderBottom: `1px solid ${S.line}`, fontSize: 13 };
         const company = data.settings?.company_name || "Molnar Rose agency & floristry s.r.o.";
@@ -4367,15 +4564,16 @@ function AdminPanels({ data, api, panel, setPanel, onOpenWorker, onOpenProfile }
             {outSorted.length === 0 ? (
               <div style={{ color: S.sub, fontSize: 13 }}>{tr("Nema izdanih faktura za ovo razdoblje. Uvezi PDF-ove iz Vyfakturuja u kartici Objekti → \"📥 Uvoz faktura\".")}</div>
             ) : outSorted.map((i) => (
-              <div key={i.id} style={row}>
+              <div key={i.id} style={{ ...row, flexWrap: "wrap" }}>
                 <span>{objName(i.objectId)} · {i.number}<br /><span style={{ fontSize: 11.5, color: S.sub }}>{i.duzp ? "DUZP " + fmtDate(i.duzp) : "izdano " + fmtDate(i.issueDate)} {tr("· po")}{" "}{invoiceTaxBasis(i)}</span></span>
                 <span className="num" style={{ textAlign: "right" }}>{money(i.amount, i.currency)}<br /><b style={{ color: S.amber }}>{tr("DPH")}{" "}{money(i.vatAmount || 0, i.vatCurrency)}</b></span>
+                <div style={{ flexBasis: "100%" }}><InvoicePayControl key={i.paidDate + i.dueDate} kind="out" inv={i} label={`${objName(i.objectId)} ${i.number}`} api={api} /></div>
               </div>
             ))}
 
             <div style={{ fontWeight: 700, fontSize: 13.5, margin: "12px 0 4px" }}>{tr("Primljene fakture s DPH-om — odbitak (")}{v.inn.length})</div>
             {v.inn.map((pi) => (
-              <div key={pi.id} style={row}>
+              <div key={pi.id} style={{ ...row, flexWrap: "wrap" }}>
                 <span>{pi.supplier}{pi.number ? " · " + pi.number : ""}<br /><span style={{ fontSize: 11.5, color: S.sub }}>{tr("DUZP")}{" "}{fmtDate(pi.duzp)}{pi.base ? " · základ " + money(pi.base, pi.currency) : ""}</span></span>
                 <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
                   <b className="num" style={{ color: S.green }}>{tr("DPH")}{" "}{money(pi.vat, pi.currency)}</b>
@@ -4384,6 +4582,7 @@ function AdminPanels({ data, api, panel, setPanel, onOpenWorker, onOpenProfile }
                     : <button onClick={() => pickPiFile(pi)} disabled={piFileBusy === pi.id} title={tr("Dodaj PDF fakture")} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 15, opacity: piFileBusy === pi.id ? 0.4 : 1 }}>📎</button>}
                   <button onClick={async () => (await uiConfirm(tr("Obrisati fakturu {0} {1}?", pi.supplier, pi.number))) && api.delPurchaseInvoice(pi)} style={{ background: "none", border: "none", color: S.red, cursor: "pointer", fontSize: 15 }}>✕</button>
                 </span>
+                <div style={{ flexBasis: "100%" }}><InvoicePayControl key={pi.paidDate + pi.dueDate} kind="in" inv={pi} label={`${pi.supplier} ${pi.number}`} api={api} /></div>
               </div>
             ))}
             <div style={{ background: S.bg, borderRadius: 10, padding: 10, marginTop: 8 }}>
@@ -4393,6 +4592,9 @@ function AdminPanels({ data, api, panel, setPanel, onOpenWorker, onOpenProfile }
                 <input value={piForm.number} onChange={(e) => setPiForm({ ...piForm, number: e.target.value })} placeholder={tr("broj fakture")} style={{ flex: "1 1 100px" }} />
                 <label style={{ flex: "1 1 130px", fontSize: 11, color: S.sub }}>{tr("DUZP")}
                   <input type="date" value={piForm.duzp} onChange={(e) => setPiForm({ ...piForm, duzp: e.target.value })} />
+                </label>
+                <label style={{ flex: "1 1 130px", fontSize: 11, color: S.sub }}>{tr("Rok plaćanja")}
+                  <input type="date" value={piForm.dueDate} onChange={(e) => setPiForm({ ...piForm, dueDate: e.target.value })} />
                 </label>
               </div>
               <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
@@ -5959,7 +6161,7 @@ function ObjectsTab({ data, api, onOpenObject }) {
       const issueDate = r.parsed.issueDate || todayISO();
       const period = r.parsed.period || issueDate.slice(0, 7);
       const number = (r.parsed.number || "").trim() || `UVOZ-${object.name.slice(0, 3).toUpperCase()}-${period}`;
-      invs.push({ objectId: object.id, number, period, issueDate, duzp: r.parsed.duzp || null, hours: 0, rate: 0, amount, currency: "CZK", note: "Uvezeno iz PDF-a", vatAmount, vatCurrency: "CZK", filePath });
+      invs.push({ objectId: object.id, number, period, issueDate, duzp: r.parsed.duzp || null, dueDate: r.parsed.dueDate || null, hours: 0, rate: 0, amount, currency: "CZK", note: "Uvezeno iz PDF-a", vatAmount, vatCurrency: "CZK", filePath });
       if (r.remember && r.parsed.customerName && object.invoiceCustomerName !== r.parsed.customerName) {
         rememberPairs.push({ object, name: r.parsed.customerName });
       }
@@ -8129,6 +8331,7 @@ function ObjectDetail({ object, data, api, onBack, onOpenWorker }) {
                     </Btn>
                   )}
                   <button onClick={() => api.delObjectInvoice(inv, object.name)} style={{ background: "none", border: "none", color: S.red, fontSize: 16, cursor: "pointer", padding: 4 }}>✕</button>
+                  <div style={{ flexBasis: "100%" }}><InvoicePayControl key={inv.paidDate + inv.dueDate} kind="out" inv={inv} label={`${object.name} ${inv.number}`} api={api} /></div>
                 </div>
               ))}
             </div>
