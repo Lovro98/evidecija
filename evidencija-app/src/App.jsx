@@ -713,17 +713,33 @@ function parseInvoicePdf(lineItems) {
 /* ================================================================== */
 /*  UČITAVANJE PODATAKA                                                */
 /* ================================================================== */
+// Supabase vraća najviše 1000 redaka po upitu — veće tablice učitavaju se po stranicama.
+// make() mora svaki put vratiti NOVI upit (s postojanim redoslijedom, npr. .order("id")).
+const PAGE = 1000;
+// tablice čije promjene stižu uživo (supabase_realtime publikacija)
+const REALTIME_TABLES = ["work_logs", "payments", "workers", "objects", "payouts", "worker_documents", "reminders", "brigade_costs", "assignments", "rate_changes"];
+async function paged(make) {
+  const out = [];
+  for (let from = 0; ; from += PAGE) {
+    const { data, error } = await make().range(from, from + PAGE - 1);
+    if (error) return { data: null, error };
+    out.push(...(data || []));
+    if (!data || data.length < PAGE) break;
+  }
+  return { data: out, error: null };
+}
+
 async function fetchAll(isAdmin) {
   const live = (q) => q.is("deleted_at", null);
   const [workers, objects, logs, payments, assignments, rateChanges, profiles, payouts] = await Promise.all([
-    live(supabase.from("workers").select("*")).order("name"),
-    live(supabase.from("objects").select("*")).order("name"),
-    live(supabase.from("work_logs").select("*")),
-    live(supabase.from("payments").select("*")),
-    live(supabase.from("assignments").select("*")),
-    live(supabase.from("rate_changes").select("*")),
-    supabase.from("profiles").select("*"),
-    live(supabase.from("payouts").select("*")),
+    paged(() => live(supabase.from("workers").select("*")).order("name").order("id")),
+    paged(() => live(supabase.from("objects").select("*")).order("name").order("id")),
+    paged(() => live(supabase.from("work_logs").select("*")).order("id")),
+    paged(() => live(supabase.from("payments").select("*")).order("id")),
+    paged(() => live(supabase.from("assignments").select("*")).order("id")),
+    paged(() => live(supabase.from("rate_changes").select("*")).order("id")),
+    paged(() => supabase.from("profiles").select("*").order("id")),
+    paged(() => live(supabase.from("payouts").select("*")).order("id")),
   ]);
   const err = [workers, objects, logs, payments, assignments, rateChanges, profiles, payouts].find((r) => r.error);
   if (err) throw err.error;
@@ -744,14 +760,14 @@ async function fetchAll(isAdmin) {
   // dokumenti radnika s vrstom i datumom isteka (RLS: vidi dokumente radnika koje smije vidjeti)
   let workerDocs = [];
   {
-    const wd = await live(supabase.from("worker_documents").select("*"));
+    const wd = await paged(() => live(supabase.from("worker_documents").select("*")).order("id"));
     if (!wd.error) workerDocs = (wd.data || []).map((d) => ({
       id: d.id, workerId: d.worker_id, type: d.doc_type || "ostalo", validUntil: d.valid_until || "",
       filePath: d.file_path || "", note: d.note || "", createdAt: d.created_at,
     }));
   }
   if (isAdmin) {
-    const wb = await supabase.from("worker_bank").select("worker_id, bank_account");
+    const wb = await paged(() => supabase.from("worker_bank").select("worker_id, bank_account").order("worker_id"));
     if (!wb.error) (wb.data || []).forEach((r) => { bankMap[r.worker_id] = r.bank_account || ""; });
     const [b, a, tw, tl, tp, om, ip, st, oi, pn, pb, rm, ll, el, cr, cp, bg, pi, mc, ca] = await Promise.all([
       supabase.from("object_billing").select("*"),
@@ -760,20 +776,20 @@ async function fetchAll(isAdmin) {
       supabase.from("work_logs").select("*").not("deleted_at", "is", null).order("deleted_at", { ascending: false }).limit(50),
       supabase.from("payments").select("*").not("deleted_at", "is", null).order("deleted_at", { ascending: false }).limit(50),
       supabase.from("object_members").select("*"),
-      live(supabase.from("invoice_payments").select("*")),
+      paged(() => live(supabase.from("invoice_payments").select("*")).order("id")),
       supabase.from("settings").select("*").eq("id", 1).maybeSingle(),
-      live(supabase.from("object_invoices").select("*")).order("issue_date", { ascending: false }),
-      live(supabase.from("payroll_notes").select("*")),
+      paged(() => live(supabase.from("object_invoices").select("*")).order("issue_date", { ascending: false }).order("id")),
+      paged(() => live(supabase.from("payroll_notes").select("*")).order("id")),
       supabase.from("position_billing").select("*"),
-      live(supabase.from("reminders").select("*")),
+      paged(() => live(supabase.from("reminders").select("*")).order("id")),
       supabase.from("login_log").select("*").order("at", { ascending: false }).limit(80),
       supabase.from("error_log").select("*").order("at", { ascending: false }).limit(50),
       supabase.from("commission_rates").select("*"),
-      live(supabase.from("commission_payouts").select("*")),
-      live(supabase.from("brigade_costs").select("*")),
-      live(supabase.from("purchase_invoices").select("*")).order("duzp", { ascending: false }),
+      paged(() => live(supabase.from("commission_payouts").select("*")).order("id")),
+      paged(() => live(supabase.from("brigade_costs").select("*")).order("id")),
+      paged(() => live(supabase.from("purchase_invoices").select("*")).order("duzp", { ascending: false }).order("id")),
       supabase.from("month_close").select("*"),
-      live(supabase.from("cash_advances").select("*")),
+      paged(() => live(supabase.from("cash_advances").select("*")).order("id")),
     ]);
     billing = b.data || []; audit = a.data || []; members = om.data || [];
     invoicePayments = ip.data || []; settings = st.data || {}; objectInvoices = oi.data || []; payrollNotes = pn.data || [];
@@ -891,12 +907,41 @@ export default function App() {
     return () => sub.subscription.unsubscribe();
   }, []);
 
+  // osvježavanje: ako je jedno već u tijeku, ne pokreće se paralelno drugo — nakon njega ide još jedno (zadnje stanje)
+  const reloadRun = useRef(null);
+  const reloadAgain = useRef(false);
+  const lastOwnWrite = useRef(0);
   const reload = useCallback(async (prof) => {
     const p = prof || profile;
     if (!p) return;
-    try { setData(await fetchAll(p.role === "admin")); setErr(""); }
-    catch (e) { setErr(tr("Greška pri učitavanju: ") + (e.message || e)); }
+    if (reloadRun.current) { reloadAgain.current = true; return reloadRun.current; }
+    const run = (async () => {
+      do {
+        reloadAgain.current = false;
+        try { setData(await fetchAll(p.role === "admin")); setErr(""); }
+        catch (e) { setErr(tr("Greška pri učitavanju: ") + (e.message || e)); }
+      } while (reloadAgain.current);
+    })();
+    reloadRun.current = run;
+    try { await run; } finally { reloadRun.current = null; }
   }, [profile]);
+
+  // promjene uživo: kad netko drugi upiše sate, isplatu, radnika… aplikacija se tiho osvježi
+  useEffect(() => {
+    if (!session?.user?.id || !profile) return;
+    let timer = null;
+    const ch = supabase.channel("evidencija-live");
+    REALTIME_TABLES.forEach((table) => ch.on("postgres_changes", { event: "*", schema: "public", table }, () => {
+      if (Date.now() - lastOwnWrite.current < 3000) return; // vlastito spremanje već osvježava
+      clearTimeout(timer);
+      timer = setTimeout(() => reload(), 1200);
+    }));
+    ch.subscribe();
+    // povratak u aplikaciju nakon što je bila u pozadini → osvježi
+    const onVis = () => { if (document.visibilityState === "visible") { clearTimeout(timer); timer = setTimeout(() => reload(), 300); } };
+    document.addEventListener("visibilitychange", onVis);
+    return () => { clearTimeout(timer); document.removeEventListener("visibilitychange", onVis); supabase.removeChannel(ch); };
+  }, [session?.user?.id, profile, reload]);
 
   const queuePush = (type, payload) => {
     const q = readOfflineQueue();
@@ -1004,7 +1049,9 @@ export default function App() {
     try {
       await fn();
       if (auditText) await supabase.from("audit_log").insert({ user_id: session.user.id, user_name: profile?.name || "", action: auditText });
+      lastOwnWrite.current = Date.now();
       await reload();
+      lastOwnWrite.current = Date.now();
       setErr("");
       if (auditText) setToast(tr("Spremljeno"));
       return true;
@@ -1128,8 +1175,8 @@ export default function App() {
       try { guardPaid(l.workerId, l.date); } catch (e) { setErr(tr("Greška: ") + e.message); return false; }
       if (!l.monthly) {
         const sameDay = data.logs.filter((x) => x.workerId === l.workerId && x.date === l.date && !x.monthly);
-        if (sameDay.length && !window.confirm(tr("{0} već ima upisano {1} za {2}.\n\nUpisati još jedan unos za isti dan?", wName, fmtH(round2(sameDay.reduce((s, x) => s + x.hours, 0))), fmtDate(l.date)))) return false;
-        if (isDayHoursSuspicious(l.hours) && !window.confirm(tr("{0} za jedan dan je neobično puno.\n\nAko je ovo zbroj za cijeli mjesec, upiši ga u načinu \"Mjesečno\". Svejedno spremiti kao jedan dan?", fmtH(l.hours)))) return false;
+        if (sameDay.length && !(await uiConfirm(tr("{0} već ima upisano {1} za {2}.\n\nUpisati još jedan unos za isti dan?", wName, fmtH(round2(sameDay.reduce((s, x) => s + x.hours, 0))), fmtDate(l.date))))) return false;
+        if (isDayHoursSuspicious(l.hours) && !(await uiConfirm(tr("{0} za jedan dan je neobično puno.\n\nAko je ovo zbroj za cijeli mjesec, upiši ga u načinu \"Mjesečno\". Svejedno spremiti kao jedan dan?", fmtH(l.hours))))) return false;
       }
       const row = { worker_id: l.workerId, object_id: l.objectId || null, work_date: l.date,
         from_t: l.from, to_t: l.to, hours: l.hours, monthly: !!l.monthly, note: l.note || "", created_by: session.user.id };
@@ -1390,6 +1437,7 @@ export default function App() {
   return (
     <div style={{ minHeight: "100vh", background: S.bg, color: S.ink, fontFamily: APP_FONT, paddingBottom: wide ? 24 : 96, paddingLeft: wide ? 88 : 0 }}>
       <style>{APP_CSS}</style>
+      <DialogHost />
       {wide && <SideRail tab={navTab} setTab={goTab} t={t} moreBadge={moreBadge} onHome={() => goTab("danas")} />}
 
       <Header profile={profile} admin={admin} onLogout={() => supabase.auth.signOut()} lang={lang} setLang={setLang} t={t} data={data} wide={wide}
@@ -1915,6 +1963,46 @@ function Fab({ open, setOpen, admin, goTab, openPanel, wide }) {
   );
 }
 
+/* ---------- PROZORI U STILU APLIKACIJE (umjesto alert/confirm preglednika) ---------- */
+let dialogPush = null;
+function uiAlert(msg) {
+  return new Promise((res) => (dialogPush ? dialogPush({ kind: "alert", msg: String(msg), res }) : (window.alert(msg), res())));
+}
+function uiConfirm(msg) {
+  return new Promise((res) => (dialogPush ? dialogPush({ kind: "confirm", msg: String(msg), res }) : res(window.confirm(msg))));
+}
+function DialogHost() {
+  const [queue, setQueue] = useState([]);
+  useEffect(() => { dialogPush = (d) => setQueue((q) => [...q, d]); return () => { dialogPush = null; }; }, []);
+  const d = queue[0];
+  const okRef = useRef(null);
+  useEffect(() => { if (d) okRef.current?.focus(); }, [d]);
+  if (!d) return null;
+  const done = (v) => { d.res(d.kind === "confirm" ? v : undefined); setQueue((q) => q.slice(1)); };
+  const danger = d.kind === "confirm" && /^(trajno )?obrisati|^obriši/i.test(d.msg.trim());
+  return (
+    <div onClick={() => done(false)} style={{ position: "fixed", inset: 0, background: "rgba(10,20,15,.45)", zIndex: 100, display: "flex", alignItems: "flex-end", justifyContent: "center", padding: 12 }}>
+      <div className="sheet" role="dialog" aria-modal="true" onClick={(e) => e.stopPropagation()}
+        onKeyDown={(e) => { if (e.key === "Escape") done(false); }}
+        style={{ width: "100%", maxWidth: 420, background: "#fff", borderRadius: 22, padding: 18, marginBottom: "env(safe-area-inset-bottom)", boxShadow: "0 20px 50px rgba(0,0,0,.25)" }}>
+        <div style={{ display: "flex", gap: 12, alignItems: "flex-start" }}>
+          <span style={{ width: 40, height: 40, borderRadius: 12, flex: "0 0 auto", display: "flex", alignItems: "center", justifyContent: "center",
+            background: danger ? "#FBEDEA" : d.kind === "confirm" ? S.amberSoft : S.greenSoft, color: danger ? "#A3412F" : d.kind === "confirm" ? "#8A4B0F" : S.green }}>
+            <Ico name={danger ? "trash" : d.kind === "confirm" ? "alert" : "check"} size={20} />
+          </span>
+          <div style={{ fontSize: 15, lineHeight: 1.45, whiteSpace: "pre-line", color: S.ink, paddingTop: 8, minWidth: 0, overflowWrap: "anywhere" }}>{d.msg}</div>
+        </div>
+        <div style={{ display: "flex", gap: 8, marginTop: 16 }}>
+          {d.kind === "confirm" && <button onClick={() => done(false)} style={{ flex: 1, minHeight: 48, borderRadius: 14, border: `1px solid ${S.line}`, background: "#fff", color: S.ink, fontWeight: 800, fontSize: 15, cursor: "pointer" }}>{tr("Odustani")}</button>}
+          <button ref={okRef} onClick={() => done(true)} style={{ flex: 1, minHeight: 48, borderRadius: 14, border: "none", background: danger ? "#A3412F" : S.green, color: "#fff", fontWeight: 800, fontSize: 15, cursor: "pointer" }}>
+            {d.kind === "alert" ? tr("U redu") : danger ? tr("Obriši") : tr("Da, nastavi")}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function Card({ children, style, onClick }) {
   return <div className="c-in" onClick={onClick} style={{ background: S.card, border: "1px solid #ECEEE8", borderRadius: 18, padding: 14, marginBottom: 12, boxShadow: "0 1px 2px rgba(11,61,46,.04)", ...style }}>{children}</div>;
 }
@@ -2175,7 +2263,7 @@ function exportAllData(data) {
         rows: (data.positionBilling || []).map((pb) => ({ obj: objName(pb.objectId), pos: pb.position,
           mode: pb.mode === "markup" ? "satnica radnika + dodatak" : "fiksna cijena", amount: pb.mode === "markup" ? pb.markup : pb.rate, cur: cur(pb.currency) })) },
     ],
-  }).catch((e) => alert("Izvoz nije uspio: " + (e.message || e)));
+  }).catch((e) => uiAlert("Izvoz nije uspio: " + (e.message || e)));
 }
 
 /* ================================================================== */
@@ -2238,7 +2326,7 @@ function CandidatesPanel({ data, api }) {
   const formUrl = `${window.location.origin}/robota`;
 
   const load = useCallback(async () => {
-    const { data: d, error } = await supabase.from("candidates").select("*").order("created_at", { ascending: false }).limit(1000);
+    const { data: d, error } = await paged(() => supabase.from("candidates").select("*").order("created_at", { ascending: false }).order("id"));
     if (error) { setLoadErr(error.message); return; }
     setLoadErr(""); setRows(d || []);
     const { data: a } = await supabase.from("ad_texts").select("*").order("sort").order("created_at");
@@ -2270,7 +2358,7 @@ function CandidatesPanel({ data, api }) {
   const setStatus = (c, status) => update(c, { status, status_changed_at: new Date().toISOString() },
     `Kandidat ${c.full_name}: status → ${CAND_STATUS.find((s) => s.id === status)?.label || status}`);
   const remove = async (c) => {
-    if (!window.confirm(tr("Trajno obrisati prijavu ovog kandidata?"))) return;
+    if (!(await uiConfirm(tr("Trajno obrisati prijavu ovog kandidata?")))) return;
     const ok = await api.run(async () => {
       const { error } = await supabase.from("candidates").delete().eq("id", c.id);
       if (error) throw error;
@@ -2279,7 +2367,7 @@ function CandidatesPanel({ data, api }) {
   };
   // kandidat počinje raditi → novi radnik (ime, telefon, hotel, pozicija) i veza na prijavu
   const toWorker = async (c) => {
-    if (!window.confirm(tr("Dodati kandidata kao radnika u karticu Radnici?"))) return;
+    if (!(await uiConfirm(tr("Dodati kandidata kao radnika u karticu Radnici?")))) return;
     const obj = data.objects.find((o) => o.id === c.object_id);
     let workerId = null;
     const ok = await api.run(async () => {
@@ -2337,7 +2425,7 @@ function CandidatesPanel({ data, api }) {
     if (ok) { setAdEdit(null); await load(); setAdId(newId); }
   };
   const deleteAd = async () => {
-    const e = adEdit; if (!e?.id || !window.confirm(tr("Obrisati ovaj tekst oglasa?"))) return;
+    const e = adEdit; if (!e?.id || !(await uiConfirm(tr("Obrisati ovaj tekst oglasa?")))) return;
     const ok = await api.run(async () => {
       const { error } = await supabase.from("ad_texts").delete().eq("id", e.id);
       if (error) throw error;
@@ -2579,8 +2667,8 @@ function UnpaidPanel({ data, api, onOpenWorker }) {
 
   const load = useCallback(async () => {
     const [b, p] = await Promise.all([
-      supabase.from("unpaid_wages_balance").select("*").order("month"),
-      supabase.from("unpaid_wage_payments").select("*").is("deleted_at", null).order("pay_date", { ascending: true, nullsFirst: true }),
+      paged(() => supabase.from("unpaid_wages_balance").select("*").order("month").order("id")),
+      paged(() => supabase.from("unpaid_wage_payments").select("*").is("deleted_at", null).order("pay_date", { ascending: true, nullsFirst: true }).order("id")),
     ]);
     if (b.error || p.error) { setLoadErr((b.error || p.error).message); return; }
     setLoadErr("");
@@ -2635,14 +2723,14 @@ function UnpaidPanel({ data, api, onOpenWorker }) {
   const savePayment = async () => {
     const g = groups[payForm.key];
     const amount = parseNum(payForm.amount);
-    if (!(amount > 0)) { alert(tr("Upiši iznos isplate.")); return; }
+    if (!(amount > 0)) { uiAlert(tr("Upiši iznos isplate.")); return; }
     let parts = [];
     if (payForm.wageId) {
       const r = g.list.find((x) => x.id === payForm.wageId);
-      if (amount > r.remaining + OPEN && !confirm(tr("Iznos je veći od ostatka za {0} ({1}). Svejedno spremiti?", monthLabel(r.month), czk(r.remaining)))) return;
+      if (amount > r.remaining + OPEN && !(await uiConfirm(tr("Iznos je veći od ostatka za {0} ({1}). Svejedno spremiti?", monthLabel(r.month), czk(r.remaining))))) return;
       parts = [{ id: r.id, amount }];
     } else {
-      if (amount > g.remaining + OPEN) { alert(tr("Iznos je veći od ukupnog duga ({0}).", czk(g.remaining))); return; }
+      if (amount > g.remaining + OPEN) { uiAlert(tr("Iznos je veći od ukupnog duga ({0}).", czk(g.remaining))); return; }
       let left = amount;
       for (const r of g.list.filter(isOpen).sort((a, b) => a.month.localeCompare(b.month))) {
         if (left <= 0) break; const a = Math.min(left, r.remaining); parts.push({ id: r.id, amount: round2(a) }); left = round2(left - a);
@@ -2657,7 +2745,7 @@ function UnpaidPanel({ data, api, onOpenWorker }) {
     if (ok) { setPayForm(null); load(); }
   };
   const delPayment = async (p, name) => {
-    if (!confirm(tr("Obrisati isplatu {0}?", czk(p.amount)))) return;
+    if (!(await uiConfirm(tr("Obrisati isplatu {0}?", czk(p.amount))))) return;
     const ok = await api.run(async () => {
       const { error } = await supabase.from("unpaid_wage_payments").update({ deleted_at: new Date().toISOString() }).eq("id", p.id);
       if (error) throw error;
@@ -2665,7 +2753,7 @@ function UnpaidPanel({ data, api, onOpenWorker }) {
     if (ok) load();
   };
   const delWage = async (r) => {
-    if (!confirm(tr("Obrisati kovertu {0} {1} ({2})?", r.worker_name, monthLabel(r.month), czk(r.amount)))) return;
+    if (!(await uiConfirm(tr("Obrisati kovertu {0} {1} ({2})?", r.worker_name, monthLabel(r.month), czk(r.amount))))) return;
     const ok = await api.run(async () => {
       const { error } = await supabase.from("unpaid_wages").update({ deleted_at: new Date().toISOString() }).eq("id", r.id);
       if (error) throw error;
@@ -2676,7 +2764,7 @@ function UnpaidPanel({ data, api, onOpenWorker }) {
   const addWage = async () => {
     const w = data.workers.find((x) => x.id === nf.workerId);
     const amount = parseNum(nf.amount);
-    if (!w || !/^\d{4}-\d{2}$/.test(nf.month) || !(amount > 0)) { alert(tr("Odaberi radnika, mjesec i iznos.")); return; }
+    if (!w || !/^\d{4}-\d{2}$/.test(nf.month) || !(amount > 0)) { uiAlert(tr("Odaberi radnika, mjesec i iznos.")); return; }
     const objectId = nf.objectId || w.objectId || null;
     const ok = await api.run(async () => {
       const { error } = await supabase.from("unpaid_wages").insert({
@@ -2689,7 +2777,7 @@ function UnpaidPanel({ data, api, onOpenWorker }) {
   };
 
   const exportXlsx = async () => {
-    if (!scopeRows.length) { alert(tr("Nema koverti za izvoz.")); return; }
+    if (!scopeRows.length) { uiAlert(tr("Nema koverti za izvoz.")); return; }
     const clean = (t) => t.normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[^\w]+/g, "_").replace(/^_|_$/g, "");
     const suffix = scopeLabel ? "_" + clean(scopeLabel) : "";
     setExporting(true);
@@ -2698,7 +2786,7 @@ function UnpaidPanel({ data, api, onOpenWorker }) {
         rows: scopeRows.map((r) => ({ ...r, objectName: objName(objKey(r)) })),
         pays, scope: scopeLabel, fileName: `Neisplaceno${suffix}_${todayISO()}.xlsx`,
       });
-    } catch (e) { alert("Izvoz nije uspio: " + (e.message || e)); }
+    } catch (e) { uiAlert("Izvoz nije uspio: " + (e.message || e)); }
     finally { setExporting(false); }
   };
 
@@ -3126,12 +3214,12 @@ function FinancePanel({ data, api }) {
     setYear(Number(dates[dates.length - 1].slice(0, 4)));
     setFMonth(""); setFCat(inserted ? "auto" : "all"); setView("transakcije");
   });
-  const delImport = (im) => window.confirm(`Obrisati uvoz "${im.file_name}" i svih ${im.row_count} transakcija iz njega?`) && run(async () => {
+  const delImport = async (im) => (await uiConfirm(`Obrisati uvoz "${im.file_name}" i svih ${im.row_count} transakcija iz njega?`)) && run(async () => {
     const { error } = await supabase.from("bank_imports").delete().eq("id", im.id);
     if (error) throw error;
     await audit(`Obrisao bankovni izvod ${im.file_name} (${im.row_count} transakcija)`);
   });
-  const delTx = (t) => window.confirm(`Obrisati transakciju ${fmtDate(t.tx_date)} ${money(t.amount, t.currency)}?`) && run(async () => {
+  const delTx = async (t) => (await uiConfirm(`Obrisati transakciju ${fmtDate(t.tx_date)} ${money(t.amount, t.currency)}?`)) && run(async () => {
     const { error } = await supabase.from("bank_transactions").delete().eq("id", t.id);
     if (error) throw error;
   });
@@ -3723,6 +3811,57 @@ function AiAssistantPanel({ data }) {
   );
 }
 
+/* ---------- AUTOMATSKE NOĆNE KOPIJE (pg_cron → tablica backups, čuva se 30 dana) ---------- */
+function NightlyBackups() {
+  const [list, setList] = useState(null);
+  const [busyId, setBusyId] = useState("");
+  const [msg, setMsg] = useState("");
+  useEffect(() => {
+    supabase.from("backups").select("id, created_at, tables, rows_total").order("created_at", { ascending: false }).limit(30)
+      .then(({ data: d, error }) => { if (error) setMsg(error.message); setList(d || []); });
+  }, []);
+  const download = async (b) => {
+    setBusyId(b.id); setMsg("");
+    try {
+      const { data: row, error } = await supabase.from("backups").select("data").eq("id", b.id).single();
+      if (error) throw error;
+      const blob = new Blob([JSON.stringify({ created_at: b.created_at, tables: row.data }, null, 1)], { type: "application/json" });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = `evidencija-backup-${b.created_at.slice(0, 10)}.json`;
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+    } catch (e) { setMsg(tr("Preuzimanje nije uspjelo: ") + (e.message || e)); }
+    finally { setBusyId(""); }
+  };
+  const last = list?.[0];
+  return (
+    <div style={{ marginTop: 14, background: S.greenSoft, borderRadius: 14, padding: 12 }}>
+      <div style={{ fontWeight: 800, fontSize: 14, color: S.green }}>{tr("Automatska noćna kopija")}</div>
+      <div style={{ fontSize: 12.5, color: S.sub, margin: "3px 0 8px" }}>
+        {tr("Svaku noć oko 2:15 baza se sama spremi (svi radnici, sati, isplate, dokumenti…). Čuva se zadnjih 30 dana.")}
+      </div>
+      {list === null ? <div style={{ fontSize: 12.5, color: S.sub }}>{tr("Učitavam…")}</div>
+        : !last ? <div style={{ fontSize: 12.5, color: S.amber, fontWeight: 600 }}>{tr("Još nema nijedne kopije.")}</div>
+        : (
+          <>
+            <div className="num" style={{ fontSize: 13, fontWeight: 700, marginBottom: 6 }}>
+              {tr("Zadnja:")} {fmtDate(last.created_at.slice(0, 10))} {last.created_at.slice(11, 16)} UTC · {last.rows_total} {tr("redaka")} · {list.length} {tr("kopija ukupno")}
+            </div>
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+              {list.slice(0, 7).map((b) => (
+                <Btn key={b.id} small kind="ghost" disabled={busyId === b.id} onClick={() => download(b)}>
+                  ⬇ {fmtDate(b.created_at.slice(0, 10))}
+                </Btn>
+              ))}
+            </div>
+          </>
+        )}
+      {msg && <div style={{ fontSize: 12.5, color: S.red, marginTop: 6 }}>{msg}</div>}
+    </div>
+  );
+}
+
 function AdminPanels({ data, api, panel, setPanel, onOpenWorker, onOpenProfile }) {
   const [firm, setFirm] = useState({ company_name: "", address: "", oib: "", iban: "", czk_rate: "25", czk_rate_auto: true, weekend_pct: "0", holiday_pct: "0", expiry_warn_days: "30", payday_day: "5", payday_reminder_days: "3" });
   const [auditQ, setAuditQ] = useState("");
@@ -4037,7 +4176,7 @@ function AdminPanels({ data, api, panel, setPanel, onOpenWorker, onOpenProfile }
                   {pi.filePath
                     ? <button onClick={() => viewPiFile(pi)} title={tr("Otvori PDF")} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 15 }}>📄</button>
                     : <button onClick={() => pickPiFile(pi)} disabled={piFileBusy === pi.id} title={tr("Dodaj PDF fakture")} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 15, opacity: piFileBusy === pi.id ? 0.4 : 1 }}>📎</button>}
-                  <button onClick={() => window.confirm(tr("Obrisati fakturu {0} {1}?", pi.supplier, pi.number)) && api.delPurchaseInvoice(pi)} style={{ background: "none", border: "none", color: S.red, cursor: "pointer", fontSize: 15 }}>✕</button>
+                  <button onClick={async () => (await uiConfirm(tr("Obrisati fakturu {0} {1}?", pi.supplier, pi.number))) && api.delPurchaseInvoice(pi)} style={{ background: "none", border: "none", color: S.red, cursor: "pointer", fontSize: 15 }}>✕</button>
                 </span>
               </div>
             ))}
@@ -4202,7 +4341,7 @@ function AdminPanels({ data, api, panel, setPanel, onOpenWorker, onOpenProfile }
               <div style={{ fontSize: 12, color: S.sub, marginBottom: 8 }}>{tr("Zadnji backup:")}{" "}{daysSinceBackup === 0 ? tr("danas") : tr("prije {0} dana", daysSinceBackup)}.</div>
             )}
             <Btn small kind="excel" onClick={doBackup}>{tr("📊 Izvezi sve podatke (Excel)")}</Btn>
-            <div style={{ fontSize: 11, color: S.sub, marginTop: 6 }}>{tr("Ovo je podsjetnik na ovom uređaju/pregledniku — pravi automatski backup na Google Drive/e-mail treba dodatnu poslužiteljsku postavku (mogu pripremiti kod, ali postavljanje ide preko tvog Supabase/Google naloga).")}</div>
+            <NightlyBackups />
           </div>
         </Card>
       )}
@@ -4649,8 +4788,8 @@ function HoursImport({ data, object, month, onSave, onClose }) {
   const save = async () => {
     const entries = matched.map((wid) => ({ workerId: wid, hours: byWorker[wid] }));
     const tooMany = entries.filter((e) => e.hours > MONTH_HOURS_WARN);
-    if (tooMany.length && !window.confirm(tr("Više od {0} h ima {1} radnik(a). Provjeri jesi li odabrala pravi stupac sa satima.\n\nSpremiti svejedno?", MONTH_HOURS_WARN, tooMany.length))) return;
-    if (!window.confirm(tr("Upisati mjesečne sate za {0} radnika ({1} ukupno) za {2} {3}. na {4}?\n\nPostojeći mjesečni zbroj tih radnika za taj mjesec bit će zamijenjen brojem iz Excela.", entries.length, fmtH(totalHours), MONTHS[Number(month.slice(5, 7)) - 1], month.slice(0, 4), object.name))) return;
+    if (tooMany.length && !(await uiConfirm(tr("Više od {0} h ima {1} radnik(a). Provjeri jesi li odabrala pravi stupac sa satima.\n\nSpremiti svejedno?", MONTH_HOURS_WARN, tooMany.length)))) return;
+    if (!(await uiConfirm(tr("Upisati mjesečne sate za {0} radnika ({1} ukupno) za {2} {3}. na {4}?\n\nPostojeći mjesečni zbroj tih radnika za taj mjesec bit će zamijenjen brojem iz Excela.", entries.length, fmtH(totalHours), MONTHS[Number(month.slice(5, 7)) - 1], month.slice(0, 4), object.name)))) return;
     // zapamti format i ručno odabrane parove za ovaj hotel
     lsSet(mapKey, { sheetName, layout });
     const al = { ...aliases };
@@ -5128,7 +5267,7 @@ function WorkersTab({ data, api, onOpen, onOpenObject }) {
           columns: [{ key: "n", header: "Objekt", width: 30, bold: true }, { key: "c", header: "Država", width: 10, type: "center" }],
           rows: objects.map((o) => ({ n: o.name, c: o.country })) },
       ],
-    }).catch((e) => alert("Izvoz nije uspio: " + (e.message || e)));
+    }).catch((e) => uiAlert("Izvoz nije uspio: " + (e.message || e)));
   };
   const handleImportFile = async (e) => {
     const file = e.target.files?.[0];
@@ -5824,7 +5963,7 @@ function DirectoryTab({ data, api, onOpen }) {
         })),
         note: "Crveno označeni datumi ističu uskoro ili su već istekli.",
       }],
-    }).catch((e) => alert("Izvoz nije uspio: " + (e.message || e)));
+    }).catch((e) => uiAlert("Izvoz nije uspio: " + (e.message || e)));
   };
   const groups = [];
   let last = "";
@@ -6796,7 +6935,7 @@ function BrigadeCard({ object, data, api, monthBrigade, defaultDate }) {
                 </span>
                 <span className="num" style={{ fontWeight: 700 }}>{money(bg.amount, bg.currency)}</span>
                 <button title={tr("Ponovi")} onClick={() => repeat(bg)} style={{ background: "none", border: "none", color: S.blue, fontSize: 14, cursor: "pointer", padding: 2 }}>↻</button>
-                <button onClick={() => window.confirm(tr("Obrisati ovu brigadu?")) && api.delBrigadeCost(bg, object.name)} style={{ background: "none", border: "none", color: S.red, fontSize: 14, cursor: "pointer", padding: 2 }}>✕</button>
+                <button onClick={async () => (await uiConfirm(tr("Obrisati ovu brigadu?"))) && api.delBrigadeCost(bg, object.name)} style={{ background: "none", border: "none", color: S.red, fontSize: 14, cursor: "pointer", padding: 2 }}>✕</button>
               </div>
             );
           })}
@@ -6895,7 +7034,7 @@ function CashPanel({ data, api }) {
                     </span>
                     <span className="num" style={{ fontWeight: 700, color: e.delta >= 0 ? S.green : S.red }}>{e.delta >= 0 ? "+" : "−"}{money(Math.abs(e.delta), e.cur)}</span>
                     {e.rec ? (
-                      <button onClick={() => window.confirm(tr("Obrisati ovaj zapis?")) && api.delCashAdvance(e.rec, p.name)} style={{ background: "none", border: "none", color: S.red, fontSize: 14, cursor: "pointer", padding: 2 }}>✕</button>
+                      <button onClick={async () => (await uiConfirm(tr("Obrisati ovaj zapis?"))) && api.delCashAdvance(e.rec, p.name)} style={{ background: "none", border: "none", color: S.red, fontSize: 14, cursor: "pointer", padding: 2 }}>✕</button>
                     ) : <span style={{ width: 18 }} />}
                   </div>
                 ))}
@@ -7176,7 +7315,7 @@ function ObjectDetail({ object, data, api, onBack, onOpenWorker }) {
         columns: [{ key: "d", header: "Datum", width: 14, type: "date" }, { key: "n", header: "Den", width: 14 }],
         rows: holidays.map((d) => ({ d, n: ["neděle", "pondělí", "úterý", "středa", "čtvrtek", "pátek", "sobota"][new Date(d + "T12:00:00").getDay()] })),
       }],
-    }).catch((e) => alert("Izvoz nije uspio: " + (e.message || e)));
+    }).catch((e) => uiAlert("Izvoz nije uspio: " + (e.message || e)));
   };
 
   const allActiveWorkers = sortedWorkers(data.workers.filter((w) => !w.archived));
@@ -7235,13 +7374,13 @@ function ObjectDetail({ object, data, api, onBack, onOpenWorker }) {
       const sum = round2(data.logs.filter((l) => l.workerId === w.id && l.objectId === object.id && l.monthly && monthKey(l.date) === pm).reduce((s, l) => s + l.hours, 0));
       if (sum > 0) { n[w.id] = String(sum); filled++; }
     });
-    if (!filled) { window.alert(tr("Za prošli mjesec na ovom objektu nema mjesečnih sati koje bih mogao prepisati (ili su sva polja već popunjena).")); return; }
+    if (!filled) { uiAlert(tr("Za prošli mjesec na ovom objektu nema mjesečnih sati koje bih mogao prepisati (ili su sva polja već popunjena).")); return; }
     setMonthVals(n);
   };
   const saveMonthBulk = async () => {
     const entries = data.workers.filter((w) => !w.archived).map((w) => ({ workerId: w.id, hours: round2(parseNum(monthVals[w.id]) || 0) }));
     const tooMany = entries.filter((e) => e.hours > MONTH_HOURS_WARN);
-    if (tooMany.length && !window.confirm(tr("Više od {0} h u mjesecu ima {1} radnik(a):\n{2}\n\nJe li to točno? Spremiti svejedno?", MONTH_HOURS_WARN, tooMany.length, tooMany.slice(0, 8).map((e) => `• ${data.workers.find((w) => w.id === e.workerId)?.name}: ${fmtH(e.hours)}`).join("\n")))) return;
+    if (tooMany.length && !(await uiConfirm(tr("Više od {0} h u mjesecu ima {1} radnik(a):\n{2}\n\nJe li to točno? Spremiti svejedno?", MONTH_HOURS_WARN, tooMany.length, tooMany.slice(0, 8).map((e) => `• ${data.workers.find((w) => w.id === e.workerId)?.name}: ${fmtH(e.hours)}`).join("\n"))))) return;
     setMonthSaving(true);
     await api.setMonthlyHoursBulk(entries, object.id, month, object.name);
     setMonthSaving(false);
@@ -8894,8 +9033,8 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
   const shareSummary = async (r) => {
     const text = `Obračun — ${r.w.name}\n${periodLabel}\nSati: ${fmtH(r.hours)}\nZa isplatu: ${breakdownOf(r).netText}`;
     if (navigator.share) { try { await navigator.share({ title: `Obračun ${r.w.name}`, text }); } catch {} }
-    else if (navigator.clipboard) { try { await navigator.clipboard.writeText(text); alert(tr("Dijeljenje nije podržano u ovom pregledniku — sažetak je kopiran u međuspremnik.")); } catch { alert(text); } }
-    else alert(text);
+    else if (navigator.clipboard) { try { await navigator.clipboard.writeText(text); uiAlert(tr("Dijeljenje nije podržano u ovom pregledniku — sažetak je kopiran u međuspremnik.")); } catch { uiAlert(text); } }
+    else uiAlert(text);
   };
   const printAllPayslips = () => {
     const st = api.settings;
@@ -9017,7 +9156,7 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
           ],
           rows: objRows, emptyText: "Nema podataka po objektima." },
       ],
-    }).catch((e) => alert("Izvoz nije uspio: " + (e.message || e)));
+    }).catch((e) => uiAlert("Izvoz nije uspio: " + (e.message || e)));
   };
 
   return (

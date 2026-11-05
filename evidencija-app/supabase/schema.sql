@@ -923,3 +923,45 @@ create index if not exists ai_usage_created_idx on public.ai_usage(created_at);
 alter table public.ai_usage enable row level security;
 drop policy if exists "ai_usage_admin_select" on public.ai_usage;
 create policy "ai_usage_admin_select" on public.ai_usage for select to authenticated using (is_admin());
+
+-- okidač za obavijest o novom kandidatu ne smije se pozivati izravno preko API-ja (okidač i dalje radi)
+revoke execute on function public.notify_new_candidate() from public, anon, authenticated;
+
+-- promjene uživo (aplikacija se sama osvježi kad netko drugi nešto upiše)
+alter publication supabase_realtime add table public.work_logs, public.payments, public.workers, public.objects, public.payouts, public.worker_documents, public.reminders, public.brigade_costs, public.assignments, public.rate_changes;
+
+-- ============================================================
+-- AUTOMATSKE NOĆNE KOPIJE: make_backup() sprema sve tablice u backups (30 dana), pg_cron svaku noć
+-- ============================================================
+create table if not exists public.backups (
+  id uuid primary key default gen_random_uuid(),
+  created_at timestamptz default now(),
+  tables integer default 0,
+  rows_total integer default 0,
+  data jsonb not null
+);
+create index if not exists backups_created_idx on public.backups(created_at desc);
+alter table public.backups enable row level security;
+drop policy if exists "backups_admin_select" on public.backups;
+create policy "backups_admin_select" on public.backups for select to authenticated using (is_admin());
+create or replace function public.make_backup() returns uuid
+language plpgsql security definer set search_path = public as $$
+declare
+  t record; snap jsonb := '{}'::jsonb; part jsonb; n int; total int := 0; cnt int := 0; new_id uuid;
+begin
+  for t in
+    select c.relname from pg_class c join pg_namespace ns on ns.oid = c.relnamespace
+    where ns.nspname = 'public' and c.relkind = 'r'
+      and c.relname not in ('backups', 'jarvis_secrets', 'jarvis_notes', 'claude_inbox', 'ai_usage')
+    order by c.relname
+  loop
+    execute format('select coalesce(jsonb_agg(to_jsonb(x)), ''[]''::jsonb), count(*) from public.%I x', t.relname) into part, n;
+    snap := snap || jsonb_build_object(t.relname, part);
+    total := total + n; cnt := cnt + 1;
+  end loop;
+  insert into public.backups(tables, rows_total, data) values (cnt, total, snap) returning id into new_id;
+  delete from public.backups where created_at < now() - interval '30 days';
+  return new_id;
+end $$;
+revoke execute on function public.make_backup() from public, anon, authenticated;
+-- select cron.schedule('nightly-backup', '15 1 * * *', $$select public.make_backup()$$);
