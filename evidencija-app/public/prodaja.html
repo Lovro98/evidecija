@@ -1,0 +1,229 @@
+<!doctype html>
+<html lang="hr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Evidencija rada – aplikacija za agencije koje zapošljavaju u hotelima</title>
+<meta name="description" content="Sati po hotelu, obračun i plaće, dokumenti s rokovima, potpis ugovora na mobitelu i AI asistent – u jednoj aplikaciji za agencije koje šalju radnike u hotele.">
+<meta name="theme-color" content="#0B3D2E">
+<link rel="icon" href="/icon.svg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@500;600;700;800&display=swap" rel="stylesheet">
+<style>
+  :root { --deep:#0B3D2E; --green:#0E6B4F; --greenSoft:#E3F0EA; --rose:#F4C9C0; --mint:#A9C7BA; --bg:#F3F4EF; --ink:#17211C; --sub:#55625B; --line:#E1E5DF; --amber:#8A4B0F; --amberSoft:#FFF4E6; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: Manrope, system-ui, -apple-system, sans-serif; color: var(--ink); background: var(--bg); line-height: 1.5; }
+  a { color: var(--green); }
+  .wrap { max-width: 1120px; margin: 0 auto; padding: 0 20px; }
+  header.top { background: var(--deep); color: #fff; }
+  .nav { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 16px 0; }
+  .brand { display: flex; align-items: center; gap: 10px; font-weight: 800; font-size: 17px; color: #fff; text-decoration: none; }
+  .lang { display: flex; gap: 6px; }
+  .lang button { min-height: 40px; padding: 0 12px; border-radius: 10px; border: 1px solid rgba(255,255,255,.25); background: transparent; color: #fff; font: inherit; font-weight: 800; cursor: pointer; }
+  .lang button[aria-pressed="true"] { background: #fff; color: var(--deep); }
+  .hero { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, .9fr); gap: 40px; align-items: center; padding: 40px 0 72px; }
+  .hero h1 { font-size: clamp(32px, 5vw, 52px); line-height: 1.08; margin: 0 0 16px; letter-spacing: -.5px; }
+  .hero p.lead { font-size: 18px; color: #D6E6DE; margin: 0 0 26px; max-width: 560px; }
+  .cta { display: flex; gap: 10px; flex-wrap: wrap; }
+  .btn { display: inline-flex; align-items: center; justify-content: center; min-height: 52px; padding: 0 22px; border-radius: 14px; font-weight: 800; font-size: 16px; text-decoration: none; }
+  .btn.primary { background: var(--rose); color: var(--deep); }
+  .btn.ghost { border: 1px solid rgba(255,255,255,.35); color: #fff; }
+  .mock { background: var(--bg); border-radius: 32px; padding: 18px; box-shadow: 0 30px 60px rgba(0,0,0,.25); max-width: 360px; margin-left: auto; color: var(--ink); }
+  .mock .band { background: var(--deep); color: #fff; border-radius: 20px; padding: 16px 16px 46px; }
+  .mock .band small { color: var(--mint); font-weight: 600; }
+  .mock .band b { display: block; font-size: 21px; }
+  .tiles { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: -34px 8px 0; }
+  .tile { background: #fff; border-radius: 16px; padding: 12px; box-shadow: 0 6px 18px rgba(11,61,46,.08); }
+  .tile span { display: block; font-size: 11.5px; color: var(--sub); font-weight: 700; }
+  .tile strong { font-size: 18px; }
+  .tile.warn { background: var(--amberSoft); color: var(--amber); }
+  .tile.warn span { color: var(--amber); }
+  .row { display: flex; align-items: center; gap: 10px; background: #fff; border-radius: 14px; padding: 10px 12px; margin-top: 8px; font-size: 13.5px; font-weight: 700; }
+  .dot { width: 30px; height: 30px; border-radius: 10px; flex: none; display: flex; align-items: center; justify-content: center; }
+  section { padding: 64px 0; }
+  h2 { font-size: clamp(26px, 3.4vw, 36px); margin: 0 0 10px; letter-spacing: -.3px; }
+  .sub { color: var(--sub); font-size: 17px; margin: 0 0 32px; max-width: 680px; }
+  .grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
+  .card { background: #fff; border: 1px solid #ECEEE8; border-radius: 20px; padding: 20px; }
+  .card h3 { margin: 12px 0 6px; font-size: 17px; }
+  .card p { margin: 0; color: var(--sub); font-size: 15px; }
+  .ico { width: 44px; height: 44px; border-radius: 13px; background: var(--greenSoft); color: var(--green); display: flex; align-items: center; justify-content: center; }
+  .steps { counter-reset: s; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
+  .step { background: #fff; border-radius: 20px; padding: 20px; border: 1px solid #ECEEE8; }
+  .step::before { counter-increment: s; content: counter(s); display: inline-flex; width: 34px; height: 34px; border-radius: 99px; background: var(--green); color: #fff; font-weight: 800; align-items: center; justify-content: center; margin-bottom: 10px; }
+  .step h3 { margin: 0 0 4px; font-size: 17px; }
+  .step p { margin: 0; color: var(--sub); }
+  .plans { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; align-items: stretch; }
+  .plan { background: #fff; border: 1px solid #ECEEE8; border-radius: 22px; padding: 24px; display: flex; flex-direction: column; gap: 10px; }
+  .plan.featured { border: 2px solid var(--green); box-shadow: 0 16px 40px rgba(14,107,79,.12); }
+  .plan .name { font-weight: 800; font-size: 18px; }
+  .plan .price { font-size: 34px; font-weight: 800; }
+  .plan .price small { font-size: 15px; color: var(--sub); font-weight: 600; }
+  .plan ul { margin: 0; padding-left: 18px; color: var(--sub); }
+  .plan .btn { margin-top: auto; background: var(--deep); color: #fff; }
+  .note { color: var(--sub); font-size: 13.5px; margin-top: 14px; }
+  details { background: #fff; border: 1px solid #ECEEE8; border-radius: 16px; padding: 16px 18px; margin-bottom: 10px; }
+  summary { font-weight: 800; cursor: pointer; min-height: 28px; }
+  details p { color: var(--sub); margin: 10px 0 0; }
+  .final { background: var(--deep); color: #fff; border-radius: 28px; padding: 40px 28px; text-align: center; }
+  .final p { color: #D6E6DE; font-size: 17px; }
+  footer { color: var(--sub); font-size: 13.5px; padding: 28px 0 40px; text-align: center; }
+  [data-cs] { display: none; }
+  html[lang="cs"] [data-cs] { display: revert; }
+  html[lang="cs"] [data-hr] { display: none; }
+  @media (max-width: 860px) {
+    .hero { grid-template-columns: 1fr; padding-top: 16px; }
+    .mock { margin: 0 auto; }
+    .grid, .steps, .plans { grid-template-columns: 1fr; }
+    section { padding: 48px 0; }
+  }
+</style>
+</head>
+<body>
+<header class="top">
+  <div class="wrap">
+    <div class="nav">
+      <a class="brand" href="/prodaja">
+        <svg width="36" height="36" viewBox="0 0 40 40" aria-hidden="true"><rect width="40" height="40" rx="11" fill="#0E6B4F"/><path d="M20 9c3.8 2.6 5.6 5.6 5.6 8.6 0 3.4-2.5 6-5.6 6s-5.6-2.6-5.6-6C14.4 14.6 16.2 11.6 20 9z" fill="#F4C9C0"/><path d="M20 23.6v7.4M20 27.5c-2.4-.2-4.3-1.4-5.4-3.4M20 28.6c2.2-.3 3.9-1.5 4.9-3.3" stroke="#E3F0EA" stroke-width="1.8" stroke-linecap="round" fill="none"/></svg>
+        Evidencija rada
+      </a>
+      <div class="lang" role="group" aria-label="Jezik / Jazyk">
+        <button type="button" data-lang="hr" aria-pressed="true">HR</button>
+        <button type="button" data-lang="cs" aria-pressed="false">CZ</button>
+      </div>
+    </div>
+    <div class="hero">
+      <div>
+        <h1>
+          <span data-hr>Sati, plaće i dokumenti radnika u hotelima – na jednom mjestu.</span>
+          <span data-cs>Hodiny, mzdy a doklady pracovníků v hotelech – na jednom místě.</span>
+        </h1>
+        <p class="lead">
+          <span data-hr>Aplikacija za agencije koje šalju radnike u hotele: upis sati po hotelu, obračun za hotel i za plaće, rokovi dokumenata, potpis ugovora na mobitelu i AI asistent koji čita tablice sati i fakture.</span>
+          <span data-cs>Aplikace pro agentury, které posílají pracovníky do hotelů: hodiny podle hotelu, vyúčtování pro hotel i podklady pro mzdy, hlídání platnosti dokladů, podpis smlouvy na mobilu a AI asistent, který přečte výkazy hodin i faktury.</span>
+        </p>
+        <div class="cta">
+          <a class="btn primary" href="mailto:molnarrose.agency@gmail.com?subject=Demo%20Evidencija%20rada"><span data-hr>Zatraži demo</span><span data-cs>Chci demo</span></a>
+          <a class="btn ghost" href="#cijene"><span data-hr>Cijene</span><span data-cs>Ceník</span></a>
+        </div>
+      </div>
+      <div class="mock" aria-hidden="true">
+        <div class="band"><small data-hr>Studeni 2026.</small><small data-cs>Listopad 2026</small><b data-hr>Dobro jutro</b><b data-cs>Dobré ráno</b></div>
+        <div class="tiles">
+          <div class="tile"><span data-hr>Sati ovaj mjesec</span><span data-cs>Hodiny tento měsíc</span><strong>1 284 h</strong></div>
+          <div class="tile"><span data-hr>Dobit</span><span data-cs>Zisk</span><strong>21 %</strong></div>
+          <div class="tile"><span data-hr>Aktivni radnici</span><span data-cs>Aktivní pracovníci</span><strong>74</strong></div>
+          <div class="tile warn"><span data-hr>Treba riješiti</span><span data-cs>K vyřízení</span><strong>5</strong></div>
+        </div>
+        <div class="row"><span class="dot" style="background:#FBEDEA;color:#A3412F">!</span><span data-hr>Viza ističe za 3 dana</span><span data-cs>Vízum končí za 3 dny</span></div>
+        <div class="row"><span class="dot" style="background:#E3F0EA;color:#0E6B4F">✓</span><span data-hr>Ugovor potpisan na iPadu</span><span data-cs>Smlouva podepsána na iPadu</span></div>
+      </div>
+    </div>
+  </div>
+</header>
+
+<main>
+  <section>
+    <div class="wrap">
+      <h2><span data-hr>Sve što agencija treba svaki mjesec</span><span data-cs>Vše, co agentura potřebuje každý měsíc</span></h2>
+      <p class="sub"><span data-hr>Napravljeno u agenciji koja svakodnevno radi s hotelima u Češkoj i Hrvatskoj – ne generički alat za smjene.</span><span data-cs>Vytvořeno v agentuře, která denně pracuje s hotely v Česku a Chorvatsku – ne obecný nástroj na směny.</span></p>
+      <div class="grid">
+        <div class="card"><div class="ico"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></div>
+          <h3><span data-hr>Sati po hotelu i poziciji</span><span data-cs>Hodiny podle hotelu a pozice</span></h3>
+          <p><span data-hr>Dnevno ili mjesečno, uvoz iz Excela, upozorenje na sumnjive upise.</span><span data-cs>Denně nebo měsíčně, import z Excelu, upozornění na podezřelé zápisy.</span></p></div>
+        <div class="card"><div class="ico"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 3h12v18l-3-2-3 2-3-2-3 2z"/><path d="M9 8h6M9 12h6"/></svg></div>
+          <h3><span data-hr>Obračun za hotel i plaće</span><span data-cs>Vyúčtování pro hotel a mzdy</span></h3>
+          <p><span data-hr>Naplata po poziciji, stavke za fakturu, podklad za mzdy, koverte, avansi i bonusi.</span><span data-cs>Ceny podle pozice, položky na fakturu, podklady pro mzdy, obálky, zálohy a bonusy.</span></p></div>
+        <div class="card"><div class="ico"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 19V5M4 19h16M8 15l3-4 3 2 5-6"/></svg></div>
+          <h3><span data-hr>Isplativost svakog hotela</span><span data-cs>Ziskovost každého hotelu</span></h3>
+          <p><span data-hr>Dobit, marža i dobit po satu, s trendom kroz mjesece.</span><span data-cs>Zisk, marže a zisk na hodinu, s vývojem po měsících.</span></p></div>
+        <div class="card"><div class="ico"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5M9 13h6M9 17h4"/></svg></div>
+          <h3><span data-hr>Dokumenti s rokovima</span><span data-cs>Doklady s platností</span></h3>
+          <p><span data-hr>Putovnica, viza, dozvola, zdravstvena potvrda – upozorenje prije isteka.</span><span data-cs>Pas, vízum, povolení, zdravotní průkaz – upozornění před koncem platnosti.</span></p></div>
+        <div class="card"><div class="ico"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 20h4L19 9a2.8 2.8 0 0 0-4-4L4 16z"/><path d="M13.5 6.5l4 4"/></svg></div>
+          <h3><span data-hr>Potpis ugovora na mobitelu</span><span data-cs>Podpis smlouvy na mobilu</span></h3>
+          <p><span data-hr>Radnik pročita i potpiše prstom, potpisani PDF se sam spremi.</span><span data-cs>Pracovník si smlouvu přečte a podepíše prstem, podepsané PDF se samo uloží.</span></p></div>
+        <div class="card"><div class="ico"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 3l1.8 4.7L18.5 9.5l-4.7 1.8L12 16l-1.8-4.7L5.5 9.5l4.7-1.8z"/></svg></div>
+          <h3><span data-hr>AI asistent</span><span data-cs>AI asistent</span></h3>
+          <p><span data-hr>Priloži tablicu sati iz hotela ili fakturu – usporedi s aplikacijom i pokaže razlike.</span><span data-cs>Nahrajte výkaz z hotelu nebo fakturu – porovná je s aplikací a ukáže rozdíly.</span></p></div>
+      </div>
+    </div>
+  </section>
+
+  <section style="padding-top: 0">
+    <div class="wrap">
+      <h2><span data-hr>Spremno za 5 minuta</span><span data-cs>Připraveno za 5 minut</span></h2>
+      <p class="sub"><span data-hr>Radi na mobitelu, iPadu i računalu, bez instalacije. Hrvatski, ukrajinski i češki.</span><span data-cs>Funguje na mobilu, iPadu i počítači, bez instalace. Chorvatsky, ukrajinsky a česky.</span></p>
+      <div class="steps">
+        <div class="step"><h3><span data-hr>Podaci firme</span><span data-cs>Údaje firmy</span></h3><p><span data-hr>Naziv, logo, tečaj.</span><span data-cs>Název, logo, kurz.</span></p></div>
+        <div class="step"><h3><span data-hr>Hoteli</span><span data-cs>Hotely</span></h3><p><span data-hr>Cijena po satu i po poziciji.</span><span data-cs>Cena za hodinu a podle pozice.</span></p></div>
+        <div class="step"><h3><span data-hr>Radnici</span><span data-cs>Pracovníci</span></h3><p><span data-hr>Ručno ili uvoz iz Excela.</span><span data-cs>Ručně nebo import z Excelu.</span></p></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="cijene" style="padding-top: 0">
+    <div class="wrap">
+      <h2><span data-hr>Cijene</span><span data-cs>Ceník</span></h2>
+      <p class="sub"><span data-hr>Plaća se po broju aktivnih radnika u mjesecu (onih kojima su upisani sati). AI asistent uključen do mjesečnog limita.</span><span data-cs>Platí se podle počtu aktivních pracovníků v měsíci (s alespoň jedním zápisem hodin). AI asistent v ceně do měsíčního limitu.</span></p>
+      <div class="plans">
+        <div class="plan"><div class="name">Start</div><div class="price">49 € <small data-hr>/ mjesečno</small><small data-cs>/ měsíc</small></div>
+          <ul><li data-hr>do 30 radnika</li><li data-cs>do 30 pracovníků</li><li data-hr>sve funkcije</li><li data-cs>všechny funkce</li></ul>
+          <a class="btn" href="mailto:molnarrose.agency@gmail.com?subject=Evidencija%20rada%20-%20Start"><span data-hr>Javi se</span><span data-cs>Ozvěte se</span></a></div>
+        <div class="plan featured"><div class="name">Pro</div><div class="price">99 € <small data-hr>/ mjesečno</small><small data-cs>/ měsíc</small></div>
+          <ul><li data-hr>do 100 radnika</li><li data-cs>do 100 pracovníků</li><li data-hr>sve funkcije + veći AI limit</li><li data-cs>všechny funkce + vyšší AI limit</li></ul>
+          <a class="btn" href="mailto:molnarrose.agency@gmail.com?subject=Evidencija%20rada%20-%20Pro"><span data-hr>Javi se</span><span data-cs>Ozvěte se</span></a></div>
+        <div class="plan"><div class="name">Business</div><div class="price">199 € <small data-hr>/ mjesečno</small><small data-cs>/ měsíc</small></div>
+          <ul><li data-hr>do 300 radnika</li><li data-cs>do 300 pracovníků</li><li data-hr>pomoć pri uvodu podataka</li><li data-cs>pomoc s převodem dat</li></ul>
+          <a class="btn" href="mailto:molnarrose.agency@gmail.com?subject=Evidencija%20rada%20-%20Business"><span data-hr>Javi se</span><span data-cs>Ozvěte se</span></a></div>
+      </div>
+      <p class="note"><span data-hr>Cijene su bez PDV-a/DPH.</span><span data-cs>Ceny jsou bez DPH.</span></p>
+    </div>
+  </section>
+
+  <section style="padding-top: 0">
+    <div class="wrap">
+      <h2><span data-hr>Česta pitanja</span><span data-cs>Časté otázky</span></h2>
+      <details><summary><span data-hr>Gdje su podaci spremljeni?</span><span data-cs>Kde jsou data uložena?</span></summary>
+        <p><span data-hr>Na poslužiteljima u Europskoj uniji. Pristup imaju samo korisnici koje vi dodate, s ulogama (admin, koordinator), a svaku noć radi se automatska sigurnosna kopija.</span><span data-cs>Na serverech v Evropské unii. Přístup mají jen uživatelé, které přidáte, s rolemi (admin, koordinátor), a každou noc se dělá automatická záloha.</span></p></details>
+      <details><summary><span data-hr>Moraju li radnici instalirati aplikaciju?</span><span data-cs>Musí si pracovníci instalovat aplikaci?</span></summary>
+        <p><span data-hr>Ne. Aplikacija radi u pregledniku, a na mobitel se može dodati kao ikona.</span><span data-cs>Ne. Aplikace funguje v prohlížeči a na mobil se dá přidat jako ikona.</span></p></details>
+      <details><summary><span data-hr>Je li AI asistent obavezan?</span><span data-cs>Je AI asistent povinný?</span></summary>
+        <p><span data-hr>Ne, uključuje se po želji. Asistent ništa ne šalje i ne mijenja sam – samo čita i predlaže.</span><span data-cs>Ne, zapíná se podle potřeby. Asistent sám nic neodesílá ani nemění – jen čte a navrhuje.</span></p></details>
+      <details><summary><span data-hr>Mogu li prenijeti postojeće Excel tablice?</span><span data-cs>Můžu převést stávající tabulky z Excelu?</span></summary>
+        <p><span data-hr>Da – radnici i mjesečni sati uvoze se iz Excela.</span><span data-cs>Ano – pracovníci i měsíční hodiny se importují z Excelu.</span></p></details>
+    </div>
+  </section>
+
+  <section style="padding-top: 0">
+    <div class="wrap">
+      <div class="final">
+        <h2><span data-hr>Pogledajte kako radi na vašim podacima</span><span data-cs>Podívejte se, jak funguje s vašimi daty</span></h2>
+        <p><span data-hr>Javite se i pokazat ćemo vam aplikaciju u 20 minuta.</span><span data-cs>Ozvěte se a za 20 minut vám aplikaci ukážeme.</span></p>
+        <a class="btn primary" href="mailto:molnarrose.agency@gmail.com?subject=Demo%20Evidencija%20rada"><span data-hr>Zatraži demo</span><span data-cs>Chci demo</span></a>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">Molnar Rose agency &amp; floristry s.r.o. · Praha · <a href="mailto:molnarrose.agency@gmail.com">molnarrose.agency@gmail.com</a></div>
+</footer>
+
+<script>
+  (function () {
+    var btns = document.querySelectorAll(".lang button");
+    function set(l) {
+      document.documentElement.lang = l;
+      btns.forEach(function (b) { b.setAttribute("aria-pressed", String(b.dataset.lang === l)); });
+      try { localStorage.setItem("prodaja_lang", l); } catch (e) {}
+    }
+    btns.forEach(function (b) { b.addEventListener("click", function () { set(b.dataset.lang); }); });
+    var saved = null; try { saved = localStorage.getItem("prodaja_lang"); } catch (e) {}
+    var q = new URLSearchParams(location.search).get("lang");
+    set(q === "cs" || q === "cz" ? "cs" : q === "hr" ? "hr" : saved || ((navigator.language || "").toLowerCase().startsWith("cs") ? "cs" : "hr"));
+  })();
+</script>
+</body>
+</html>

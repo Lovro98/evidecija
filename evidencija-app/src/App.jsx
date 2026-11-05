@@ -7,6 +7,7 @@ import { exportUnpaidXlsx } from "./unpaidExport.js";
 import { downloadStyledXlsx, XC, xDate } from "./xlsxStyled.js";
 import { downloadAccountantZip, printAccountantPack } from "./accountantPack.js";
 import { TR_UK } from "./i18n_uk.js";
+import { TR_CS } from "./i18n_cs.js";
 import { POSITIONS, RESIDENCE, MESSENGERS, START, HEARD, CAND_STATUS, labelOf } from "./candidates.js";
 import { FIN_CATS, CZ_CIT, CZ_DIVIDEND, catLabel, catKind, suggestCategory, ruleMatches, txText, fold, decodeText, parseCsv, findHeader, guessMapping, FIELDS, rowsToTxs, finYear, taxEstimate, vatOf, toCzkAmt, payrollLevies, citAdvances, CZ_SOC_FIRM, CZ_SOC_EMP, CZ_ZDR_FIRM, CZ_ZDR_EMP } from "./finance.js";
 
@@ -91,8 +92,10 @@ const MONTHS = ["Siječanj","Veljača","Ožujak","Travanj","Svibanj","Lipanj","S
 const MONTHS_UK = ["Січень","Лютий","Березень","Квітень","Травень","Червень","Липень","Серпень","Вересень","Жовтень","Листопад","Грудень"];
 const MONTHS_SHORT_UK = ["січ","лют","бер","кві","тра","чер","лип","сер","вер","жов","лис","гру"];
 // nazivi mjeseci za prikaz na ekranu (prema odabranom jeziku); MONTHS ostaje za ispise i povijest
-const mName = (i) => (CUR_LANG === "UK" ? MONTHS_UK : MONTHS)[i];
-const mShort = (i) => (CUR_LANG === "UK" ? MONTHS_SHORT_UK : MONTHS_SHORT)[i];
+const MONTHS_CS = ["Leden","Únor","Březen","Duben","Květen","Červen","Červenec","Srpen","Září","Říjen","Listopad","Prosinec"];
+const MONTHS_SHORT_CS = ["led","úno","bře","dub","kvě","čvn","čvc","srp","zář","říj","lis","pro"];
+const mName = (i) => (CUR_LANG === "UK" ? MONTHS_UK : CUR_LANG === "CZ" ? MONTHS_CS : MONTHS)[i];
+const mShort = (i) => (CUR_LANG === "UK" ? MONTHS_SHORT_UK : CUR_LANG === "CZ" ? MONTHS_SHORT_CS : MONTHS_SHORT)[i];
 const MONTHS_SHORT = ["sij","vlj","ožu","tra","svi","lip","srp","kol","ruj","lis","stu","pro"];
 
 function hoursBetween(from, to) {
@@ -138,14 +141,14 @@ const MZDY_NOTE_LABEL = "soc. + zdr.";
 
 /* ---------- jezici (HR / CZ / UK) ---------- */
 // zasad samo hrvatski i ukrajinski (CZ/RU skriveni dok ne budu potpuno prevedeni)
-const LANGS = ["HR", "UK"];
+const LANGS = ["HR", "CZ", "UK"];
 // trenutni jezik za tr() — postavlja ga useLang pri svakom renderu
 let CUR_LANG = "HR";
 // tr("hrvatski tekst {0}", x) → prijevod na odabrani jezik (ili hrvatski ako prijevoda nema)
 // vodeći emoji u oznakama uklanja se pri prikazu (novi izgled koristi ikone); ✓ ✕ i zastave ostaju
 const LEAD_EMOJI = /^(?:(?:[\u{1F300}-\u{1FAFF}\u{2600}-\u{2712}\u{2717}-\u{27BF}\u{2B00}-\u{2BFF}\u{231A}-\u{23FF}](?:\u200D[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}])*[\uFE0E\uFE0F]?)\s*)+/u;
 function tr(s, ...args) {
-  let out = (CUR_LANG === "UK" && TR_UK[s]) || s;
+  let out = (CUR_LANG === "UK" && TR_UK[s]) || (CUR_LANG === "CZ" && TR_CS[s]) || s;
   if (typeof out === "string" && out.length > 2) { const st = out.replace(LEAD_EMOJI, ""); if (st) out = st; }
   return args.length ? out.replace(/\{(\d+)\}/g, (m, i) => (args[i] ?? m)) : out;
 }
@@ -2653,7 +2656,8 @@ const monthLabel = (mo) => { if (!mo) return ""; const [y, m] = mo.split("-").ma
 const monthLong = (mo) => { if (!mo) return ""; const [y, m] = mo.split("-").map(Number); return `${mName(m - 1)} ${y}.`; };
 // ukrajinski ima ista pravila množine (1 / 2–4 / 5+), pa se samo zamijene riječi
 const PLURAL_UK = { dan: ["день", "дні", "днів"], osoba: ["особа", "особи", "осіб"], koverta: ["конверт", "конверти", "конвертів"], mjesec: ["місяць", "місяці", "місяців"], "otvoren mjesec": ["відкритий місяць", "відкриті місяці", "відкритих місяців"] };
-const plural = (n, one, few, many) => { const m10 = n % 10, m100 = n % 100; const f = CUR_LANG === "UK" && PLURAL_UK[one]; if (f) [one, few, many] = f; return `${n} ${m10 === 1 && m100 !== 11 ? one : m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14) ? few : many}`; };
+const PLURAL_CS = { dan: ["den", "dny", "dní"], osoba: ["osoba", "osoby", "osob"], koverta: ["obálka", "obálky", "obálek"], mjesec: ["měsíc", "měsíce", "měsíců"], "otvoren mjesec": ["otevřený měsíc", "otevřené měsíce", "otevřených měsíců"] };
+const plural = (n, one, few, many) => { const m10 = n % 10, m100 = n % 100; const f = (CUR_LANG === "UK" && PLURAL_UK[one]) || (CUR_LANG === "CZ" && PLURAL_CS[one]); if (f) [one, few, many] = f; return `${n} ${m10 === 1 && m100 !== 11 ? one : m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14) ? few : many}`; };
 function UnpaidPanel({ data, api, onOpenWorker }) {
   const [rows, setRows] = useState(null);      // koverte sa stanjem (view unpaid_wages_balance)
   const [pays, setPays] = useState([]);        // pojedinačne isplate

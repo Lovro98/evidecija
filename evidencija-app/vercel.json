@@ -1,7 +1,20 @@
 {
   "rewrites": [
-    { "source": "/prijava", "destination": "/prijava/index.html" },
-    { "source": "/robota", "destination": "/prijava/index.html" },
-    { "source": "/prace", "destination": "/prijava/index.html" }
+    {
+      "source": "/prijava",
+      "destination": "/prijava/index.html"
+    },
+    {
+      "source": "/robota",
+      "destination": "/prijava/index.html"
+    },
+    {
+      "source": "/prace",
+      "destination": "/prijava/index.html"
+    },
+    {
+      "source": "/prodaja",
+      "destination": "/prodaja.html"
+    }
   ]
 }
