@@ -15,6 +15,10 @@
     {
       "source": "/prodaja",
       "destination": "/prodaja.html"
+    },
+    {
+      "source": "/moje",
+      "destination": "/moje/index.html"
     }
   ]
 }

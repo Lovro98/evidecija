@@ -423,10 +423,7 @@ function objRevenue(data, object, logs, brigade) {
 }
 
 /* ---------- ispis PDF-a (preglednikov "Spremi kao PDF" / dijeljenje) ---------- */
-function printDoc(title, bodyHtml) {
-  const w = window.open("", "_blank");
-  if (!w) return;
-  w.document.write(`<!DOCTYPE html><html lang="hr"><head><meta charset="utf-8"><title>${title}</title><style>
+const PRINT_CSS = `
     body{font-family:Arial,Helvetica,sans-serif;color:#1C2521;padding:24px;max-width:720px;margin:0 auto}
     h1{font-size:20px;margin:0 0 2px} h2{font-size:14px;color:#5C6862;font-weight:normal;margin:0 0 14px}
     table{width:100%;border-collapse:collapse;margin:12px 0}
@@ -434,7 +431,11 @@ function printDoc(title, bodyHtml) {
     th{background:#f2f4f0;font-size:12px} .right{text-align:right}
     .tot td{font-weight:bold;font-size:14px;border-top:2px solid #1C2521}
     .muted{color:#5C6862;font-size:12px} .head{border-bottom:2px solid #1C2521;padding-bottom:10px;margin-bottom:14px}
-    h3{font-size:12px;text-transform:uppercase;letter-spacing:.6px;color:#5C6862;margin:20px 0 0}
+    h3{font-size:12px;text-transform:uppercase;letter-spacing:.6px;color:#5C6862;margin:20px 0 0}`;
+function printDoc(title, bodyHtml) {
+  const w = window.open("", "_blank");
+  if (!w) return;
+  w.document.write(`<!DOCTYPE html><html lang="hr"><head><meta charset="utf-8"><title>${title}</title><style>${PRINT_CSS}
   </style></head><body>${bodyHtml}<script>setTimeout(function(){window.print()},350)<\/script></body></html>`);
   w.document.close();
 }
@@ -6771,6 +6772,78 @@ function SignContract({ worker, data, api, onClose }) {
   );
 }
 
+/* ---------- radnički portal (/moje): ID + PIN ---------- */
+const PORTAL_URL = "evidecija.vercel.app/moje";
+function printPortalCards(list) {
+  const cards = list.map((x) => `<div class="pc">
+    <div class="pn">${escHtml(x.name)}</div>
+    <div class="pu">${PORTAL_URL}</div>
+    <div class="pr"><span>ID</span><b>${escHtml(x.code)}</b></div>
+    <div class="pr"><span>PIN</span><b>${escHtml(x.pin)}</b></div>
+    <div class="pt">HR: Ovdje vidiš svoje plaće. PIN nikome ne pokazuj.<br>CZ: Zde uvidíte své výplaty. PIN nikomu neukazujte.<br>UA: Тут ви бачите свої зарплати. Нікому не показуйте PIN.</div>
+  </div>`).join("");
+  printDoc("Pristup radnika", `<style>.pc{border:2px dashed #1C2521;border-radius:10px;padding:14px 16px;margin:0 0 14px;page-break-inside:avoid}
+    .pn{font-size:17px;font-weight:bold}.pu{font-size:13px;color:#0E6B4F;font-weight:bold;margin:2px 0 8px}
+    .pr{display:flex;gap:12px;align-items:baseline;font-size:13px}.pr span{width:34px;color:#5C6862}.pr b{font-size:22px;letter-spacing:3px;font-family:monospace}
+    .pt{font-size:11px;color:#5C6862;margin-top:8px;line-height:1.45}</style>${cards}`);
+}
+function WorkerPortalCard({ worker }) {
+  const [info, setInfo] = useState(undefined); // undefined = učitavam, null = nema pristupa
+  const [fresh, setFresh] = useState(null); // { code, pin } — PIN se vidi samo odmah nakon izdavanja
+  const [busy, setBusy] = useState(false);
+  const load = useCallback(async () => {
+    const { data: d, error } = await supabase.from("worker_portal").select("code, last_login, locked_until, issued_at").eq("worker_id", worker.id).maybeSingle();
+    setInfo(error ? null : d || null);
+  }, [worker.id]);
+  useEffect(() => { setFresh(null); load(); }, [load]);
+  const issue = async (reset) => {
+    if (reset && !(await uiConfirm(tr("Stari PIN više neće raditi. Izdati novi PIN?")))) return;
+    setBusy(true);
+    const { data: d, error } = await supabase.rpc("portal_issue", { p_ids: [worker.id], p_reset: reset });
+    setBusy(false);
+    if (error) return uiAlert(tr("Greška: ") + error.message);
+    const x = (d || [])[0];
+    if (x?.pin) setFresh({ code: x.code, pin: x.pin });
+    load();
+  };
+  const revoke = async () => {
+    if (!(await uiConfirm(tr("Radnik se više neće moći prijaviti. Ukinuti pristup?")))) return;
+    setBusy(true);
+    const { error } = await supabase.rpc("portal_revoke", { p_id: worker.id });
+    setBusy(false);
+    if (error) return uiAlert(tr("Greška: ") + error.message);
+    setFresh(null); load();
+  };
+  if (info === undefined) return null;
+  const locked = info?.locked_until && info.locked_until > new Date().toISOString();
+  return (
+    <Card>
+      <div style={{ fontWeight: 700, marginBottom: 4 }}>{tr("🔑 Pristup za radnika (moje plaće)")}</div>
+      <div style={{ fontSize: 13, color: S.sub, marginBottom: 10 }}>{tr("Radnik se prijavi na {0} sa svojim ID-om i PIN-om i vidi svoje isplaćene obračune.", PORTAL_URL)}</div>
+      {info ? (
+        <>
+          <div className="num" style={{ display: "flex", gap: 14, alignItems: "baseline", flexWrap: "wrap", marginBottom: 8 }}>
+            <span style={{ color: S.sub, fontSize: 13 }}>ID</span><b style={{ fontSize: 22, letterSpacing: 2, fontFamily: "monospace" }}>{info.code}</b>
+            {fresh && <><span style={{ color: S.sub, fontSize: 13 }}>PIN</span><b style={{ fontSize: 22, letterSpacing: 2, fontFamily: "monospace", color: S.green }}>{fresh.pin}</b></>}
+          </div>
+          {fresh && <div style={{ fontSize: 12.5, color: S.amber, fontWeight: 600, marginBottom: 8 }}>{tr("Zapiši ili isprintaj PIN sada — kasnije se više ne vidi (možeš izdati novi).")}</div>}
+          <div style={{ fontSize: 12.5, color: locked ? S.red : S.sub, marginBottom: 10 }}>
+            {locked ? tr("⚠️ Zaključano zbog krivih PIN-ova — izdaj novi PIN za otključavanje.")
+              : info.last_login ? tr("Zadnja prijava: {0}", fmtDate(info.last_login.slice(0, 10))) : tr("Još se nije prijavio.")}
+          </div>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            {fresh && <Btn small onClick={() => printPortalCards([{ name: worker.name, ...fresh }])}>{tr("🖨️ Ispiši karticu")}</Btn>}
+            <Btn small kind="ghost" disabled={busy} onClick={() => issue(true)}>{tr("Novi PIN")}</Btn>
+            <Btn small kind="danger" disabled={busy} onClick={revoke}>{tr("Ukini pristup")}</Btn>
+          </div>
+        </>
+      ) : (
+        <Btn small disabled={busy} onClick={() => issue(false)}>{tr("Izdaj ID i PIN")}</Btn>
+      )}
+    </Card>
+  );
+}
+
 function WorkerDetail({ worker, data, api, onBack }) {
   const [edit, setEdit] = useState(false);
   const [form, setForm] = useState({ ...worker, rate: String(worker.rate || ""), rateCur: wCur(worker), ...splitNameForEdit(worker.name) });
@@ -7030,6 +7103,8 @@ function WorkerDetail({ worker, data, api, onBack }) {
           </div>
         ))}
       </Card>
+
+      {api.admin && <WorkerPortalCard worker={worker} />}
 
       {(() => {
         const y = new Date().getFullYear();
@@ -9383,12 +9458,6 @@ function DigitalPayroll({ ids, allRows, month, scopeLabel, data, api, admin, rec
     setBusy(false);
   };
 
-  const openSigned = async () => {
-    const d = signedDocFor(data, id, month); if (!d) return;
-    const { data: s } = await supabase.storage.from("docs").createSignedUrl(d.filePath, 300);
-    if (s?.signedUrl) window.open(s.signedUrl, "_blank");
-  };
-
   const dotColor = (s) => s === "signed" || s === "paid" ? S.green : s === "pending" ? S.amber : "#fff";
   const rc = r ? receiptOf(r) : null;
   const signedDoc = id ? signedDocFor(data, id, month) : null;
@@ -9422,8 +9491,18 @@ function DigitalPayroll({ ids, allRows, month, scopeLabel, data, api, admin, rec
           onTouchStart={(e) => { if (signing || e.touches.length > 1 || e.target.closest("canvas,input,button")) { touch.current = null; return; } touch.current = { x: e.touches[0].clientX, y: e.touches[0].clientY, t: Date.now() }; }}
           onTouchEnd={(e) => { const t0 = touch.current; touch.current = null; if (!t0) return; const t = e.changedTouches[0]; const dx = t.clientX - t0.x, dy = t.clientY - t0.y;
             if (Math.abs(dx) > 60 && Math.abs(dx) > Math.abs(dy) * 1.5 && Date.now() - t0.t < 800) go(idx + (dx < 0 ? 1 : -1)); }}>
-          <div className="dp-doc">
-            <div key={id} className="dp-slip" dangerouslySetInnerHTML={{ __html: payslipHtml(r, period) }} />
+          <div className="dp-doc" style={{ position: "relative" }}>
+            {/* nakon potpisa obračun se zamagli, da ga nitko ne slika mobitelom */}
+            <div key={id} className="dp-slip" aria-hidden={signedDoc ? "true" : undefined}
+              style={signedDoc ? { filter: "blur(14px)", userSelect: "none", pointerEvents: "none" } : undefined}
+              dangerouslySetInnerHTML={{ __html: payslipHtml(r, period) }} />
+            {signedDoc && (
+              <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", pointerEvents: "none" }}>
+                <div style={{ background: "rgba(16,35,63,.86)", color: "#fff", borderRadius: 14, padding: "14px 20px", fontWeight: 800, fontSize: 16, textAlign: "center" }}>
+                  {tr("🔒 Potpisano · podaci su skriveni")}
+                </div>
+              </div>
+            )}
           </div>
           <div className="dp-side">
             <div>
@@ -9432,7 +9511,7 @@ function DigitalPayroll({ ids, allRows, month, scopeLabel, data, api, admin, rec
             </div>
             <div>
               <div style={{ fontSize: 11.5, letterSpacing: 1, textTransform: "uppercase", color: S.sub, fontWeight: 700 }}>{tr("Za isplatu")}</div>
-              <div style={{ fontSize: 30, fontWeight: 800 }}>{rc.net}</div>
+              <div style={{ fontSize: 30, fontWeight: 800, ...(signedDoc ? { filter: "blur(10px)", userSelect: "none" } : {}) }}>{rc.net}</div>
             </div>
             {err && <div style={{ background: S.redSoft, color: S.red, borderRadius: 10, padding: "9px 12px", fontSize: 13.5, fontWeight: 600 }}>{err}</div>}
             {signedDoc ? (
@@ -9442,7 +9521,6 @@ function DigitalPayroll({ ids, allRows, month, scopeLabel, data, api, admin, rec
                   {p?.approved ? tr("✓ Isplaćeno") : tr("Potpisano · čeka odobrenje")}
                   <div style={{ fontWeight: 500, fontSize: 13, marginTop: 4 }}>{(signedDoc.note || "").split(" · ").slice(-1)[0]}</div>
                 </div>
-                <Btn kind="ghost" onClick={openSigned}>{tr("📄 Otvori potpisani PDF")}</Btn>
                 {justSigned === id && (
                   <Btn onClick={() => (nx < 0 ? onClose() : go(nx))} style={{ minHeight: 56, fontSize: 16 }}>
                     {nx < 0 ? tr("Svi su potpisali · Završi") : tr("Sljedeći: {0} ›", rowOf(list[nx])?.w.name || "")}
@@ -9854,6 +9932,43 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
       <div class="muted" style="margin-top:28px;font-size:10.5px">${L("Interni pregled odrađenih sati i gotovinske isplate. Ne zamjenjuje službenu výplatní pásku.")}</div>`;
   };
   const printPayslip = (r) => printDoc(`Obračun ${r.w.name}`, payslipBody(r, api.settings));
+
+  /* radnički portal: za odobrene isplate spremi obračun (oznake ⟦…⟧ prevodi stranica /moje na jezik radnika) */
+  const [snapNet, setSnapNet] = useState(null); // workerId -> net tekst spremljenog obračuna za ovaj mjesec
+  useEffect(() => {
+    setSnapNet(null);
+    if (!admin || view !== "month") return;
+    let off = false;
+    supabase.from("payslip_snapshots").select("worker_id, net").eq("month", month)
+      .then(({ data: d, error }) => { if (!off && !error) setSnapNet(Object.fromEntries((d || []).map((x) => [x.worker_id, x.net]))); });
+    return () => { off = true; };
+  }, [admin, view, month]);
+  useEffect(() => {
+    if (!admin || view !== "month" || !snapNet) return;
+    const all = calcRows(data, inMonth, new Set()); // svi objekti — radnik vidi cijeli mjesec
+    const recs = all.filter((r) => { const p = paidFor(data, r.w.id, month); return p && p.approved && snapNet[r.w.id] !== breakdownOf(r).netText; })
+      .map((r) => ({ worker_id: r.w.id, month, net: breakdownOf(r).netText, updated_by: api.uid(), updated_at: new Date().toISOString(),
+        html: `<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>${PRINT_CSS} body{padding:16px}</style></head><body>${payslipBody(r, api.settings, (x) => `⟦${x}⟧`, `⟦@${month}⟧`)}</body></html>` }));
+    if (!recs.length) return;
+    setSnapNet((sn) => ({ ...sn, ...Object.fromEntries(recs.map((x) => [x.worker_id, x.net])) }));
+    supabase.from("payslip_snapshots").upsert(recs).then(({ error }) => { if (error) console.warn("payslip_snapshots", error.message); });
+  }, [admin, view, month, snapNet, data]);
+  const [portalBusy, setPortalBusy] = useState(false);
+  const issuePortal = async () => {
+    const list = displayRows.map((r) => r.w);
+    if (!list.length || portalBusy) return;
+    setPortalBusy(true);
+    const { data: d, error } = await supabase.rpc("portal_issue", { p_ids: list.map((w) => w.id), p_reset: false });
+    setPortalBusy(false);
+    if (error) return uiAlert(tr("Greška: ") + error.message);
+    const fresh = (d || []).filter((x) => x.pin).map((x) => ({ ...x, name: list.find((w) => w.id === x.worker_id)?.name || "" }))
+      .sort((a, b) => a.name.localeCompare(b.name, "hr"));
+    const had = (d || []).length - fresh.length;
+    if (fresh.length) printPortalCards(fresh);
+    uiAlert(fresh.length
+      ? tr("Izdano {0} novih pristupa (kartice su otvorene za ispis).", fresh.length) + (had ? " " + tr("{0} radnika već ima pristup — novi PIN za njih izdaješ na kartici radnika.", had) : "")
+      : tr("Svi ovi radnici već imaju pristup. Novi PIN izdaješ na kartici radnika."));
+  };
   // dijeli tekstualni sažetak (ne i sam PDF — pravo dijeljenje PDF datoteke traži dodatnu biblioteku)
   const shareSummary = async (r) => {
     const text = `Obračun — ${r.w.name}\n${periodLabel}\nSati: ${fmtH(r.hours)}\nZa isplatu: ${breakdownOf(r).netText}`;
@@ -10202,6 +10317,11 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
               {view === "month" && signedForView.length > 0 && (
                 <Btn kind="ghost" onClick={downloadSigned} disabled={mergeBusy} style={{ width: "100%", marginBottom: 10 }}>
                   {mergeBusy ? tr("Spajam PDF-ove…") : tr("🖨️ Preuzmi / ispiši potpisane isplate ({0})", signedForView.length)}
+                </Btn>
+              )}
+              {view === "month" && admin && displayRows.length > 0 && (
+                <Btn kind="ghost" onClick={issuePortal} disabled={portalBusy} style={{ width: "100%", marginBottom: 10 }}>
+                  {tr("🔑 ID i PIN za radnike ({0})", displayRows.length)}
                 </Btn>
               )}
               {view === "month" && (

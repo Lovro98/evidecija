@@ -9,6 +9,7 @@ export default defineConfig({
       input: {
         main: resolve(__dirname, 'index.html'),
         prijava: resolve(__dirname, 'prijava/index.html'),
+        moje: resolve(__dirname, 'moje/index.html'),
       },
     },
   },
