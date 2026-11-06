@@ -970,7 +970,7 @@ export const TR_CS = {
  "račun nije upisan": "účet není zadán",
  "soc. + zdr.": "soc. + zdrav.",
  // radnički portal (ID + PIN) i zamagljivanje nakon potpisa
- "🔒 Potpisano · podaci su skriveni": "🔒 Podepsáno · údaje jsou skryté",
+ "✓ Potpisano": "✓ Podepsáno",
  "🔑 Pristup za radnika (moje plaće)": "🔑 Přístup pro pracovníka (moje výplaty)",
  "Radnik se prijavi na {0} sa svojim ID-om i PIN-om i vidi svoje isplaćene obračune.": "Pracovník se přihlásí na {0} svým ID a PINem a vidí svá vyplacená vyúčtování.",
  "Zapiši ili isprintaj PIN sada — kasnije se više ne vidi (možeš izdati novi).": "Zapište nebo vytiskněte PIN nyní — později už ho neuvidíte (můžete vydat nový).",

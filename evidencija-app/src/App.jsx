@@ -9499,7 +9499,7 @@ function DigitalPayroll({ ids, allRows, month, scopeLabel, data, api, admin, rec
             {signedDoc && (
               <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", pointerEvents: "none" }}>
                 <div style={{ background: "rgba(16,35,63,.86)", color: "#fff", borderRadius: 14, padding: "14px 20px", fontWeight: 800, fontSize: 16, textAlign: "center" }}>
-                  {tr("🔒 Potpisano · podaci su skriveni")}
+                  {tr("✓ Potpisano")}
                 </div>
               </div>
             )}

@@ -996,7 +996,7 @@ export const TR_UK = {
  "račun nije upisan": "рахунок не вказано",
  "soc. + zdr.": "соц. + мед. страхування",
  // radnički portal (ID + PIN) i zamagljivanje nakon potpisa
- "🔒 Potpisano · podaci su skriveni": "🔒 Підписано · дані приховано",
+ "✓ Potpisano": "✓ Підписано",
  "🔑 Pristup za radnika (moje plaće)": "🔑 Доступ для працівника (мої зарплати)",
  "Radnik se prijavi na {0} sa svojim ID-om i PIN-om i vidi svoje isplaćene obračune.": "Працівник входить на {0} зі своїм ID і PIN та бачить свої виплачені розрахунки.",
  "Zapiši ili isprintaj PIN sada — kasnije se više ne vidi (možeš izdati novi).": "Запишіть або надрукуйте PIN зараз — пізніше його не буде видно (можна видати новий).",
