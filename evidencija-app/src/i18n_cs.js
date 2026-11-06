@@ -1000,4 +1000,7 @@ export const TR_CS = {
  "{0} potpisalo": "{0} podepsalo",
  "Tvoje plaće online:": "Vaše výplaty online:",
  "pristup nije izdan.": "přístup nebyl vydán.",
+ "Skeniraj QR kod mobitelom i upiši PIN.": "Naskenujte QR kód mobilem a zadejte PIN.",
+ "Tvoj broj mobitela": "Vaše číslo mobilu",
+ "Upiši cijeli broj (najmanje 9 znamenki).": "Zadejte celé číslo (alespoň 9 číslic).",
 };

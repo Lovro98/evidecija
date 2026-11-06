@@ -1026,4 +1026,7 @@ export const TR_UK = {
  "{0} potpisalo": "{0} підписали",
  "Tvoje plaće online:": "Ваші зарплати онлайн:",
  "pristup nije izdan.": "доступ не видано.",
+ "Skeniraj QR kod mobitelom i upiši PIN.": "Відскануйте QR-код телефоном і введіть PIN.",
+ "Tvoj broj mobitela": "Ваш номер мобільного",
+ "Upiši cijeli broj (najmanje 9 znamenki).": "Введіть повний номер (щонайменше 9 цифр).",
 };

@@ -1231,6 +1231,7 @@ export default function App() {
         ...(f.positionRates ? { position_rates: cleanPositionRates(f.positionRates, f.position) } : {}),
       }); if (admin && (old?.bankAccount || "") !== (f.bankAccount || "").trim()) await saveBank(id, f.bankAccount); }, `Uredio podatke radnika: ${name}${diffs.length ? " (" + diffs.join(", ") + ")" : ""}`);
     },
+    setPhone: (w, phone) => act(() => upd("workers", w.id, { phone }), `Upisan broj mobitela radniku ${w.name} (digitalni obračun)`),
     setPosition: (w, position) => act(() => upd("workers", w.id, { position }),
       `Postavio poziciju radniku ${w.name}: ${position || "—"}`),
     delWorker: (w) => act(() => softDel("workers", w.id), `Obrisao radnika: ${w.name}`),
@@ -6774,8 +6775,18 @@ function SignContract({ worker, data, api, onClose }) {
 
 /* ---------- radnički portal (/moje): ID + PIN ---------- */
 const PORTAL_URL = "evidecija.vercel.app/moje";
+let QR_LIB = null;
+const loadQr = () => (QR_LIB ? Promise.resolve(QR_LIB)
+  : import(/* @vite-ignore */ "https://cdn.jsdelivr.net/npm/qrcode-generator@2.0.4/+esm").then((m) => (QR_LIB = m.default || m.qrcode)).catch(() => null));
+const portalLink = (code) => `https://${PORTAL_URL}?id=${encodeURIComponent(code || "")}`;
+const qrSvg = (text, px = 96) => {
+  if (!QR_LIB) return "";
+  try { const q = QR_LIB(0, "M"); q.addData(text); q.make(); return q.createSvgTag({ cellSize: 4, margin: 2, scalable: true }).replace("<svg ", `<svg width="${px}" height="${px}" `); }
+  catch { return ""; }
+};
 function printPortalCards(list) {
   const cards = list.map((x) => `<div class="pc">
+    <div class="pq">${qrSvg(portalLink(x.code), 110)}</div>
     <div class="pn">${escHtml(x.name)}</div>
     <div class="pu">${PORTAL_URL}</div>
     <div class="pr"><span>ID</span><b>${escHtml(x.code)}</b></div>
@@ -6785,7 +6796,7 @@ function printPortalCards(list) {
   printDoc("Pristup radnika", `<style>.pc{border:2px dashed #1C2521;border-radius:10px;padding:14px 16px;margin:0 0 14px;page-break-inside:avoid}
     .pn{font-size:17px;font-weight:bold}.pu{font-size:13px;color:#0E6B4F;font-weight:bold;margin:2px 0 8px}
     .pr{display:flex;gap:12px;align-items:baseline;font-size:13px}.pr span{width:34px;color:#5C6862}.pr b{font-size:22px;letter-spacing:3px;font-family:monospace}
-    .pt{font-size:11px;color:#5C6862;margin-top:8px;line-height:1.45}</style>${cards}`);
+    .pt{font-size:11px;color:#5C6862;margin-top:8px;line-height:1.45}.pq{float:right;margin-left:12px}.pc::after{content:"";display:block;clear:both}</style>${cards}`);
 }
 function WorkerPortalCard({ worker }) {
   const [info, setInfo] = useState(undefined); // undefined = učitavam, null = nema pristupa
@@ -6795,7 +6806,7 @@ function WorkerPortalCard({ worker }) {
     const { data: d, error } = await supabase.from("worker_portal").select("code, pin, last_login, locked_until, issued_at").eq("worker_id", worker.id).maybeSingle();
     setInfo(error ? null : d || null);
   }, [worker.id]);
-  useEffect(() => { setFresh(null); load(); }, [load]);
+  useEffect(() => { setFresh(null); load(); loadQr(); }, [load]);
   const issue = async (reset) => {
     if (reset && !(await uiConfirm(tr("Stari PIN više neće raditi. Izdati novi PIN?")))) return;
     setBusy(true);
@@ -9414,6 +9425,7 @@ function DigitalPayroll({ ids, allRows, month, scopeLabel, data, api, admin, rec
   const firstOpen = () => { const i = list.findIndex((id) => statusOf(id) === "open" || statusOf(id) === "pending"); return i < 0 ? 0 : i; };
   const [idx, setIdx] = useState(firstOpen);
   const [signing, setSigning] = useState(false);
+  const [phone, setPhone] = useState("");
   const [sig, setSig] = useState(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
@@ -9424,15 +9436,17 @@ function DigitalPayroll({ ids, allRows, month, scopeLabel, data, api, admin, rec
   const st = id ? statusOf(id) : "open";
   const doneN = list.filter((x) => statusOf(x) === "signed" || statusOf(x) === "paid").length;
 
-  const go = (n) => { if (signing || busy || n < 0 || n >= list.length) return; setIdx(n); setErr(""); setJustSigned(null); setSig(null); };
+  const go = (n) => { if (signing || busy || n < 0 || n >= list.length) return; setIdx(n); setErr(""); setJustSigned(null); setSig(null); setPhone(""); };
   const nextOpen = () => { for (let k = 1; k < list.length; k++) { const j = (idx + k) % list.length; const s = statusOf(list[j]); if (s === "open" || s === "pending") return j; } return -1; };
   useEffect(() => {
     const onKey = (e) => { if (signing || /INPUT|TEXTAREA|SELECT/.test(e.target.tagName)) return; if (e.key === "ArrowRight") go(idx + 1); if (e.key === "ArrowLeft") go(idx - 1); };
     window.addEventListener("keydown", onKey); return () => window.removeEventListener("keydown", onKey);
   });
 
+  const needPhone = !!r && !String(r.w.phone || "").trim();
+  const phoneOk = !needPhone || phone.replace(/\D/g, "").length >= 9;
   const confirm = async () => {
-    if (!sig || !r) return;
+    if (!sig || !r || !phoneOk) return;
     setBusy(true); setErr("");
     try {
       const rc = receiptOf(r);
@@ -9452,7 +9466,8 @@ function DigitalPayroll({ ids, allRows, month, scopeLabel, data, api, admin, rec
       const p = paidFor(data, r.w.id, month);
       if (!p) { if (admin) await api.markPaidApproved(r.w, month, r.net, r.czk.net); else await api.markPaid(r.w, month, r.net, r.czk.net); }
       else if (!p.approved && admin) await api.approvePayout(p, r.w.name);
-      setJustSigned(r.w.id); setSigning(false); setSig(null);
+      if (needPhone && phone.trim()) await api.setPhone(r.w, phone.trim().replace(/\s+/g, " "));
+      setJustSigned(r.w.id); setSigning(false); setSig(null); setPhone("");
     } catch (e) { setErr(tr("Greška pri spremanju: ") + (e.message || e)); }
     setBusy(false);
   };
@@ -9538,9 +9553,16 @@ function DigitalPayroll({ ids, allRows, month, scopeLabel, data, api, admin, rec
               <>
                 <div style={{ fontSize: 15 }}>{tr("Svojim potpisom potvrđujem da sam primio/la isplatu za {0} u iznosu", period)} <b>{rc.net}</b>.</div>
                 <InlineSignaturePad onChange={setSig} height={200} />
+                {needPhone && (
+                  <label style={{ fontWeight: 700, fontSize: 14 }}>{tr("Tvoj broj mobitela")}
+                    <input type="tel" inputMode="tel" autoComplete="tel" value={phone} onChange={(e) => setPhone(e.target.value.replace(/[^\d+ ]/g, "").slice(0, 20))}
+                      placeholder="+420 …" style={{ marginTop: 6, fontSize: 18, padding: "12px 14px" }} />
+                    {phone && !phoneOk && <div style={{ color: S.red, fontSize: 12.5, fontWeight: 600, marginTop: 4 }}>{tr("Upiši cijeli broj (najmanje 9 znamenki).")}</div>}
+                  </label>
+                )}
                 <div style={{ display: "flex", gap: 8 }}>
-                  <Btn kind="ghost" onClick={() => { setSigning(false); setSig(null); }} disabled={busy}>{tr("Odustani")}</Btn>
-                  <Btn onClick={confirm} disabled={!sig || busy} style={{ flex: 1, minHeight: 52 }}>{busy ? tr("Spremam…") : tr("Potvrdi potpis")}</Btn>
+                  <Btn kind="ghost" onClick={() => { setSigning(false); setSig(null); setPhone(""); }} disabled={busy}>{tr("Odustani")}</Btn>
+                  <Btn onClick={confirm} disabled={!sig || !phoneOk || busy} style={{ flex: 1, minHeight: 52 }}>{busy ? tr("Spremam…") : tr("Potvrdi potpis")}</Btn>
                 </div>
               </>
             )}
@@ -10012,10 +10034,16 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
     const m = { ...creds }; (d || []).forEach((x) => { if (x.pin) m[x.worker_id] = { code: x.code, pin: x.pin }; });
     setCreds(m); return m;
   };
-  const credsBox = (c) => (c ? `<div style="margin-top:18px;border:2px dashed #0E6B4F;border-radius:10px;padding:10px 14px;display:flex;gap:18px;align-items:baseline;flex-wrap:wrap;font-size:13px">
-      <b style="color:#0E6B4F">${tr("Tvoje plaće online:")} ${PORTAL_URL}</b>
-      <span>ID <b style="font-family:monospace;font-size:17px;letter-spacing:2px">${c.code}</b></span>
-      <span>PIN <b style="font-family:monospace;font-size:17px;letter-spacing:2px">${c.pin}</b></span></div>` : "");
+  const [, setQrReady] = useState(false);
+  useEffect(() => { loadQr().then((q) => q && setQrReady(true)); }, []);
+  const credsBox = (c) => (c ? `<div style="margin-top:18px;border:2px dashed #0E6B4F;border-radius:10px;padding:10px 14px;display:flex;gap:16px;align-items:center;font-size:13px;page-break-inside:avoid">
+      <div style="flex:1;display:flex;gap:8px 18px;align-items:baseline;flex-wrap:wrap">
+        <b style="color:#0E6B4F;width:100%">${tr("Tvoje plaće online:")} ${PORTAL_URL}</b>
+        <span>ID <b style="font-family:monospace;font-size:17px;letter-spacing:2px">${c.code}</b></span>
+        <span>PIN <b style="font-family:monospace;font-size:17px;letter-spacing:2px">${c.pin}</b></span>
+        <span style="width:100%;color:#5C6862;font-size:11.5px">${tr("Skeniraj QR kod mobitelom i upiši PIN.")}</span>
+      </div>
+      <div style="flex:none;background:#fff;line-height:0">${qrSvg(portalLink(c.code), 92)}</div></div>` : "");
   const issuePortal = async () => {
     const list = displayRows.map((r) => r.w);
     if (!list.length || portalBusy) return;

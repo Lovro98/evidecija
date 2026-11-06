@@ -49,7 +49,12 @@ const money = (v, cur) => (cur === "CZK"
 
 export default function Moje() {
   const [lang, setLangState] = useState(initialLang);
-  const [code, setCode] = useState(() => read("moje_code"));
+  const [code, setCode] = useState(() => { // ID iz QR koda ima prednost
+    try { const q = new URLSearchParams(window.location.search).get("id"); if (q) return q.trim().toUpperCase().slice(0, 12); } catch {}
+    return read("moje_code");
+  });
+  const pinRef = useRef(null);
+  useEffect(() => { if (code && pinRef.current) pinRef.current.focus(); }, []);
   const [pin, setPin] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
@@ -129,7 +134,7 @@ export default function Moje() {
           </label>
           <label style={{ fontWeight: 700, fontSize: 14, color: C.sub }}>PIN
             <input value={pin} onChange={(e) => setPin(e.target.value.replace(/\D/g, "").slice(0, 6))} type="password" inputMode="numeric"
-              autoComplete="current-password" placeholder="••••••" style={{ ...input, marginTop: 6 }} />
+              ref={pinRef} autoComplete="current-password" placeholder="••••••" style={{ ...input, marginTop: 6 }} />
           </label>
           {err && <div style={{ background: C.redSoft, color: C.red, borderRadius: 10, padding: "10px 12px", fontWeight: 600 }}>{err}</div>}
           <button type="submit" disabled={busy || !code.trim() || pin.length < 4} style={{ ...btn, opacity: busy || !code.trim() || pin.length < 4 ? 0.55 : 1 }}>
