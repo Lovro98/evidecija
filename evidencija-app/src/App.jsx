@@ -6792,7 +6792,7 @@ function WorkerPortalCard({ worker }) {
   const [fresh, setFresh] = useState(null); // { code, pin } — PIN se vidi samo odmah nakon izdavanja
   const [busy, setBusy] = useState(false);
   const load = useCallback(async () => {
-    const { data: d, error } = await supabase.from("worker_portal").select("code, last_login, locked_until, issued_at").eq("worker_id", worker.id).maybeSingle();
+    const { data: d, error } = await supabase.from("worker_portal").select("code, pin, last_login, locked_until, issued_at").eq("worker_id", worker.id).maybeSingle();
     setInfo(error ? null : d || null);
   }, [worker.id]);
   useEffect(() => { setFresh(null); load(); }, [load]);
@@ -6824,15 +6824,14 @@ function WorkerPortalCard({ worker }) {
         <>
           <div className="num" style={{ display: "flex", gap: 14, alignItems: "baseline", flexWrap: "wrap", marginBottom: 8 }}>
             <span style={{ color: S.sub, fontSize: 13 }}>ID</span><b style={{ fontSize: 22, letterSpacing: 2, fontFamily: "monospace" }}>{info.code}</b>
-            {fresh && <><span style={{ color: S.sub, fontSize: 13 }}>PIN</span><b style={{ fontSize: 22, letterSpacing: 2, fontFamily: "monospace", color: S.green }}>{fresh.pin}</b></>}
+            {(fresh?.pin || info.pin) && <><span style={{ color: S.sub, fontSize: 13 }}>PIN</span><b style={{ fontSize: 22, letterSpacing: 2, fontFamily: "monospace", color: S.green }}>{fresh?.pin || info.pin}</b></>}
           </div>
-          {fresh && <div style={{ fontSize: 12.5, color: S.amber, fontWeight: 600, marginBottom: 8 }}>{tr("Zapiši ili isprintaj PIN sada — kasnije se više ne vidi (možeš izdati novi).")}</div>}
           <div style={{ fontSize: 12.5, color: locked ? S.red : S.sub, marginBottom: 10 }}>
             {locked ? tr("⚠️ Zaključano zbog krivih PIN-ova — izdaj novi PIN za otključavanje.")
               : info.last_login ? tr("Zadnja prijava: {0}", fmtDate(info.last_login.slice(0, 10))) : tr("Još se nije prijavio.")}
           </div>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-            {fresh && <Btn small onClick={() => printPortalCards([{ name: worker.name, ...fresh }])}>{tr("🖨️ Ispiši karticu")}</Btn>}
+            {(fresh?.pin || info.pin) && <Btn small onClick={() => printPortalCards([{ name: worker.name, code: info.code, pin: fresh?.pin || info.pin }])}>{tr("🖨️ Ispiši karticu")}</Btn>}
             <Btn small kind="ghost" disabled={busy} onClick={() => issue(true)}>{tr("Novi PIN")}</Btn>
             <Btn small kind="danger" disabled={busy} onClick={revoke}>{tr("Ukini pristup")}</Btn>
           </div>
@@ -9908,6 +9907,7 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
     win.document.write(`<p style="font-family:sans-serif;padding:20px">${tr("Pripremam ispis…")}</p>`);
     setPrintAllBusy(true);
     try {
+      const cr = await ensureCreds(displayRows.map((r) => r.w.id));
       const groups = new Map();
       displayRows.forEach((r) => { const o = mainObjOf(r); if (!groups.has(o)) groups.set(o, []); groups.get(o).push(r); });
       const hotels = [...groups.entries()].map(([o, list]) => ({ name: objName(o) || tr("Bez objekta"),
@@ -9936,7 +9936,7 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
           <table><tr><th>${tr("Radnik")}</th><th class="right">${tr("Za isplatu")}</th><th>${tr("Status")}</th></tr>
           ${h.list.map((r) => `<tr><td>${r.w.name}</td><td class="right">${breakdownOf(r).netText}</td><td>${stTxt(r)}</td></tr>`).join("")}</table>`;
         first = false;
-        for (const r of h.list) body += `<div class="pb"></div>${payslipBody(r, api.settings)}${await receiptImg(r)}`;
+        for (const r of h.list) body += `<div class="pb"></div>${payslipBody(r, api.settings)}${credsBox(cr[r.w.id])}${await receiptImg(r)}`;
       }
       if (win.closed) return;
       printDoc(`Obračuni i potpisi ${month}`, `<style>.pb{break-before:page;page-break-before:always;height:0}@media screen{.pb{border-top:3px dashed #bbb;margin:28px 0}}</style>${body}`, win);
@@ -10004,20 +10004,26 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
     supabase.from("payslip_snapshots").upsert(recs).then(({ error }) => { if (error) console.warn("payslip_snapshots", error.message); });
   }, [admin, view, month, snapNet, data]);
   const [portalBusy, setPortalBusy] = useState(false);
+  const [creds, setCreds] = useState({}); // workerId -> { code, pin } za ispis na obračunu
+  const ensureCreds = async (ids) => { // radnici bez pristupa ga dobiju, ostali zadrže svoj ID + PIN
+    if (!admin || !ids.length) return creds;
+    const { data: d, error } = await supabase.rpc("portal_issue", { p_ids: ids, p_reset: false });
+    if (error) { console.warn("portal_issue", error.message); return creds; }
+    const m = { ...creds }; (d || []).forEach((x) => { if (x.pin) m[x.worker_id] = { code: x.code, pin: x.pin }; });
+    setCreds(m); return m;
+  };
+  const credsBox = (c) => (c ? `<div style="margin-top:18px;border:2px dashed #0E6B4F;border-radius:10px;padding:10px 14px;display:flex;gap:18px;align-items:baseline;flex-wrap:wrap;font-size:13px">
+      <b style="color:#0E6B4F">${tr("Tvoje plaće online:")} ${PORTAL_URL}</b>
+      <span>ID <b style="font-family:monospace;font-size:17px;letter-spacing:2px">${c.code}</b></span>
+      <span>PIN <b style="font-family:monospace;font-size:17px;letter-spacing:2px">${c.pin}</b></span></div>` : "");
   const issuePortal = async () => {
     const list = displayRows.map((r) => r.w);
     if (!list.length || portalBusy) return;
     setPortalBusy(true);
-    const { data: d, error } = await supabase.rpc("portal_issue", { p_ids: list.map((w) => w.id), p_reset: false });
+    const m = await ensureCreds(list.map((w) => w.id));
     setPortalBusy(false);
-    if (error) return uiAlert(tr("Greška: ") + error.message);
-    const fresh = (d || []).filter((x) => x.pin).map((x) => ({ ...x, name: list.find((w) => w.id === x.worker_id)?.name || "" }))
-      .sort((a, b) => a.name.localeCompare(b.name, "hr"));
-    const had = (d || []).length - fresh.length;
-    if (fresh.length) printPortalCards(fresh);
-    uiAlert(fresh.length
-      ? tr("Izdano {0} novih pristupa (kartice su otvorene za ispis).", fresh.length) + (had ? " " + tr("{0} radnika već ima pristup — novi PIN za njih izdaješ na kartici radnika.", had) : "")
-      : tr("Svi ovi radnici već imaju pristup. Novi PIN izdaješ na kartici radnika."));
+    const cards = list.filter((w) => m[w.id]).map((w) => ({ name: w.name, ...m[w.id] })).sort((a, b) => a.name.localeCompare(b.name, "hr"));
+    if (cards.length) printPortalCards(cards); else uiAlert(tr("Greška: ") + tr("pristup nije izdan."));
   };
   // dijeli tekstualni sažetak (ne i sam PDF — pravo dijeljenje PDF datoteke traži dodatnu biblioteku)
   const shareSummary = async (r) => {
@@ -10360,7 +10366,7 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
           {section === "radnici" && (
             <>
               {view === "month" && displayRows.length > 0 && (
-                <Btn onClick={() => setDigiIds(displayRows.map((r) => r.w.id))} style={{ width: "100%", marginBottom: 10, minHeight: 52, fontSize: 16 }}>
+                <Btn onClick={() => { const ids = displayRows.map((r) => r.w.id); setDigiIds(ids); ensureCreds(ids); }} style={{ width: "100%", marginBottom: 10, minHeight: 52, fontSize: 16 }}>
                   {tr("✍ Digitalni obračun ({0})", displayRows.length)}{objFilterName ? " · " + objFilterName : ""}
                 </Btn>
               )}
@@ -10773,7 +10779,7 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
 
       {digiIds && (
         <DigitalPayroll ids={digiIds} allRows={rows} month={month} scopeLabel={objFilterName || api.t("allObjects")}
-          data={data} api={api} admin={admin} receiptOf={(r) => receiptOf(r, tr)} payslipHtml={(r, per) => payslipBody(r, api.settings, tr, per)} onClose={() => setDigiIds(null)} />
+          data={data} api={api} admin={admin} receiptOf={(r) => receiptOf(r, tr)} payslipHtml={(r, per) => payslipBody(r, api.settings, tr, per) + credsBox(creds[r.w.id])} onClose={() => setDigiIds(null)} />
       )}
       {sigTarget && (
         <SignaturePad title={tr("Potpis — {0}", sigTarget.name)}

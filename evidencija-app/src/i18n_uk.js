@@ -1024,4 +1024,6 @@ export const TR_UK = {
  "nije potpisano": "не підписано",
  "{0} radnika": "{0} працівників",
  "{0} potpisalo": "{0} підписали",
+ "Tvoje plaće online:": "Ваші зарплати онлайн:",
+ "pristup nije izdan.": "доступ не видано.",
 };

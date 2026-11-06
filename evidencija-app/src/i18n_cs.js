@@ -998,4 +998,6 @@ export const TR_CS = {
  "nije potpisano": "nepodepsáno",
  "{0} radnika": "{0} pracovníků",
  "{0} potpisalo": "{0} podepsalo",
+ "Tvoje plaće online:": "Vaše výplaty online:",
+ "pristup nije izdan.": "přístup nebyl vydán.",
 };
