@@ -987,4 +987,15 @@ export const TR_CS = {
  "Izdano {0} novih pristupa (kartice su otvorene za ispis).": "Vydáno {0} nových přístupů (kartičky jsou otevřené k tisku).",
  "{0} radnika već ima pristup — novi PIN za njih izdaješ na kartici radnika.": "{0} pracovníků už přístup má — nový PIN jim vydáte na kartě pracovníka.",
  "Svi ovi radnici već imaju pristup. Novi PIN izdaješ na kartici radnika.": "Všichni tito pracovníci už přístup mají. Nový PIN vydáte na kartě pracovníka.",
+ // ispis svih obračuna po hotelima
+ "🖨️ Ispiši sve obračune i potpise · po hotelima ({0})": "🖨️ Vytisknout všechna vyúčtování a podpisy · podle hotelů ({0})",
+ "Pripremam ispis…": "Připravuji tisk…",
+ "Preglednik je blokirao novi prozor — dopusti skočne prozore.": "Prohlížeč zablokoval nové okno — povolte vyskakovací okna.",
+ "Potpisana potvrda se nije mogla učitati.": "Podepsané potvrzení se nepodařilo načíst.",
+ "✓ potpisano · isplaćeno": "✓ podepsáno · vyplaceno",
+ "✓ potpisano": "✓ podepsáno",
+ "isplaćeno (bez potpisa)": "vyplaceno (bez podpisu)",
+ "nije potpisano": "nepodepsáno",
+ "{0} radnika": "{0} pracovníků",
+ "{0} potpisalo": "{0} podepsalo",
 };

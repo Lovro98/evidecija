@@ -432,8 +432,8 @@ const PRINT_CSS = `
     .tot td{font-weight:bold;font-size:14px;border-top:2px solid #1C2521}
     .muted{color:#5C6862;font-size:12px} .head{border-bottom:2px solid #1C2521;padding-bottom:10px;margin-bottom:14px}
     h3{font-size:12px;text-transform:uppercase;letter-spacing:.6px;color:#5C6862;margin:20px 0 0}`;
-function printDoc(title, bodyHtml) {
-  const w = window.open("", "_blank");
+function printDoc(title, bodyHtml, win) {
+  const w = win || window.open("", "_blank");
   if (!w) return;
   w.document.write(`<!DOCTYPE html><html lang="hr"><head><meta charset="utf-8"><title>${title}</title><style>${PRINT_CSS}
   </style></head><body>${bodyHtml}<script>setTimeout(function(){window.print()},350)<\/script></body></html>`);
@@ -9894,6 +9894,56 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
     setMergeBusy(false);
   };
 
+  /* sve plaće + potpisane potvrde za mjesec, razvrstano po hotelima → jedan dokument za ispis */
+  const [printAllBusy, setPrintAllBusy] = useState(false);
+  const mainObjOf = (r) => { // hotel u kojem je radnik taj mjesec radio najviše sati
+    const h = {}; r.logs.forEach((l) => { h[l.objectId || ""] = (h[l.objectId || ""] || 0) + (Number(l.hours) || 0); });
+    const best = Object.entries(h).sort((a, b) => b[1] - a[1])[0];
+    return best ? best[0] : r.w.objectId || "";
+  };
+  const printAllByHotel = async () => {
+    if (view !== "month" || !displayRows.length || printAllBusy) return;
+    const win = window.open("", "_blank");
+    if (!win) return uiAlert(tr("Preglednik je blokirao novi prozor — dopusti skočne prozore."));
+    win.document.write(`<p style="font-family:sans-serif;padding:20px">${tr("Pripremam ispis…")}</p>`);
+    setPrintAllBusy(true);
+    try {
+      const groups = new Map();
+      displayRows.forEach((r) => { const o = mainObjOf(r); if (!groups.has(o)) groups.set(o, []); groups.get(o).push(r); });
+      const hotels = [...groups.entries()].map(([o, list]) => ({ name: objName(o) || tr("Bez objekta"),
+        list: [...list].sort((a, b) => a.w.name.localeCompare(b.w.name, "hr")) }))
+        .sort((a, b) => a.name.localeCompare(b.name, "hr"));
+      const receiptImg = async (r) => { // potpisana potvrda (PDF) → slika ispod obračuna
+        const d = signedDocFor(data, r.w.id, month);
+        if (!d) return "";
+        try {
+          const { data: blob, error } = await supabase.storage.from("docs").download(d.filePath);
+          if (error) throw error;
+          const pdf = await pdfjsLib.getDocument({ data: new Uint8Array(await blob.arrayBuffer()) }).promise;
+          const pg = await pdf.getPage(1);
+          const vp = pg.getViewport({ scale: 1.3 });
+          const c = document.createElement("canvas"); c.width = vp.width; c.height = vp.height;
+          await pg.render({ canvasContext: c.getContext("2d"), viewport: vp }).promise;
+          return `<div class="pb"></div><img src="${c.toDataURL("image/jpeg", 0.85)}" style="width:100%;max-width:720px;display:block">`;
+        } catch { return `<div class="muted" style="margin-top:12px">${tr("Potpisana potvrda se nije mogla učitati.")}</div>`; }
+      };
+      const stTxt = (r) => { const p = paidFor(data, r.w.id, month); const sd = signedDocFor(data, r.w.id, month);
+        return sd ? (p?.approved ? tr("✓ potpisano · isplaćeno") : tr("✓ potpisano")) : p?.approved ? tr("isplaćeno (bez potpisa)") : tr("nije potpisano"); };
+      let body = "", first = true;
+      for (const h of hotels) {
+        const signedN = h.list.filter((r) => signedDocFor(data, r.w.id, month)).length;
+        body += `${first ? "" : '<div class="pb"></div>'}<div class="head"><h1>${h.name}</h1><div class="muted">${periodLabel} · ${tr("{0} radnika", h.list.length)} · ${tr("{0} potpisalo", signedN)}</div></div>
+          <table><tr><th>${tr("Radnik")}</th><th class="right">${tr("Za isplatu")}</th><th>${tr("Status")}</th></tr>
+          ${h.list.map((r) => `<tr><td>${r.w.name}</td><td class="right">${breakdownOf(r).netText}</td><td>${stTxt(r)}</td></tr>`).join("")}</table>`;
+        first = false;
+        for (const r of h.list) body += `<div class="pb"></div>${payslipBody(r, api.settings)}${await receiptImg(r)}`;
+      }
+      if (win.closed) return;
+      printDoc(`Obračuni i potpisi ${month}`, `<style>.pb{break-before:page;page-break-before:always;height:0}@media screen{.pb{border-top:3px dashed #bbb;margin:28px 0}}</style>${body}`, win);
+    } catch (e) { if (!win.closed) win.close(); uiAlert(tr("Greška: ") + (e.message || e)); }
+    setPrintAllBusy(false);
+  };
+
   /* PDF obračun za radnika */
   const payslipBody = (r, st, L = (x) => x, period = periodLabel) => {
     const gc = wCur(r.w);
@@ -10312,6 +10362,11 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
               {view === "month" && displayRows.length > 0 && (
                 <Btn onClick={() => setDigiIds(displayRows.map((r) => r.w.id))} style={{ width: "100%", marginBottom: 10, minHeight: 52, fontSize: 16 }}>
                   {tr("✍ Digitalni obračun ({0})", displayRows.length)}{objFilterName ? " · " + objFilterName : ""}
+                </Btn>
+              )}
+              {view === "month" && displayRows.length > 0 && (
+                <Btn onClick={printAllByHotel} disabled={printAllBusy} style={{ width: "100%", marginBottom: 10 }}>
+                  {printAllBusy ? tr("Pripremam ispis…") : tr("🖨️ Ispiši sve obračune i potpise · po hotelima ({0})", displayRows.length)}
                 </Btn>
               )}
               {view === "month" && signedForView.length > 0 && (

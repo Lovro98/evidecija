@@ -1013,4 +1013,15 @@ export const TR_UK = {
  "Izdano {0} novih pristupa (kartice su otvorene za ispis).": "Видано {0} нових доступів (картки відкрито для друку).",
  "{0} radnika već ima pristup — novi PIN za njih izdaješ na kartici radnika.": "{0} працівників уже мають доступ — новий PIN для них видаєте на картці працівника.",
  "Svi ovi radnici već imaju pristup. Novi PIN izdaješ na kartici radnika.": "Усі ці працівники вже мають доступ. Новий PIN видаєте на картці працівника.",
+ // ispis svih obračuna po hotelima
+ "🖨️ Ispiši sve obračune i potpise · po hotelima ({0})": "🖨️ Надрукувати всі розрахунки та підписи · за готелями ({0})",
+ "Pripremam ispis…": "Готую друк…",
+ "Preglednik je blokirao novi prozor — dopusti skočne prozore.": "Браузер заблокував нове вікно — дозвольте спливаючі вікна.",
+ "Potpisana potvrda se nije mogla učitati.": "Не вдалося завантажити підписане підтвердження.",
+ "✓ potpisano · isplaćeno": "✓ підписано · виплачено",
+ "✓ potpisano": "✓ підписано",
+ "isplaćeno (bez potpisa)": "виплачено (без підпису)",
+ "nije potpisano": "не підписано",
+ "{0} radnika": "{0} працівників",
+ "{0} potpisalo": "{0} підписали",
 };
