@@ -4474,9 +4474,9 @@ const invPayState = (inv) => {
 const allInvoicesForPay = (data) => {
   const objName = (id) => data.objects.find((o) => o.id === id)?.name || "Obrisan objekt";
   const out = (data.objectInvoices || []).map((i) => ({ kind: "out", inv: i, party: i.agency ? "🏢 " + i.agency : objName(i.objectId), number: i.number,
-    date: i.duzp || i.issueDate, total: i.amount, currency: i.currency }));
+    date: i.duzp || i.issueDate, month: (i.period || i.duzp || i.issueDate || "").slice(0, 7), total: i.amount, currency: i.currency }));
   const inn = (data.purchaseInvoices || []).map((p) => ({ kind: "in", inv: p, party: p.supplier, number: p.number,
-    date: p.duzp, total: round2((p.base || 0) + (p.vat || 0)), currency: p.currency }));
+    date: p.duzp, month: (p.duzp || p.issueDate || "").slice(0, 7), total: round2((p.base || 0) + (p.vat || 0)), currency: p.currency }));
   return [...out, ...inn];
 };
 const overdueInvoices = (data) => allInvoicesForPay(data).filter((r) => invPayState(r.inv).overdue);
@@ -4559,8 +4559,10 @@ function InvoicePayControl({ kind, inv, label, api }) {
 }
 
 function InvoicesPayPanel({ data, api }) {
-  const [filter, setFilter] = useState("unpaid"); // unpaid | overdue | paid | all
+  const [filter, setFilter] = useState("all"); // unpaid | overdue | paid | all
   const [side, setSide] = useState("all"); // all | in | out
+  const [byMonth, setByMonth] = useState(true);
+  const [openMonths, setOpenMonths] = useState(null); // null = zadano (otvoreni mjeseci s neplaćenim)
   const rows = allInvoicesForPay(data);
   const withSt = rows.map((r) => ({ ...r, st: invPayState(r.inv) }));
   const shown = withSt
@@ -4606,8 +4608,46 @@ function InvoicesPayPanel({ data, api }) {
         {chipBtn("out", side, setSide, tr("Izdane"))}
         {chipBtn("in", side, setSide, tr("Primljene"))}
       </div>
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 10 }}>
+        {chipBtn(true, byMonth, setByMonth, tr("📅 Po mjesecima"))}
+        {chipBtn(false, byMonth, setByMonth, tr("Popis"))}
+      </div>
       {shown.length === 0 && <div style={{ color: S.sub, fontSize: 13 }}>{tr("Nema faktura za ovaj prikaz.")}</div>}
-      {shown.map((r) => {
+      {byMonth ? (() => {
+        const sideRows = withSt.filter((r) => side === "all" || r.kind === side);
+        const months = [...new Set(shown.map((r) => r.month || ""))].sort((a, b) => b.localeCompare(a));
+        const defOpen = new Set(months.filter((m) => shown.some((r) => r.month === m && !r.st.paid)).slice(0, 3));
+        if (!defOpen.size && months[0] !== undefined) defOpen.add(months[0]);
+        const isOpen = (m) => (openMonths ? openMonths.has(m) : defOpen.has(m));
+        const toggle = (m) => { const n = new Set(openMonths || defOpen); n.has(m) ? n.delete(m) : n.add(m); setOpenMonths(n); };
+        return months.map((m) => {
+          const all = sideRows.filter((r) => (r.month || "") === m);
+          const paid = all.filter((r) => r.st.paid), unpaid = all.filter((r) => !r.st.paid), over = all.filter((r) => r.st.overdue);
+          const list = shown.filter((r) => (r.month || "") === m);
+          const label = m ? `${mName(Number(m.slice(5, 7)) - 1)} ${m.slice(0, 4)}` : tr("Bez datuma");
+          return (
+            <div key={m || "x"} style={{ marginBottom: 8, border: `1px solid ${over.length ? S.red : S.line}`, borderRadius: 12, overflow: "hidden" }}>
+              <button onClick={() => toggle(m)} style={{ width: "100%", textAlign: "left", background: S.bg, border: "none", padding: "10px 12px", cursor: "pointer", color: S.ink }}>
+                <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "center" }}>
+                  <b style={{ fontSize: 14 }}>{isOpen(m) ? "▾" : "▸"} {label}</b>
+                  <span style={{ fontSize: 11.5, color: S.sub }}>{all.length} {tr("faktura")}</span>
+                </div>
+                <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 4, fontSize: 12 }}>
+                  <span style={{ color: S.green, fontWeight: 700 }}>✓ {tr("Plaćeno")} {paid.length}: <span className="num">{sumBy(paid)}</span></span>
+                  <span style={{ color: unpaid.length ? (over.length ? S.red : S.amber) : S.sub, fontWeight: 700 }}>⏳ {tr("Neplaćeno")} {unpaid.length}: <span className="num">{sumBy(unpaid)}</span>{over.length ? ` · ⚠️ ${over.length}` : ""}</span>
+                </div>
+              </button>
+              {isOpen(m) && <div style={{ padding: "0 8px" }}>{list.map(renderRow)}</div>}
+            </div>
+          );
+        });
+      })() : shown.map(renderRow)}
+      <div style={{ fontSize: 11.5, color: S.sub, marginTop: 10 }}>
+        {tr("Rok i status plaćanja vidiš i u DPH i kod svakog objekta. Fakture s prošlim rokom su crvene i stižu ti kao obavijest na mobitel u 9:52 i 15:00.")}
+      </div>
+    </Card>
+  );
+  function renderRow(r) {
         const label = `${r.party} ${r.number}`;
         return (
           <div key={r.kind + r.inv.id} style={{ padding: "9px 0", borderBottom: `1px solid ${S.line}`, borderLeft: r.st.overdue ? `4px solid ${S.red}` : "4px solid transparent", paddingLeft: 8 }}>
@@ -4624,12 +4664,7 @@ function InvoicesPayPanel({ data, api }) {
             <div style={{ marginTop: 6 }}><InvoicePayControl key={r.inv.paidDate + r.inv.dueDate} kind={r.kind} inv={r.inv} label={label} api={api} /></div>
           </div>
         );
-      })}
-      <div style={{ fontSize: 11.5, color: S.sub, marginTop: 10 }}>
-        {tr("Rok i status plaćanja vidiš i u DPH i kod svakog objekta. Fakture s prošlim rokom su crvene i stižu ti kao obavijest na mobitel u 9:52 i 15:00.")}
-      </div>
-    </Card>
-  );
+  }
 }
 
 function AdminPanels({ data, api, panel, setPanel, onOpenWorker, onOpenProfile }) {
