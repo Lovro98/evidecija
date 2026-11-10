@@ -10143,8 +10143,15 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
   const prev = () => setMonth(m === 1 ? `${y - 1}-12` : `${y}-${String(m - 1).padStart(2, "0")}`);
   const next = () => setMonth(m === 12 ? `${y + 1}-01` : `${y}-${String(m + 1).padStart(2, "0")}`);
   const objName = (id) => data.objects.find((o) => o.id === id)?.name || "";
-  const objFilterName = objFilters.size === 0 ? "" : [...objFilters].map(objName).join(", ");
+  // agencije (npr. Euroagentura): jedan klik odabere sve njene hotele
+  const agencyList = [...new Set(data.objects.map((o) => o.agency).filter(Boolean))].sort((a, b) => a.localeCompare(b, "hr"));
+  const agencyIds = (a) => data.objects.filter((o) => o.agency === a).map((o) => o.id);
+  const agencyActive = (a) => { const ids = agencyIds(a); return ids.length > 0 && ids.length === objFilters.size && ids.every((id) => objFilters.has(id)); };
+  const activeAgency = agencyList.find(agencyActive) || "";
+  const pickAgency = (a) => setObjFilters(agencyActive(a) ? new Set() : new Set(agencyIds(a)));
+  const objFilterName = objFilters.size === 0 ? "" : activeAgency || [...objFilters].map(objName).join(", ");
   const objFilterLabel = objFilters.size === 0 ? api.t("allObjects")
+    : activeAgency ? `🏢 ${activeAgency} (${objFilters.size} ${tr("hotela")})`
     : objFilters.size <= 3 ? [...objFilters].map(objName).join(", ")
     : `${objFilters.size} objekata odabrano`;
   const toggleObjFilter = (id) => setObjFilters((prev) => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
@@ -10744,12 +10751,29 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
           <span>{objFilterLabel}</span>
           <span style={{ color: S.sub, fontWeight: 700 }}>{objPickerOpen ? "▲" : "▼"}</span>
         </div>
+        {agencyList.length > 0 && (
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 6 }}>
+            {agencyList.map((a) => {
+              const on = agencyActive(a);
+              return (
+                <button key={a} onClick={() => pickAgency(a)} style={{ border: `1px solid ${on ? S.blue : S.line}`, background: on ? S.blue : "#fff", color: on ? "#fff" : S.ink,
+                  borderRadius: 99, padding: "6px 12px", fontSize: 13, fontWeight: 700, cursor: "pointer" }}>🏢 {a}{on ? " ✕" : ""}</button>
+              );
+            })}
+          </div>
+        )}
         {objPickerOpen && (
           <div style={{ border: `1px solid ${S.line}`, borderRadius: 10, marginTop: 6, padding: "6px 12px", maxHeight: 280, overflowY: "auto" }}>
             <label style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 0", fontWeight: 700, borderBottom: `1px solid ${S.line}`, cursor: "pointer" }}>
               <input type="checkbox" checked={objFilters.size === 0} onChange={() => setObjFilters(new Set())} style={{ width: 17, height: 17 }} />
               {api.t("allObjects")}
             </label>
+            {agencyList.map((a) => (
+              <label key={"ag:" + a} style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 0", fontWeight: 700, color: S.blue, borderBottom: `1px solid ${S.line}`, cursor: "pointer" }}>
+                <input type="checkbox" checked={agencyActive(a)} onChange={() => pickAgency(a)} style={{ width: 17, height: 17 }} />
+                🏢 {a} ({agencyIds(a).length} {tr("hotela")})
+              </label>
+            ))}
             {["HR", "CZ"].map((c) => {
               const objs = sortedObjects(data.objects.filter((o) => (o.country || "HR") === c));
               if (!objs.length) return null;
