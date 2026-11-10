@@ -1842,6 +1842,7 @@ const ICONS = {
   bank: <path d="M3 21h18M5 21V10l7-5 7 5v11M9 21v-6h6v6" />,
   envelope: <><rect x="3" y="7" width="18" height="12" rx="2" /><path d="M3 10l9 5 9-5" /></>,
   receipt: <><path d="M6 3h12v18l-3-2-3 2-3-2-3 2z" /><path d="M9 8h6M9 12h6" /></>,
+  cart: <><circle cx="9" cy="20" r="1.5" /><circle cx="18" cy="20" r="1.5" /><path d="M2.5 3h2.6l2.3 11.2a1.5 1.5 0 0 0 1.5 1.2h8.7a1.5 1.5 0 0 0 1.5-1.1L21 7H6" /></>,
   settings: <><circle cx="12" cy="12" r="3" /><path d="M12 2v3M12 19v3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M2 12h3M19 12h3M4.9 19.1 7 17M17 7l2.1-2.1" /></>,
   history: <><path d="M3 12a9 9 0 1 0 3-6.7L3 8" /><path d="M3 3v5h5M12 7v5l3 2" /></>,
   lock: <><rect x="5" y="11" width="14" height="10" rx="2" /><path d="M8 11V8a4 4 0 0 1 8 0v3" /></>,
@@ -1867,7 +1868,7 @@ function Ico({ name, size = 22, stroke = 2 }) {
 const NAV_ITEMS = [["danas", "home", "tabDanas"], ["radnici", "users", "tabRadnici"], ["sati", "clock", "tabSati"], ["objekti", "building", "Hoteli"], ["vise", "grid", "Više"]];
 const navLabel = (t, key) => (key.startsWith("tab") ? t(key) : tr(key));
 const MORE_TABS = ["imenik", "isplate", "obracun", "kandidati"];
-const ADMIN_ICON = { ai: "sparkles", candidates: "userPlus", approvals: "check", cash: "cash", finance: "bank", unpaid: "envelope", vat: "receipt", users: "users", firm: "settings", audit: "history", logins: "lock", errors: "bug", trash: "trash" };
+const ADMIN_ICON = { ai: "sparkles", candidates: "userPlus", approvals: "check", cash: "cash", finance: "bank", expenses: "cart", unpaid: "envelope", vat: "receipt", users: "users", firm: "settings", audit: "history", logins: "lock", errors: "bug", trash: "trash" };
 const Badge = ({ n, style }) => n > 0 ? (
   <span style={{ minWidth: 18, height: 18, borderRadius: 99, background: "#C2410C", color: "#fff", fontSize: 10.5, fontWeight: 800,
     display: "inline-flex", alignItems: "center", justifyContent: "center", padding: "0 5px", ...style }}>{n > 99 ? "99+" : n}</span>
@@ -1962,7 +1963,7 @@ function MoreTab({ data, admin, recruiter, t, lang, setLang, goTab, openPanel, o
   const grid = { display: "grid", gridTemplateColumns: `repeat(${wide ? 4 : 3}, minmax(0, 1fr))`, gap: 8 };
   const work = [["imenik", "book", t("tabImenik"), "blue"], ["isplate", "wallet", t("tabIsplate"), "green"], ["obracun", "chart", t("tabObracun"), "blue"]];
   if (recruiter) work.unshift(["kandidati", "userPlus", tr("Kandidati"), "green"]);
-  const toneOf = { approvals: "amber", unpaid: "red", cash: "green", finance: "blue", vat: "blue", users: "blue", firm: "gray", audit: "gray", logins: "gray", errors: "gray", trash: "gray" };
+  const toneOf = { approvals: "amber", unpaid: "red", cash: "green", finance: "blue", expenses: "amber", vat: "blue", users: "blue", firm: "gray", audit: "gray", logins: "gray", errors: "gray", trash: "gray" };
   return (
     <>
       {admin && (
@@ -3499,7 +3500,7 @@ function ExpensesPanel({ data, api }) {
 /*  FINANCIJE — bankovni izvodi, mjesečni pregled, procjena poreza     */
 /*  Tablice: bank_imports, bank_transactions, bank_rules (samo admin)  */
 /* ================================================================== */
-function FinancePanel({ data, api }) {
+function FinancePanel({ data, api, onOpenExpenses }) {
   const rate = Number(data.settings?.czk_rate) || 25;
   const thisYear = new Date().getFullYear();
   const [year, setYear] = useState(thisYear);
@@ -3742,6 +3743,7 @@ function FinancePanel({ data, api }) {
           {[["pregled", "Pregled"], ["obveze", "Kraj godine"], ["transakcije", "Transakcije"], ["uvoz", "Uvoz izvoda"], ["pravila", "Pravila"]].map(([id, label]) => (
             <button key={id} onClick={() => setView(id)} style={chip(view === id)}>{label}</button>
           ))}
+          {onOpenExpenses && <button onClick={onOpenExpenses} style={{ ...chip(false), color: S.amber, borderColor: S.amberSoft }}>🛒 Troškovi i računi</button>}
         </div>
         <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
           <button onClick={() => setYear(year - 1)} style={{ background: "#fff", border: `1px solid ${S.line}`, borderRadius: 8, width: 26, height: 26, cursor: "pointer", fontWeight: 700 }}>‹</button>
@@ -4676,7 +4678,7 @@ function AdminPanels({ data, api, panel, setPanel, onOpenWorker, onOpenProfile }
       {panel === "unpaid" && <UnpaidPanel data={data} api={api} onOpenWorker={onOpenWorker} />}
       {panel === "candidates" && <CandidatesPanel data={data} api={api} />}
       {panel === "ai" && <AiAssistantPanel data={data} />}
-      {panel === "finance" && <FinancePanel data={data} api={api} />}
+      {panel === "finance" && <FinancePanel data={data} api={api} onOpenExpenses={() => setPanel("expenses")} />}
       {panel === "expenses" && <ExpensesPanel data={data} api={api} />}
       {panel === "cash" && <CashPanel data={data} api={api} />}
       {panel === "office" && <OfficePanel data={data} api={api} />}
