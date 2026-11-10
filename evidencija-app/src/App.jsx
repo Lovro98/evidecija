@@ -9202,6 +9202,7 @@ function HoursTab({ data, api, onOpenWorker }) {
   const [monthBulk, setMonthBulk] = useState({ month: curMonth(), objectId: "" });
   const [monthHours, setMonthHours] = useState({}); // workerId -> string
   const [monthBusy, setMonthBusy] = useState(false);
+  const [q, setQ] = useState(""); // tražilica: ime radnika, hotel ili agencija (npr. Euroagentura)
   const h = hoursBetween(form.from, form.to);
   const w = data.workers.find((x) => x.id === form.workerId);
   const objName = (id) => data.objects.find((o) => o.id === id)?.name || "";
@@ -9219,7 +9220,12 @@ function HoursTab({ data, api, onOpenWorker }) {
     const wk = data.workers.find((x) => x.id === id);
     setForm({ ...form, workerId: id, objectId: wk?.objectId || form.objectId });
   };
-  const workerOptions = workersAtObject(data, form.objectId);
+  // tražilica: radnik odgovara ako mu ime, hotel ili agencija hotela sadrže upisani tekst
+  const qf = fold(q.trim());
+  const objMatches = (oid) => { const o = data.objects.find((x) => x.id === oid); return !!o && (fold(o.name).includes(qf) || fold(o.agency || "").includes(qf)); };
+  const workerMatches = (wk) => !qf || fold(wk.name).includes(qf) || objMatches(wk.objectId);
+  const logMatches = (l) => !qf || objMatches(l.objectId) || fold(data.workers.find((x) => x.id === l.workerId)?.name || "").includes(qf);
+  const workerOptions = workersAtObject(data, form.objectId).filter((wk) => workerMatches(wk) || wk.id === form.workerId);
   const pickObject = (id) => {
     const stillValid = workersAtObject(data, id).some((x) => x.id === form.workerId);
     setForm({ ...form, objectId: id, workerId: stillValid ? form.workerId : "" });
@@ -9229,7 +9235,7 @@ function HoursTab({ data, api, onOpenWorker }) {
     api.addLog({ workerId: form.workerId, objectId: form.objectId, date: form.date, from: form.from, to: form.to, hours: h, note: form.note }, w?.name || "", objName(form.objectId));
     setForm({ ...form, note: "" });
   };
-  const monthWorkers = workersAtObject(data, monthBulk.objectId);
+  const monthWorkers = workersAtObject(data, monthBulk.objectId).filter(workerMatches);
   const monthEntryCount = Object.values(monthHours).filter((v) => (parseNum(v) || 0) > 0).length;
   const submitMonthBulk = async () => {
     const entries = Object.entries(monthHours)
@@ -9241,13 +9247,17 @@ function HoursTab({ data, api, onOpenWorker }) {
     if (await api.addLogsBulk(entries, monthBulk.month)) setMonthHours({});
     setMonthBusy(false);
   };
-  const recent = [...data.logs].sort((a, b) => b.date.localeCompare(a.date)).slice(0, 15);
+  const recent = [...data.logs].filter(logMatches).sort((a, b) => b.date.localeCompare(a.date)).slice(0, qf ? 60 : 15);
   const wName = (id) => data.workers.find((x) => x.id === id)?.name || "Obrisan radnik";
   const [editLog, setEditLog] = useState(null);
 
   return (
     <>
       <div style={{ fontSize: 17, fontWeight: 700, marginBottom: 6 }}>{api.t("hoursTitle")}</div>
+      <div style={{ position: "relative", marginBottom: 12 }}>
+        <input value={q} onChange={(e) => setQ(e.target.value)} placeholder={tr("🔍 Traži radnika, hotel ili agenciju (npr. Euroagentura)…")} style={{ paddingRight: q ? 36 : undefined }} />
+        {q && <button onClick={() => setQ("")} title={tr("Očisti")} style={{ position: "absolute", right: 8, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", color: S.sub, fontSize: 16, cursor: "pointer" }}>✕</button>}
+      </div>
 
       {missing.length > 0 && (
         <Card style={{ background: S.amberSoft, borderColor: "#EBD9B4", padding: "10px 14px" }}>
@@ -9322,9 +9332,10 @@ function HoursTab({ data, api, onOpenWorker }) {
           )}
         </>
       )}
+      {qf && recent.length === 0 && <Empty text={tr("Nema upisa za \"{0}\".", q.trim())} />}
       {recent.length > 0 && (
         <Card>
-          <div style={{ fontWeight: 700, marginBottom: 8 }}>{api.t("recent")}</div>
+          <div style={{ fontWeight: 700, marginBottom: 8 }}>{qf ? tr("Upisi za \"{0}\" ({1})", q.trim(), recent.length) : api.t("recent")}</div>
           {recent.map((l) => (
             <div key={l.id} style={{ borderBottom: `1px solid ${S.line}` }}>
               <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 0" }}>
