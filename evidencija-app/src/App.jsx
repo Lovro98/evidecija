@@ -422,6 +422,36 @@ function objRevenue(data, object, logs, brigade) {
   return { revenue, revenueKc, byPosition: [...byPos.values()].sort((a, b) => a.position.localeCompare(b.position, "hr")) };
 }
 
+/* ---------- AGENCIJE (npr. Euroagentura): više hotela, jedna faktura ---------- */
+const AGENCY_PREFIX = "agency:";
+const agencyObjects = (data, agency) => [...data.objects.filter((o) => o.agency === agency && !o.archived)].sort((a, b) => a.name.localeCompare(b.name, "hr"));
+// sati i očekivana naplata po hotelu agencije za mjesec
+function agencyMonthRevenue(data, agency, mo) {
+  const rate = Number(data.settings?.czk_rate) || 25;
+  return agencyObjects(data, agency).map((o) => {
+    const logs = data.logs.filter((l) => l.objectId === o.id && monthKey(l.date) === mo);
+    const brigade = (data.brigadeCosts || []).filter((b) => b.objectId === o.id && monthKey(b.date) === mo);
+    const rv = objRevenue(data, o, logs, brigade);
+    const hours = round2(logs.reduce((t, l) => t + l.hours, 0) + brigade.reduce((t, b) => t + b.hours, 0));
+    return { object: o, rv, hours, czk: round2(rv.revenueKc + rv.revenue * rate) };
+  });
+}
+// jedna agencijska faktura se dijeli na hotele razmjerno očekivanoj naplati tog mjeseca
+function agencySplit(data, agency, mo, amount) {
+  const rows = agencyMonthRevenue(data, agency, mo).filter((r) => r.czk > 0);
+  const tot = rows.reduce((t, r) => t + r.czk, 0);
+  if (!tot) return [];
+  let left = amount;
+  return rows.map((r, i) => {
+    const a = i === rows.length - 1 ? round2(left) : round2((amount * r.czk) / tot);
+    left = round2(left - a);
+    return { objectId: r.object.id, hours: r.hours, amount: a };
+  });
+}
+// je li faktura (cijela ili dio agencijske) vezana uz objekt, i koji udio iznosa mu pripada
+const invoiceTouches = (i, objectId) => i.objectId === objectId || (i.split || []).some((x) => x.objectId === objectId);
+const invoiceShare = (i, objectId) => (i.objectId === objectId ? 1 : i.amount ? ((i.split || []).find((x) => x.objectId === objectId)?.amount || 0) / i.amount : 0);
+
 /* ---------- ispis PDF-a (preglednikov "Spremi kao PDF" / dijeljenje) ---------- */
 const PRINT_CSS = `
     body{font-family:Arial,Helvetica,sans-serif;color:#1C2521;padding:24px;max-width:720px;margin:0 auto}
@@ -927,6 +957,7 @@ async function fetchAll(isAdmin) {
       currency: i.currency === "CZK" ? "CZK" : "EUR", note: i.note || "",
       vatAmount: Number(i.vat_amount) || 0, vatCurrency: i.vat_currency === "CZK" ? "CZK" : "EUR", filePath: i.file_path || "",
       dueDate: i.due_date || "", paidDate: i.paid_date || "", paidFile: i.paid_file || "",
+      agency: i.agency || "", split: Array.isArray(i.split) ? i.split : [],
     })),
     payrollNotes: payrollNotes.map((n) => ({
       id: n.id, workerId: n.worker_id, month: n.month, amount: Number(n.amount) || 0,
@@ -1439,10 +1470,10 @@ export default function App() {
     delInvoicePayment: (p, oName) => act(() => softDel("invoice_payments", p.id), `Obrisao uplatu od ${oName}: ${eur(p.amount)}`),
     importObjectInvoices: (invs) => act(async () => {
       const { error } = await supabase.from("object_invoices").insert(invs.map((inv) => ({
-        object_id: inv.objectId, number: inv.number, period: inv.period, issue_date: inv.issueDate, duzp: inv.duzp || null,
+        object_id: inv.objectId || null, number: inv.number, period: inv.period, issue_date: inv.issueDate, duzp: inv.duzp || null,
         hours: inv.hours || 0, rate: inv.rate || 0, amount: inv.amount, currency: inv.currency || "EUR", note: inv.note || "",
         vat_amount: inv.vatAmount || 0, vat_currency: inv.vatCurrency || "EUR", file_path: inv.filePath || "",
-        due_date: inv.dueDate || null, created_by: session.user.id,
+        due_date: inv.dueDate || null, created_by: session.user.id, agency: inv.agency || "", split: inv.split || [],
       })));
       if (error) throw error;
     }, `Uvezao ${invs.length} ${invs.length === 1 ? "fakturu" : "fakture"} iz PDF-a`),
@@ -1453,6 +1484,7 @@ export default function App() {
       due_date: inv.dueDate || null, created_by: session.user.id,
     }), `Generirao fakturu ${inv.number} za ${oName}: ${money(inv.amount, inv.currency)}${inv.vatAmount ? ` (PDV ${money(inv.vatAmount, inv.vatCurrency)})` : ""}`),
     delObjectInvoice: (inv, oName) => act(() => softDel("object_invoices", inv.id), `Obrisao fakturu ${inv.number} (${oName})`),
+    resplitAgencyInvoice: (inv, split) => act(() => upd("object_invoices", inv.id, { split }), `Preraspodijelio fakturu ${inv.number} (${inv.agency}) po hotelima`),
     setInvoiceFile: (inv, filePath, oName) => act(() => upd("object_invoices", inv.id, { file_path: filePath }),
       `Dodao PDF uz fakturu ${inv.number} (${oName})`),
     delInvoiceFile: (inv, oName) => act(async () => {
@@ -1592,7 +1624,10 @@ export default function App() {
   if (!data) return err ? <Center>{err}</Center> : <LoadingSkeleton />;
 
   const worker = data.workers.find((w) => w.id === openWorker);
-  const object = data.objects.find((o) => o.id === openObject);
+  // "agency:Ime" otvara pregled agencije (hoteli + jedna faktura), inače objekt
+  const object = typeof openObject === "string" && openObject.startsWith(AGENCY_PREFIX)
+    ? { id: openObject, name: openObject.slice(AGENCY_PREFIX.length), isAgency: true }
+    : data.objects.find((o) => o.id === openObject);
   const openedProfile = data.profiles.find((p) => p.id === openProfile);
   const detailOpen = worker || object || openedProfile;
 
@@ -1610,7 +1645,9 @@ export default function App() {
     : tab === "vise" ? tr("Više") : tab === "kandidati" ? tr("Kandidati") : tab === "objekti" ? tr("Hoteli") : t(TAB_TITLE_KEY[tab] || "tabDanas");
 
   const workerDetailEl = worker && <WorkerDetail key={worker.id} worker={worker} data={data} api={api} onBack={() => setOpenWorker(null)} />;
-  const objectDetailEl = object && <ObjectDetail key={object.id} object={object} data={data} api={api} onBack={() => setOpenObject(null)} onOpenWorker={setOpenWorker} />;
+  const objectDetailEl = object && (object.isAgency
+    ? <AgencyDetail key={object.id} agency={object.name} data={data} api={api} onBack={() => setOpenObject(null)} onOpenObject={setOpenObject} />
+    : <ObjectDetail key={object.id} object={object} data={data} api={api} onBack={() => setOpenObject(null)} onOpenWorker={setOpenWorker} />);
 
   return (
     <div style={{ minHeight: "100vh", background: S.bg, color: S.ink, fontFamily: APP_FONT, paddingBottom: wide ? 24 : 96, paddingLeft: wide ? 88 : 0 }}>
@@ -2868,6 +2905,7 @@ function UnpaidPanel({ data, api, onOpenWorker }) {
   const [selMonth, setSelMonth] = useState(null);
   const [selPerson, setSelPerson] = useState(null);
   const [showClosed, setShowClosed] = useState(false);
+  const [openAgency, setOpenAgency] = useState(null); // otvorena agencija na popisu hotela
   const [payForm, setPayForm] = useState(null); // { key, wageId, amount, date, note }
   const [exporting, setExporting] = useState(false);
   const [newOpen, setNewOpen] = useState(false);
@@ -3162,15 +3200,18 @@ function UnpaidPanel({ data, api, onOpenWorker }) {
           const card = (o) => rowCard({ key: o.key, title: `🏨 ${o.name}`, sub: `${plural(o.people, "osoba", "osobe", "osoba")} s dugom · ${plural(o.list.filter(isOpen).length, "koverta", "koverte", "koverti")}`, t: o, onClick: () => goObj(o.key) });
           const agencies = [...new Set(shown.map((o) => agencyOf(o.key)).filter(Boolean))].sort((a, b) => a.localeCompare(b, "hr"));
           if (!agencies.length) return shown.map(card);
-          const head = (label, list) => (
-            <div key={"h:" + label} style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, fontWeight: 800, color: S.blue, textTransform: "uppercase", letterSpacing: 0.5, margin: "14px 2px 8px" }}>
-              <span>{label}</span><span className="num" style={{ color: S.amber }}>{czk(sum(list, "remaining"))}</span>
-            </div>
-          );
-          const rest = shown.filter((o) => !agencyOf(o.key));
+          // agencija = jedna kartica; klik je otvara i ispod se vide njeni hoteli
           return [
-            ...agencies.flatMap((a) => { const g = shown.filter((o) => agencyOf(o.key) === a); return [head("🏢 " + a, g), ...g.map(card)]; }),
-            ...(rest.length ? [head("Ostali objekti", rest), ...rest.map(card)] : []),
+            ...agencies.flatMap((a) => {
+              const g = shown.filter((o) => agencyOf(o.key) === a);
+              const t = { ...totals(g.flatMap((o) => o.list)) };
+              const open = openAgency === a;
+              return [
+                rowCard({ key: "ag:" + a, title: `🏢 ${a} ${open ? "▾" : "▸"}`, sub: `${plural(g.length, "objekt", "objekta", "objekata")} · ${plural(new Set(g.flatMap((o) => o.list.filter(isOpen).map(personKey))).size, "osoba", "osobe", "osoba")} s dugom`, t, onClick: () => setOpenAgency(open ? null : a) }),
+                ...(open ? [<div key={"agl:" + a} style={{ marginLeft: 14, borderLeft: `3px solid ${S.blue}`, paddingLeft: 10 }}>{g.map(card)}</div>] : []),
+              ];
+            }),
+            ...shown.filter((o) => !agencyOf(o.key)).map(card),
           ];
         })()}
       </div>
@@ -4432,7 +4473,7 @@ const invPayState = (inv) => {
 };
 const allInvoicesForPay = (data) => {
   const objName = (id) => data.objects.find((o) => o.id === id)?.name || "Obrisan objekt";
-  const out = (data.objectInvoices || []).map((i) => ({ kind: "out", inv: i, party: objName(i.objectId), number: i.number,
+  const out = (data.objectInvoices || []).map((i) => ({ kind: "out", inv: i, party: i.agency ? "🏢 " + i.agency : objName(i.objectId), number: i.number,
     date: i.duzp || i.issueDate, total: i.amount, currency: i.currency }));
   const inn = (data.purchaseInvoices || []).map((p) => ({ kind: "in", inv: p, party: p.supplier, number: p.number,
     date: p.duzp, total: round2((p.base || 0) + (p.vat || 0)), currency: p.currency }));
@@ -5717,7 +5758,7 @@ function monthCloseObjects(data, mo) {
   const active = data.workers.filter((w) => !w.archived);
   return sortedObjects(data.objects.filter((o) => {
     const hasLogs = data.logs.some((l) => l.objectId === o.id && monthKey(l.date) === mo);
-    const hasInv = (data.objectInvoices || []).some((i) => i.objectId === o.id && (invoiceTaxMonth(i) === mo || i.period === mo));
+    const hasInv = (data.objectInvoices || []).some((i) => invoiceTouches(i, o.id) && (invoiceTaxMonth(i) === mo || i.period === mo));
     const hasWorkers = !o.archived && active.some((w) => w.objectId === o.id);
     return hasLogs || hasInv || hasWorkers;
   }));
@@ -5733,8 +5774,8 @@ function objectCloseState(data, o, mo) {
   const byDay = {};
   logs.filter((l) => !l.monthly).forEach((l) => { const k = l.workerId + "|" + l.date; byDay[k] = (byDay[k] || 0) + 1; });
   const dups = Object.values(byDay).filter((n) => n > 1).length;
-  const invoices = (data.objectInvoices || []).filter((i) => i.objectId === o.id && (invoiceTaxMonth(i) === mo || i.period === mo));
-  const invNetCzk = round2(invoices.reduce((s, i) => s + toCzk(i.amount - (i.vatAmount || 0), i.currency, rate), 0));
+  const invoices = (data.objectInvoices || []).filter((i) => invoiceTouches(i, o.id) && (invoiceTaxMonth(i) === mo || i.period === mo));
+  const invNetCzk = round2(invoices.reduce((s, i) => s + invoiceShare(i, o.id) * toCzk(i.amount - (i.vatAmount || 0), i.currency, rate), 0));
   const rv = objRevenue(data, o, logs, brigade);
   const expectedCzk = round2(rv.revenueKc + rv.revenue * rate);
   const diffPct = expectedCzk > 0 && invNetCzk > 0 ? round2(((invNetCzk - expectedCzk) / expectedCzk) * 100) : null;
@@ -6428,6 +6469,7 @@ function ObjectsTab({ data, api, onOpenObject }) {
     await api.addObject(n, country); setNewObj("");
   };
 
+  const agencyNames = [...new Set(data.objects.map((o) => o.agency).filter(Boolean))].sort((a, b) => a.localeCompare(b, "hr"));
   const matchObjectByCustomer = (customerName) => {
     if (!customerName) return "";
     const norm = (s) => (s || "").toLowerCase().trim();
@@ -6435,7 +6477,11 @@ function ObjectsTab({ data, api, onOpenObject }) {
     const byMap = data.objects.find((o) => o.invoiceCustomerName && norm(o.invoiceCustomerName) === target);
     if (byMap) return byMap.id;
     const byName = data.objects.find((o) => norm(o.name) === target);
-    return byName ? byName.id : "";
+    if (byName) return byName.id;
+    // agencija (npr. "EUROAGENTURA s.r.o." → Euroagentura)
+    const alnum = (s) => (s || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]/g, "");
+    const ag = agencyNames.find((a) => alnum(customerName).includes(alnum(a)));
+    return ag ? AGENCY_PREFIX + ag : "";
   };
   const handleInvoiceFiles = async (e) => {
     const files = Array.from(e.target.files || []);
@@ -6480,6 +6526,21 @@ function ObjectsTab({ data, api, onOpenObject }) {
     const invs = [];
     const rememberPairs = [];
     for (const r of toImport) {
+      if (r.objectId.startsWith(AGENCY_PREFIX)) {
+        // agencijska faktura: bez jednog objekta, iznos se dijeli na hotele agencije
+        const agency = r.objectId.slice(AGENCY_PREFIX.length);
+        const safeName = r.fileName.replace(/[^\w.\-]+/g, "_").slice(0, 80);
+        const path = `agency_${agency.replace(/[^\w]+/g, "_")}/invoice_import_${Date.now()}_${safeName}`;
+        const { error: upErr } = await supabase.storage.from("invoices").upload(path, r.file);
+        const amount = round2(parseNum(r.parsed.amount) || 0);
+        const vatAmount = round2(parseNum(r.parsed.vatAmount) || 0);
+        const issueDate = r.parsed.issueDate || todayISO();
+        const period = r.parsed.period || issueDate.slice(0, 7);
+        const number = (r.parsed.number || "").trim() || `UVOZ-${agency.slice(0, 3).toUpperCase()}-${period}`;
+        invs.push({ objectId: null, agency, split: agencySplit(data, agency, period, amount), number, period, issueDate, duzp: r.parsed.duzp || null, dueDate: r.parsed.dueDate || null,
+          hours: 0, rate: 0, amount, currency: "CZK", note: "Uvezeno iz PDF-a", vatAmount, vatCurrency: "CZK", filePath: upErr ? "" : path });
+        continue;
+      }
       const object = data.objects.find((o) => o.id === r.objectId);
       if (!object) continue;
       let filePath = "";
@@ -6507,6 +6568,28 @@ function ObjectsTab({ data, api, onOpenObject }) {
   const countHR = list.filter((o) => (o.country || "HR") === "HR").length;
   const countCZ = list.filter((o) => o.country === "CZ").length;
   const shown = list.filter((o) => (o.country || "HR") === country);
+  const renderAgency = (a) => {
+    const rows = agencyMonthRevenue(data, a, mk);
+    const hrs = round2(rows.reduce((t, r) => t + r.hours, 0));
+    const eurT = round2(rows.reduce((t, r) => t + r.rv.revenue, 0)), kcT = round2(rows.reduce((t, r) => t + r.rv.revenueKc, 0));
+    return (
+      <Card key={"ag:" + a} style={{ cursor: "pointer", borderColor: S.blue }} onClick={() => onOpenObject(AGENCY_PREFIX + a)}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div>
+            <div style={{ fontWeight: 800, fontSize: 15.5 }}>🏢 {a} <span style={{ color: S.blue }}>›</span></div>
+            <div className="num" style={{ fontSize: 13, color: S.sub, marginTop: 2 }}>{rows.length} {tr("hotela")} · {fmtH(hrs)} {tr("ovaj mjesec")}</div>
+          </div>
+          {api.admin && (eurT > 0 || kcT > 0) && (
+            <div className="num" style={{ textAlign: "right" }}>
+              <div style={{ fontWeight: 700, color: S.amber }}>{kcT > 0 ? czk(kcT) : eur(eurT)}</div>
+              {eurT > 0 && kcT > 0 && <div style={{ fontWeight: 700, color: S.amber, fontSize: 12.5 }}>{eur(eurT)}</div>}
+              <div style={{ fontSize: 11.5, color: S.sub }}>{tr("naplata ovaj mj.")}</div>
+            </div>
+          )}
+        </div>
+      </Card>
+    );
+  };
   const renderObject = (o) => {
         const logs = data.logs.filter((l) => l.objectId === o.id && monthKey(l.date) === mk);
         const brigadeM = (data.brigadeCosts || []).filter((b) => b.objectId === o.id && monthKey(b.date) === mk);
@@ -6589,6 +6672,7 @@ function ObjectsTab({ data, api, onOpenObject }) {
                   <select value={r.objectId} onChange={(e) => updInvRow(r.id, { objectId: e.target.value })}
                     style={{ borderColor: matched ? S.green : S.amber, fontWeight: 700, color: matched ? S.green : S.amber }}>
                     <option value="">{tr("— odaberi objekt —")}</option>
+                    {agencyNames.map((a) => <option key={a} value={AGENCY_PREFIX + a}>🏢 {a} {tr("(jedna faktura za više hotela)")}</option>)}
                     {sortedObjects(data.objects.filter((o) => !o.archived)).map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}
                   </select>
                   {r.parsed.customerName && (
@@ -6648,15 +6732,10 @@ function ObjectsTab({ data, api, onOpenObject }) {
       {shown.length === 0 ? <Empty text={tr("Još nema objekata u: {0}.", COUNTRY_NAME[country])} /> : (() => {
         const filtered = shown.filter((o) => o.name.toLowerCase().includes(q.trim().toLowerCase()));
         if (filtered.length === 0) return <Empty text={tr("Nema rezultata.")} />;
-        // objekti iste agencije (npr. Euroagentura) idu zajedno pod naslov, ostali ispod
+        // hoteli agencije (npr. Euroagentura) su jedna kartica koja se otvara; kod pretrage se vide i pojedinačni hoteli
+        if (q.trim()) return filtered.map(renderObject);
         const agencies = [...new Set(filtered.map((o) => o.agency).filter(Boolean))].sort((a, b) => a.localeCompare(b, "hr"));
-        if (!agencies.length) return filtered.map(renderObject);
-        const head = (label, n) => <div key={"h:" + label} style={{ fontSize: 13, fontWeight: 800, color: S.blue, textTransform: "uppercase", letterSpacing: 0.5, margin: "14px 4px 8px" }}>{label} ({n})</div>;
-        const rest = filtered.filter((o) => !o.agency);
-        return [
-          ...agencies.flatMap((a) => { const g = filtered.filter((o) => o.agency === a); return [head("🏢 " + a, g.length), ...g.map(renderObject)]; }),
-          ...(rest.length ? [head(tr("Ostali objekti"), rest.length), ...rest.map(renderObject)] : []),
-        ];
+        return [...agencies.map(renderAgency), ...filtered.filter((o) => !o.agency).map(renderObject)];
       })()}
 
       {closedList.length > 0 && (
@@ -8091,6 +8170,119 @@ function VyfakturujItems({ object, rv, mk }) {
   );
 }
 
+/* ---------- AGENCIJA: hoteli zajedno + stavke za JEDNU fakturu u Vyfakturuju ---------- */
+function AgencyDetail({ agency, data, api, onBack, onOpenObject }) {
+  const [mo, setMo] = useState(() => prevMonthKey(curMonth()));
+  const [copied, setCopied] = useState("");
+  const [y, m] = mo.split("-").map(Number);
+  const prevM = () => setMo(m === 1 ? `${y - 1}-12` : `${y}-${String(m - 1).padStart(2, "0")}`);
+  const nextM = () => setMo(m === 12 ? `${y + 1}-01` : `${y}-${String(m + 1).padStart(2, "0")}`);
+  const rows = agencyMonthRevenue(data, agency, mo);
+  const period = `${String(m).padStart(2, "0")}/${y}`;
+  const items = rows.flatMap((r) => r.rv.byPosition.filter((p) => p.hours > 0).map((p) => ({
+    text: `Poskytnutí pracovníků – ${r.object.name}${p.position ? " – " + p.position : ""} (${period})`,
+    qty: round2(p.hours), unit: "hod", price: p.rate, cur: p.cur, amount: p.amount,
+  })));
+  const fmtNum = (n) => String(n).replace(".", ",");
+  const copy = async (text, what) => {
+    try { await navigator.clipboard.writeText(text); setCopied(what); setTimeout(() => setCopied(""), 1800); }
+    catch { setCopied("err"); }
+  };
+  const allText = items.map((i) => [i.text, fmtNum(i.qty), i.unit, fmtNum(i.price)].join("\t")).join("\n");
+  const totals = items.reduce((t, i) => ({ ...t, [i.cur]: round2((t[i.cur] || 0) + i.amount) }), {});
+  const hrsT = round2(rows.reduce((t, r) => t + r.hours, 0));
+  const invs = (data.objectInvoices || []).filter((i) => i.agency === agency).sort((a, b) => (b.period || "").localeCompare(a.period || "") || (b.issueDate || "").localeCompare(a.issueDate || ""));
+  const objName = (id) => data.objects.find((o) => o.id === id)?.name || "—";
+  const resplit = (inv) => api.resplitAgencyInvoice(inv, agencySplit(data, agency, inv.period, inv.amount));
+  const del = async (inv) => { if (await uiConfirm(tr("Obrisati fakturu {0}?", inv.number))) api.delObjectInvoice(inv, agency); };
+
+  return (
+    <>
+      <button onClick={onBack} style={{ background: "none", border: "none", color: S.green, fontWeight: 700, fontSize: 14.5, padding: "2px 0 12px", cursor: "pointer" }}>{tr("← Natrag")}</button>
+      <Card>
+        <div style={{ fontSize: 19, fontWeight: 800 }}>🏢 {agency}</div>
+        <div style={{ color: S.sub, fontSize: 13.5, marginTop: 3 }}>{rows.length} {tr("hotela · jedna faktura za sve")}</div>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 12 }}>
+          <Btn small kind="ghost" onClick={prevM}>‹</Btn>
+          <div style={{ flex: 1, textAlign: "center", fontWeight: 700 }}>{monthLong(mo)}</div>
+          <Btn small kind="ghost" onClick={nextM}>›</Btn>
+        </div>
+      </Card>
+
+      <Card style={{ padding: "4px 14px" }}>
+        {rows.map((r, i) => (
+          <div key={r.object.id} onClick={() => onOpenObject(r.object.id)} style={{ display: "flex", justifyContent: "space-between", gap: 10, padding: "10px 0", cursor: "pointer", borderBottom: i < rows.length - 1 ? `1px solid ${S.line}` : "none" }}>
+            <div style={{ fontWeight: 700, fontSize: 14.5 }}>🏨 {r.object.name} <span style={{ color: S.blue }}>›</span></div>
+            <div className="num" style={{ textAlign: "right", fontSize: 13 }}>
+              <div>{fmtH(r.hours)}</div>
+              {api.admin && (r.rv.revenue > 0 || r.rv.revenueKc > 0) && <div style={{ color: S.amber, fontWeight: 700 }}>{[r.rv.revenueKc > 0 && czk(r.rv.revenueKc), r.rv.revenue > 0 && eur(r.rv.revenue)].filter(Boolean).join(" + ")}</div>}
+            </div>
+          </div>
+        ))}
+        <div className="num" style={{ display: "flex", justifyContent: "space-between", fontWeight: 800, padding: "10px 0", borderTop: `1px solid ${S.line}` }}>
+          <span>{tr("Ukupno")}</span><span>{fmtH(hrsT)}</span>
+        </div>
+      </Card>
+
+      {api.admin && (
+        <Card>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+            <div style={{ fontWeight: 800, fontSize: 15 }}>{tr("🧾 Za Vyfakturuj — jedna faktura")}</div>
+            {items.length > 0 && <Btn small kind="ghost" onClick={() => copy(allText, "all")}>{copied === "all" ? tr("✓ Kopirano") : tr("Kopiraj sve stavke")}</Btn>}
+          </div>
+          <div style={{ fontSize: 12.5, color: S.sub, marginBottom: 8 }}>
+            {tr("Kupac:")} <b style={{ color: S.ink }}>{agency}</b> · {tr("razdoblje")} {period}. {tr("Stavke svih hotela za jednu fakturu. Gotovu fakturu uvezi u Objekti → \"📥 Uvoz faktura\" i odaberi")} 🏢 {agency}.
+          </div>
+          {items.length === 0 && <div style={{ color: S.sub, fontSize: 13 }}>{tr("Nema upisanih sati u ovom mjesecu.")}</div>}
+          {items.map((i, k) => (
+            <div key={k} style={{ padding: "7px 0", borderBottom: `1px solid ${S.line}`, fontSize: 13.5 }}>
+              <div onClick={() => copy(i.text, "t" + k)} style={{ fontWeight: 600, cursor: "pointer" }}>{i.text}{copied === "t" + k ? " ✓" : ""}</div>
+              <div className="num" style={{ display: "flex", gap: 12, color: S.sub, marginTop: 2 }}>
+                <span onClick={() => copy(fmtNum(i.qty), "q" + k)} style={{ cursor: "pointer" }}>{tr("Množství")}: <b style={{ color: S.ink }}>{fmtNum(i.qty)} {i.unit}</b>{copied === "q" + k ? " ✓" : ""}</span>
+                <span onClick={() => copy(fmtNum(i.price), "p" + k)} style={{ cursor: "pointer" }}>{tr("Cena/j.")}: <b style={{ color: S.ink }}>{money(i.price, i.cur)}</b>{copied === "p" + k ? " ✓" : ""}</span>
+                <span style={{ marginLeft: "auto" }}><b style={{ color: S.ink }}>{money(i.amount, i.cur)}</b></span>
+              </div>
+            </div>
+          ))}
+          {items.length > 0 && (
+            <div className="num" style={{ display: "flex", justifyContent: "space-between", fontWeight: 800, paddingTop: 8 }}>
+              <span>{tr("Ukupno bez DPH")}</span><span>{Object.entries(totals).map(([c, v]) => money(v, c)).join(" + ")}</span>
+            </div>
+          )}
+          {copied === "err" && <div style={{ color: S.red, fontSize: 12.5, marginTop: 6 }}>{tr("Kopiranje nije uspjelo — označi tekst ručno.")}</div>}
+        </Card>
+      )}
+
+      {api.admin && (
+        <Card>
+          <div style={{ fontWeight: 800, fontSize: 15, marginBottom: 6 }}>{tr("💳 Fakture agencije")}</div>
+          {invs.length === 0 && <div style={{ color: S.sub, fontSize: 13 }}>{tr("Još nema faktura. Uvezi PDF u Objekti → \"📥 Uvoz faktura\".")}</div>}
+          {invs.map((inv) => (
+            <div key={inv.id} style={{ padding: "9px 0", borderBottom: `1px solid ${S.line}` }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontWeight: 700, fontSize: 14 }}>{inv.number} <span style={{ fontWeight: 500, color: S.sub, fontSize: 12.5 }}>· {monthLong(inv.period)}</span></div>
+                  <div className="num" style={{ fontSize: 12.5, color: S.sub }}>
+                    {fmtDate(inv.issueDate)} · {money(inv.amount, inv.currency)}{inv.vatAmount > 0 && <> {tr("· DPH")} {money(inv.vatAmount, inv.vatCurrency)}</>}
+                  </div>
+                </div>
+                {inv.filePath && <Btn small kind="ghost" onClick={() => openStorageFile(inv.filePath)}>{tr("📄 PDF")}</Btn>}
+                <Btn small kind="ghost" onClick={() => resplit(inv)}>{tr("↻ Podijeli po satima")}</Btn>
+                <button onClick={() => del(inv)} style={{ background: "none", border: "none", color: S.red, fontSize: 16, cursor: "pointer", padding: 4 }}>✕</button>
+              </div>
+              <div style={{ fontSize: 12, color: S.sub, marginTop: 4 }}>
+                {(inv.split || []).length === 0 ? <span style={{ color: S.amber }}>{tr("Nije podijeljeno po hotelima (nema sati za taj mjesec).")}</span>
+                  : inv.split.map((x) => <span key={x.objectId} className="num" style={{ marginRight: 10 }}>🏨 {objName(x.objectId)} {money(x.amount, inv.currency)}</span>)}
+              </div>
+              <div style={{ marginTop: 6 }}><InvoicePayControl key={inv.paidDate + inv.dueDate} kind="out" inv={inv} label={`${agency} ${inv.number}`} api={api} /></div>
+            </div>
+          ))}
+        </Card>
+      )}
+    </>
+  );
+}
+
 function ObjectDetail({ object, data, api, onBack, onOpenWorker }) {
   const [mode, setMode] = useState("day");
   const [section, setSection] = useState(api.admin ? "pregled" : "sati"); // pregled | sati | fakture | postavke
@@ -8208,7 +8400,7 @@ function ObjectDetail({ object, data, api, onBack, onOpenWorker }) {
       setShowGen(false);
     }
   };
-  const myInvoices = (data.objectInvoices || []).filter((i) => i.objectId === object.id);
+  const myInvoices = (data.objectInvoices || []).filter((i) => invoiceTouches(i, object.id));
   const triggerInvPdfUpload = (inv) => { invPdfTarget.current = inv; invPdfRef.current?.click(); };
   const uploadInvoicePdf = async (e) => {
     const file = e.target.files?.[0];
@@ -8748,7 +8940,8 @@ function ObjectDetail({ object, data, api, onBack, onOpenWorker }) {
               {myInvoices.map((inv) => (
                 <div key={inv.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 0", borderBottom: `1px solid ${S.line}`, flexWrap: "wrap" }}>
                   <div style={{ flex: 1 }}>
-                    <div style={{ fontWeight: 600, fontSize: 13.5 }}>{inv.number}</div>
+                    <div style={{ fontWeight: 600, fontSize: 13.5 }}>{inv.number}{inv.agency && <span style={{ fontWeight: 500, color: S.blue, fontSize: 12 }}> · 🏢 {inv.agency}</span>}</div>
+                    {inv.agency && <div className="num" style={{ fontSize: 12, color: S.blue }}>{tr("Dio za ovaj hotel:")} {money(round2(inv.amount * invoiceShare(inv, object.id)), inv.currency)}</div>}
                     <div className="num" style={{ fontSize: 12, color: S.sub }}>
                       {fmtDate(inv.issueDate)} · {fmtH(inv.hours)} · {money(inv.amount, inv.currency)}
                       {inv.vatAmount > 0 && <> {tr("· PDV")}{" "}{money(inv.vatAmount, inv.vatCurrency)}</>}
