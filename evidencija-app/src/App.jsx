@@ -9196,6 +9196,28 @@ function ObjectDetail({ object, data, api, onBack, onOpenWorker }) {
 /* ================================================================== */
 /*  SATI + podsjetnik na neupisane dane                                */
 /* ================================================================== */
+/* ---------- tražilica: pronađi osobu po imenu (riječi u bilo kojem redu, bez kvačica) ---------- */
+const nameHits = (workers, query) => {
+  const toks = fold(query.trim()).split(/\s+/).filter(Boolean);
+  if (!toks.length) return [];
+  return workers.filter((w) => !w.archived && toks.every((t) => fold(w.name).includes(t))).sort((a, b) => a.name.localeCompare(b.name, "hr"));
+};
+function PersonHits({ hits, selectedId, onPick }) {
+  if (!hits.length) return null;
+  return (
+    <div style={{ display: "flex", gap: 6, flexWrap: "wrap", margin: "-4px 0 12px" }}>
+      {hits.slice(0, 8).map((w) => {
+        const on = w.id === selectedId;
+        return (
+          <button key={w.id} onClick={() => onPick(w)} style={{ border: `1px solid ${on ? S.green : S.line}`, background: on ? S.green : "#fff", color: on ? "#fff" : S.ink,
+            borderRadius: 99, padding: "6px 12px", fontSize: 13, fontWeight: 700, cursor: "pointer" }}>{on ? "✓ " : "👤 "}{w.name}</button>
+        );
+      })}
+      {hits.length > 8 && <span style={{ fontSize: 12, color: S.sub, alignSelf: "center" }}>+{hits.length - 8}</span>}
+    </div>
+  );
+}
+
 function HoursTab({ data, api, onOpenWorker }) {
   const [mode, setMode] = useState("day"); // day | month
   const [form, setForm] = useState({ workerId: "", objectId: "", date: todayISO(), from: "07:00", to: "15:00", note: "" });
@@ -9226,6 +9248,11 @@ function HoursTab({ data, api, onOpenWorker }) {
   const workerMatches = (wk) => !qf || fold(wk.name).includes(qf) || objMatches(wk.objectId);
   const logMatches = (l) => !qf || objMatches(l.objectId) || fold(data.workers.find((x) => x.id === l.workerId)?.name || "").includes(qf);
   const workerOptions = workersAtObject(data, form.objectId).filter((wk) => workerMatches(wk) || wk.id === form.workerId);
+  // upisano ime → nađi osobu; ako je točno jedna, odmah je odaberi za upis
+  const hits = nameHits(data.workers, q);
+  const pickHit = (wk) => { setMode("day"); setForm((f) => ({ ...f, workerId: wk.id, objectId: wk.objectId || "" })); };
+  const hitKey = hits.length === 1 ? hits[0].id : "";
+  useEffect(() => { if (hitKey) { const wk = data.workers.find((x) => x.id === hitKey); if (wk) pickHit(wk); } }, [hitKey]); // eslint-disable-line react-hooks/exhaustive-deps
   const pickObject = (id) => {
     const stillValid = workersAtObject(data, id).some((x) => x.id === form.workerId);
     setForm({ ...form, objectId: id, workerId: stillValid ? form.workerId : "" });
@@ -9258,6 +9285,7 @@ function HoursTab({ data, api, onOpenWorker }) {
         <input value={q} onChange={(e) => setQ(e.target.value)} placeholder={tr("🔍 Traži radnika, hotel ili agenciju (npr. Euroagentura)…")} style={{ paddingRight: q ? 36 : undefined }} />
         {q && <button onClick={() => setQ("")} title={tr("Očisti")} style={{ position: "absolute", right: 8, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", color: S.sub, fontSize: 16, cursor: "pointer" }}>✕</button>}
       </div>
+      <PersonHits hits={hits} selectedId={mode === "day" ? form.workerId : ""} onPick={pickHit} />
 
       {missing.length > 0 && (
         <Card style={{ background: S.amberSoft, borderColor: "#EBD9B4", padding: "10px 14px" }}>
@@ -9488,6 +9516,11 @@ function PaymentsTab({ data, api, onOpenWorker }) {
   const objHit = (oid) => { const o = data.objects.find((x) => x.id === oid); return !!o && (fold(o.name).includes(pqf) || fold(o.agency || "").includes(pqf)); };
   const workerHit = (wk) => !pqf || fold(wk.name).includes(pqf) || objHit(wk.objectId);
   const bulkWorkers = workersAtObject(data, filterObj).filter(workerHit);
+  // upisano ime → nađi osobu; ako je točno jedna, odmah je odaberi za isplatu
+  const hits = nameHits(data.workers, pq);
+  const pickHit = (wk) => { setTarget("radnik"); setBulkMode(false); setFilterObj(""); setForm((f) => ({ ...f, workerId: wk.id })); setCur(wCur(wk)); };
+  const hitKey = hits.length === 1 ? hits[0].id : "";
+  useEffect(() => { if (hitKey) { const wk = data.workers.find((x) => x.id === hitKey); if (wk) pickHit(wk); } }, [hitKey]); // eslint-disable-line react-hooks/exhaustive-deps
   const bulkEntryCount = Object.values(bulkAmounts).filter((v) => (parseNum(v) || 0) > 0).length;
   const submitBulk = async () => {
     const entries = Object.entries(bulkAmounts)
@@ -9534,6 +9567,7 @@ function PaymentsTab({ data, api, onOpenWorker }) {
         <input value={pq} onChange={(e) => setPq(e.target.value)} placeholder={tr("🔍 Traži radnika, hotel ili agenciju (npr. Euroagentura)…")} style={{ paddingRight: pq ? 36 : undefined }} />
         {pq && <button onClick={() => setPq("")} title={tr("Očisti")} style={{ position: "absolute", right: 8, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", color: S.sub, fontSize: 16, cursor: "pointer" }}>✕</button>}
       </div>
+      <PersonHits hits={hits} selectedId={target === "radnik" && !bulkMode ? form.workerId : ""} onPick={pickHit} />
       <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
         {[["radnik", api.t("forWorker")], ["objekt", api.t("forObject")]].map(([id, label]) => (
           <button key={id} onClick={() => setTarget(id)} style={{ flex: 1, padding: "10px 8px", borderRadius: 10, fontWeight: 700, fontSize: 13.5, cursor: "pointer",
