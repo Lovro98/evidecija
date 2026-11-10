@@ -1024,3 +1024,10 @@ alter table public.expenses enable row level security;
 drop policy if exists "exp_admin_all" on public.expenses;
 create policy "exp_admin_all" on public.expenses for all to authenticated
   using (is_admin()) with check (is_admin());
+
+-- Agencija (grupa hotela, npr. Euroagentura) — objekti iste agencije prikazuju se zajedno
+alter table public.objects add column if not exists agency text not null default '';
+-- Agencijska faktura: jedna faktura za više hotela (object_id prazan, agency = ime, split = [{objectId, hours, amount}])
+alter table public.object_invoices alter column object_id drop not null;
+alter table public.object_invoices add column if not exists agency text not null default '';
+alter table public.object_invoices add column if not exists split jsonb not null default '[]'::jsonb;

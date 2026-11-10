@@ -68,7 +68,7 @@ const download = (blob, fileName) => {
 /* ---------- zajedničko ---------- */
 function collect({ out, inn, objName }) {
   const outRows = [...out].sort((a, b) => String(a.number).localeCompare(String(b.number), "cs", { numeric: true })).map((i) => ({
-    kind: "out", number: i.number, party: objName(i.objectId), duzp: i.duzp || i.issueDate, issueDate: i.issueDate,
+    kind: "out", number: i.number, party: i.agency || objName(i.objectId), duzp: i.duzp || i.issueDate, issueDate: i.issueDate,
     base: (Number(i.amount) || 0) - (i.vatCurrency === i.currency ? Number(i.vatAmount) || 0 : 0),
     vat: Number(i.vatAmount) || 0, total: Number(i.amount) || 0, currency: i.currency, filePath: i.filePath || "",
   }));
