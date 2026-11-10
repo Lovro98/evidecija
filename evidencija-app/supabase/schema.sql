@@ -990,3 +990,37 @@ create policy os_admin_all on public.office_salaries for all
 -- Status plaćanja faktura (2026-11-05): rok, datum plaćanja i potvrda plaćanja (PDF u bucketu invoices, mapa payments/)
 alter table public.purchase_invoices add column if not exists due_date date, add column if not exists paid_date date, add column if not exists paid_file text default '';
 alter table public.object_invoices add column if not exists due_date date, add column if not exists paid_date date, add column if not exists paid_file text default '';
+
+-- ============================================================
+-- TROŠKOVI — blokovi i računi (gorivo, materijal, parking, cestarina…)
+-- Jedan red = jedan račun. Datoteka (slika/PDF) u bucketu invoices, mapa expenses/.
+-- pay_method: gotovina = firmina gotovina, privatno = platio netko svojim novcem (firma duguje povrat),
+--             kartica = firmina kartica, banka = prijenos s računa.
+-- U Financije kao trošak ulaze samo gotovina i privatno — kartica i banka su već na izvodu.
+-- Čita i mijenja samo admin.
+-- ============================================================
+create table if not exists public.expenses (
+  id uuid primary key default gen_random_uuid(),
+  exp_date date not null,
+  supplier text not null default '',
+  description text not null default '',
+  category text not null default 'ostali_troskovi',
+  amount numeric not null default 0,          -- ukupno s DPH
+  vat_amount numeric not null default 0,      -- DPH s računa (0 ako nije naveden)
+  currency text not null default 'CZK',
+  pay_method text not null default 'gotovina' check (pay_method in ('gotovina','kartica','banka','privatno')),
+  paid_by text not null default '',           -- tko je platio (za privatno)
+  refunded_date date,                         -- kad je privatni trošak vraćen
+  object_id uuid references public.objects on delete set null,
+  file_path text not null default '',
+  file_url text not null default '',          -- npr. link na Google Drive
+  note text not null default '',
+  created_by uuid references public.profiles,
+  created_at timestamptz not null default now(),
+  deleted_at timestamptz
+);
+create index if not exists expenses_date_idx on public.expenses (exp_date);
+alter table public.expenses enable row level security;
+drop policy if exists "exp_admin_all" on public.expenses;
+create policy "exp_admin_all" on public.expenses for all to authenticated
+  using (is_admin()) with check (is_admin());

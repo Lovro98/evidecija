@@ -824,7 +824,7 @@ async function fetchAll(isAdmin) {
   const err = [workers, objects, logs, payments, assignments, rateChanges, profiles, payouts].find((r) => r.error);
   if (err) throw err.error;
 
-  let billing = [], audit = [], trash = [], members = [], invoicePayments = [], settings = {}, objectInvoices = [], payrollNotes = [], positionBilling = [], reminders = [], loginLog = [], errorLog = [], commissionRates = [], commissionPayouts = [], brigadeCosts = [], purchaseInvoices = [], monthClose = [], cashAdvances = [];
+  let billing = [], audit = [], trash = [], members = [], invoicePayments = [], settings = {}, objectInvoices = [], payrollNotes = [], positionBilling = [], reminders = [], loginLog = [], errorLog = [], commissionRates = [], commissionPayouts = [], brigadeCosts = [], purchaseInvoices = [], monthClose = [], cashAdvances = [], expenses = [];
   let bankMap = {};
   // nove prijave kandidata (RLS: vidi samo admin ili regruter, ostali dobiju 0)
   let newCandidates = 0, staleCandidates = 0;
@@ -849,7 +849,7 @@ async function fetchAll(isAdmin) {
   if (isAdmin) {
     const wb = await paged(() => supabase.from("worker_bank").select("worker_id, bank_account").order("worker_id"));
     if (!wb.error) (wb.data || []).forEach((r) => { bankMap[r.worker_id] = r.bank_account || ""; });
-    const [b, a, tw, tl, tp, om, ip, st, oi, pn, pb, rm, ll, el, cr, cp, bg, pi, mc, ca] = await Promise.all([
+    const [b, a, tw, tl, tp, om, ip, st, oi, pn, pb, rm, ll, el, cr, cp, bg, pi, mc, ca, ex] = await Promise.all([
       supabase.from("object_billing").select("*"),
       supabase.from("audit_log").select("*").order("at", { ascending: false }).limit(80),
       supabase.from("workers").select("*").not("deleted_at", "is", null),
@@ -870,10 +870,11 @@ async function fetchAll(isAdmin) {
       paged(() => live(supabase.from("purchase_invoices").select("*")).order("duzp", { ascending: false }).order("id")),
       supabase.from("month_close").select("*"),
       paged(() => live(supabase.from("cash_advances").select("*")).order("id")),
+      paged(() => live(supabase.from("expenses").select("*")).order("exp_date", { ascending: false }).order("id")),
     ]);
     billing = b.data || []; audit = a.data || []; members = om.data || [];
     invoicePayments = ip.data || []; settings = st.data || {}; objectInvoices = oi.data || []; payrollNotes = pn.data || [];
-    positionBilling = pb.data || []; reminders = rm.data || []; loginLog = ll.data || []; errorLog = el.data || []; commissionRates = cr.data || []; commissionPayouts = cp.data || []; brigadeCosts = bg.data || []; purchaseInvoices = pi.data || []; monthClose = mc.data || []; cashAdvances = ca.data || [];
+    positionBilling = pb.data || []; reminders = rm.data || []; loginLog = ll.data || []; errorLog = el.data || []; commissionRates = cr.data || []; commissionPayouts = cp.data || []; brigadeCosts = bg.data || []; purchaseInvoices = pi.data || []; monthClose = mc.data || []; cashAdvances = ca.data || []; expenses = ex.error ? [] : (ex.data || []);
     trash = [
       ...(tw.data || []).map((r) => ({ table: "workers", row: r, label: `Radnik: ${r.name}` })),
       ...(tl.data || []).map((r) => ({ table: "work_logs", row: r, label: `Sati: ${fmtH(r.hours)} (${fmtDate(r.work_date)})` })),
@@ -958,6 +959,7 @@ async function fetchAll(isAdmin) {
       vat: Number(p.vat_amount) || 0, currency: p.currency === "EUR" ? "EUR" : "CZK", note: p.note || "", filePath: p.file_path || "",
       dueDate: p.due_date || "", paidDate: p.paid_date || "", paidFile: p.paid_file || "",
     })),
+    expenses: expenses.map(mapExpense),
     monthClose: monthClose.map((c) => ({ id: c.id, month: c.month, objectId: c.object_id || null, step: c.step, doneAt: c.done_at })),
     loginLog: loginLog.map((l) => ({ id: l.id, userName: l.user_name || "", at: l.at, userAgent: l.user_agent || "" })),
     errorLog: errorLog.map((e) => ({ id: e.id, userName: e.user_name || "", message: e.message, url: e.url || "", at: e.at })),
@@ -1536,6 +1538,16 @@ export default function App() {
     }, `Vratio na neplaćeno: ${label}`),
     setInvoiceDue: (kind, inv, dueDate, label) => act(() => upd(kind === "in" ? "purchase_invoices" : "object_invoices", inv.id, { due_date: dueDate || null }),
       `Upisao rok plaćanja: ${label} → ${dueDate ? fmtDate(dueDate) : "bez roka"}`),
+    // troškovi: blokovi i računi (tablica expenses) — f je oblik iz mapExpense
+    saveExpense: (f) => act(() => {
+      const row = expenseRow(f);
+      return f.id ? upd("expenses", f.id, row) : ins("expenses", { ...row, created_by: session.user.id });
+    }, `${f.id ? "Izmijenio" : "Upisao"} trošak: ${f.supplier || f.description || "račun"} ${money(f.amount, f.currency)} (${fmtDate(f.date)}, ${PAY_METHOD[f.payMethod]?.label || f.payMethod})`),
+    setExpenseRefunded: (e, dateIso) => act(() => upd("expenses", e.id, { refunded_date: dateIso || null }),
+      dateIso ? `Vraćen privatni trošak ${e.paidBy ? e.paidBy + ": " : ""}${e.supplier} ${money(e.amount, e.currency)} (${fmtDate(dateIso)})` : `Poništen povrat privatnog troška ${e.supplier} ${money(e.amount, e.currency)}`),
+    delExpense: (e) => act(async () => {
+      await softDel("expenses", e.id);
+    }, `Obrisao trošak: ${e.supplier || e.description} ${money(e.amount, e.currency)} (${fmtDate(e.date)})`),
     delPurchaseInvoice: (pi) => act(() => softDel("purchase_invoices", pi.id),
       `Obrisao primljenu fakturu: ${pi.supplier} ${pi.number} (DPH ${money(pi.vat, pi.currency)})`),
     createEmployee: async (f) => {
@@ -2807,7 +2819,7 @@ function CandidatesPanel({ data, api }) {
   );
 }
 const ADMIN_MENU = [
-  ["ai", "🤖", "AI asistent"], ["candidates", "🧑‍🍳", "Kandidati (prijave)"], ["approvals", "⏳", "Odobravanje isplata"], ["office", "👔", "Ured (zaposlenici i plaće)"], ["cash", "💵", "Gotovina kod koordinatora"], ["finance", "💼", "Financije (banka i porezi)"], ["unpaid", "💰", "Neisplaćeno (dugovi radnicima)"], ["invoices", "💳", "Fakture — plaćeno / neplaćeno"], ["vat", "🧾", "DPH"], ["users", "👥", "Korisnici i provizije"],
+  ["ai", "🤖", "AI asistent"], ["candidates", "🧑‍🍳", "Kandidati (prijave)"], ["approvals", "⏳", "Odobravanje isplata"], ["office", "👔", "Ured (zaposlenici i plaće)"], ["cash", "💵", "Gotovina kod koordinatora"], ["finance", "💼", "Financije (banka i porezi)"], ["expenses", "🛒", "Troškovi i računi (blokovi)"], ["unpaid", "💰", "Neisplaćeno (dugovi radnicima)"], ["invoices", "💳", "Fakture — plaćeno / neplaćeno"], ["vat", "🧾", "DPH"], ["users", "👥", "Korisnici i provizije"],
   ["firm", "🏢", "Podaci firme i postavke"], ["audit", "📜", "Povijest radnji"], ["logins", "🔐", "Prijave"],
   ["errors", "🐛", "Greške aplikacije"], ["trash", "🗑", "Koš (obrisano)"],
 ];
@@ -3232,6 +3244,258 @@ function UnpaidPanel({ data, api, onOpenWorker }) {
 }
 
 /* ================================================================== */
+/*  TROŠKOVI — blokovi i računi (gorivo, materijal, parking, cestarina) */
+/*  Tablica: expenses (samo admin). Slika/PDF u bucketu invoices,      */
+/*  mapa expenses/. Gotovina i privatno ulaze u Financije kao trošak;  */
+/*  kartica i banka su već na izvodu pa se ne broje dvaput.            */
+/* ================================================================== */
+const emptyExpense = (date) => ({ id: null, date: date || todayISO(), supplier: "", description: "", category: "", amount: "", vat: "",
+  currency: "CZK", payMethod: "gotovina", paidBy: "", refundedDate: "", objectId: "", filePath: "", fileUrl: "", note: "" });
+const vatFromGross = (gross, ratePct) => round2(gross - gross / (1 + ratePct / 100));
+
+function ExpensesPanel({ data, api }) {
+  const rate = Number(data.settings?.czk_rate) || 25;
+  const all = data.expenses || [];
+  const [month, setMonth] = useState(() => {
+    const now = curMonth();
+    if (all.some((e) => monthKey(e.date) === now) || !all.length) return now;
+    return monthKey(all[0].date) || now;
+  });
+  const [pm, setPm] = useState("all");
+  const [form, setForm] = useState(null);
+  const [file, setFile] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const fileRef = useRef(null);
+
+  const [y, m] = month.split("-").map(Number);
+  const prevM = () => setMonth(m === 1 ? `${y - 1}-12` : `${y}-${String(m - 1).padStart(2, "0")}`);
+  const nextM = () => setMonth(m === 12 ? `${y + 1}-01` : `${y}-${String(m + 1).padStart(2, "0")}`);
+  const objName = (id) => data.objects.find((o) => o.id === id)?.name || "";
+  const inMonth = all.filter((e) => monthKey(e.date) === month);
+  const list = inMonth.filter((e) => pm === "all" || e.payMethod === pm)
+    .sort((a, b) => b.date.localeCompare(a.date) || (b.createdAt || "").localeCompare(a.createdAt || ""));
+  const Kc = (n) => czk(Math.round(n));
+  const sumK = (arr, f) => arr.reduce((s, e) => s + toCzk(f(e), e.currency, rate), 0);
+  const gross = sumK(list, (e) => e.amount), vat = sumK(list, (e) => e.vat);
+  const inFin = sumK(inMonth.filter((e) => PAY_METHOD[e.payMethod].inFinance), (e) => e.amount - e.vat);
+  const toRefund = all.filter((e) => e.payMethod === "privatno" && !e.refundedDate);
+  const byCat = {};
+  list.forEach((e) => { (byCat[e.category] ||= { n: 0, sum: 0 }); byCat[e.category].n++; byCat[e.category].sum += toCzk(e.amount, e.currency, rate); });
+  const suppliers = [...new Set(all.map((e) => e.supplier).filter(Boolean))].sort((a, b) => a.localeCompare(b, "cs"));
+
+  const openFile = async (e) => {
+    if (e.filePath) return openStorageFile(e.filePath);
+    if (e.fileUrl) window.open(e.fileUrl, "_blank", "noopener");
+  };
+  const startNew = () => { setErr(""); setFile(null); setForm(emptyExpense(monthKey(todayISO()) === month ? todayISO() : `${month}-01`)); };
+  const startEdit = (e) => { setErr(""); setFile(null); setForm({ ...e, amount: String(e.amount).replace(".", ","), vat: e.vat ? String(e.vat).replace(".", ",") : "", objectId: e.objectId || "" }); };
+  // kategorija se sama predloži: isti dobavljač kao prije, pa pravila iz Financija (benzina, shell, omv…)
+  const guessCat = (supplier) => {
+    const prev = all.find((e) => fold(e.supplier) === fold(supplier));
+    if (prev) return prev.category;
+    return suggestCategory({ counterparty: supplier, amount: -1 }) || "";
+  };
+  const setSupplier = (v) => setForm((f) => ({ ...f, supplier: v, category: f.category || (v.length > 2 ? guessCat(v) : "") }));
+  const setVatRate = (r) => { const g = parseNum(form.amount); if (g > 0) setForm({ ...form, vat: String(vatFromGross(g, r)).replace(".", ",") }); };
+
+  const save = async () => {
+    const amount = round2(parseNum(form.amount) || 0), vatA = round2(parseNum(form.vat) || 0);
+    if (!form.date) return setErr(tr("Upiši datum."));
+    if (!(amount > 0)) return setErr(tr("Upiši iznos s računa."));
+    if (!form.supplier.trim() && !form.description.trim()) return setErr(tr("Upiši dobavljača ili opis."));
+    if (vatA > amount) return setErr(tr("DPH ne može biti veći od ukupnog iznosa."));
+    setBusy(true); setErr("");
+    let filePath = form.filePath;
+    if (file) {
+      const path = `expenses/${form.date}_${Date.now()}_${file.name.replace(/[^\w.\-]+/g, "_")}`;
+      const { error } = await supabase.storage.from("invoices").upload(path, file);
+      if (error) { setErr(tr("Greška: ") + error.message); setBusy(false); return; }
+      if (form.filePath) await supabase.storage.from("invoices").remove([form.filePath]);
+      filePath = path;
+    }
+    const ok = await api.saveExpense({ ...form, amount, vat: vatA, category: form.category || "ostali_troskovi", filePath });
+    setBusy(false);
+    if (ok !== false) { setMonth(monthKey(form.date)); setForm(null); setFile(null); }
+  };
+  const del = async (e) => {
+    if (!(await uiConfirm(tr("Obrisati trošak {0} {1}?", e.supplier || e.description, money(e.amount, e.currency))))) return;
+    api.delExpense(e);
+  };
+  const exportXlsx = () => {
+    const rows = [...inMonth].sort((a, b) => a.date.localeCompare(b.date)).map((e) => ({
+      date: xDate(e.date), supplier: e.supplier, description: e.description, cat: catLabel(e.category).replace(/^\S+\s/, ""),
+      base: round2(e.amount - e.vat), vat: e.vat, total: e.amount, currency: e.currency, pay: PAY_METHOD[e.payMethod].short,
+      object: objName(e.objectId), file: e.filePath || e.fileUrl ? "ano" : "chybí", note: [e.paidBy && `platil ${e.paidBy}`, e.note].filter(Boolean).join(" · "),
+    }));
+    downloadStyledXlsx({
+      fileName: `Uctenky_${month}_Molnar_Rose.xlsx`,
+      sheets: [{ name: "Účtenky", title: `Účtenky a výdaje – ${mName(m - 1)} ${y}`, subtitle: data.settings?.company_name || "Molnar Rose agency & floristry s.r.o.", landscape: true,
+        columns: [
+          { key: "date", header: "Datum", width: 12, type: "date" }, { key: "supplier", header: "Dodavatel", width: 28 },
+          { key: "description", header: "Popis", width: 30, wrap: true }, { key: "cat", header: "Kategorie", width: 20 },
+          { key: "base", header: "Základ", width: 12, type: "money" }, { key: "vat", header: "DPH", width: 11, type: "money" },
+          { key: "total", header: "Celkem", width: 12, type: "money" }, { key: "currency", header: "Měna", width: 7, type: "center" },
+          { key: "pay", header: "Placeno", width: 11, type: "center" }, { key: "object", header: "Objekt", width: 16 },
+          { key: "file", header: "Doklad", width: 9, type: "center" }, { key: "note", header: "Poznámka", width: 30, wrap: true },
+        ],
+        rows, total: { label: "CELKEM", keys: ["base", "vat", "total"] }, emptyText: "Žádné účtenky." }],
+    });
+  };
+
+  const chip = (on) => ({ padding: "6px 11px", borderRadius: 999, fontWeight: 700, fontSize: 12.5, cursor: "pointer",
+    background: on ? S.green : "#fff", color: on ? "#fff" : S.sub, border: `1px solid ${on ? S.green : S.line}` });
+  const row = { display: "flex", justifyContent: "space-between", gap: 8, padding: "5px 0", borderBottom: `1px solid ${S.line}`, fontSize: 13 };
+  const navBtn = { background: "#fff", border: `1px solid ${S.line}`, borderRadius: 8, width: 30, height: 30, cursor: "pointer", fontWeight: 700 };
+  const icon = { background: "none", border: "none", cursor: "pointer", fontSize: 15, padding: 3 };
+
+  return (
+    <div style={{ marginTop: 8 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, marginBottom: 10, flexWrap: "wrap" }}>
+        <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+          <button onClick={prevM} style={navBtn}>‹</button>
+          <b style={{ fontSize: 15, minWidth: 120, textAlign: "center" }}>{mName(m - 1)} {y}.</b>
+          <button onClick={nextM} style={navBtn}>›</button>
+        </div>
+        <div style={{ display: "flex", gap: 6 }}>
+          {inMonth.length > 0 && <Btn small kind="excel" onClick={exportXlsx}>Excel</Btn>}
+          <Btn small onClick={startNew}>＋ {tr("Novi račun")}</Btn>
+        </div>
+      </div>
+
+      {toRefund.length > 0 && (
+        <Card style={{ background: S.amberSoft, borderColor: S.amberSoft, fontSize: 13.5 }}>
+          👤 {tr("Privatno plaćeno, još nije vraćeno:")} <b>{Kc(sumK(toRefund, (e) => e.amount))}</b> ({toRefund.length})
+          <div style={{ fontSize: 12.5, color: S.sub, marginTop: 4 }}>
+            {Object.entries(toRefund.reduce((a, e) => { const k = e.paidBy || tr("nepoznato"); a[k] = (a[k] || 0) + toCzk(e.amount, e.currency, rate); return a; }, {}))
+              .map(([who, v]) => `${who}: ${Kc(v)}`).join(" · ")}
+          </div>
+        </Card>
+      )}
+
+      {form && (
+        <Card style={{ border: `2px solid ${S.green}` }}>
+          <div style={{ fontWeight: 800, marginBottom: 10 }}>{form.id ? tr("Uredi račun") : tr("Novi račun / blok")}</div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+            <Field label={tr("Datum")}><input type="date" value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} /></Field>
+            <Field label={tr("Plaćeno")}>
+              <select value={form.payMethod} onChange={(e) => setForm({ ...form, payMethod: e.target.value })}>
+                {Object.entries(PAY_METHOD).map(([k, v]) => <option key={k} value={k}>{tr(v.label)}</option>)}
+              </select>
+            </Field>
+          </div>
+          {form.payMethod === "privatno" && (
+            <Field label={tr("Tko je platio (firma mu vraća)")}><input value={form.paidBy} onChange={(e) => setForm({ ...form, paidBy: e.target.value })} placeholder="npr. Lovro" /></Field>
+          )}
+          <Field label={tr("Dobavljač (trgovina, benzinska…)")}>
+            <input list="exp-suppliers" value={form.supplier} onChange={(e) => setSupplier(e.target.value)} placeholder="npr. ORLEN, Bauhaus, Shell" />
+            <datalist id="exp-suppliers">{suppliers.map((s2) => <option key={s2} value={s2} />)}</datalist>
+          </Field>
+          <Field label={tr("Što je kupljeno")}><input value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} placeholder="npr. diesel, WC školjka, parking" /></Field>
+          <Field label={tr("Kategorija")}>
+            <select value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value })}>
+              <option value="">{tr("— odaberi —")}</option>
+              {EXPENSE_CATS.map(([k, label]) => <option key={k} value={k}>{label}</option>)}
+            </select>
+          </Field>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+            <Field label={tr("Ukupno s DPH")}><input inputMode="decimal" value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} placeholder="0" /></Field>
+            <Field label={tr("Od toga DPH")}><input inputMode="decimal" value={form.vat} onChange={(e) => setForm({ ...form, vat: e.target.value })} placeholder="0" /></Field>
+          </div>
+          <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap", marginTop: -4, marginBottom: 10 }}>
+            <CurChips small value={form.currency} onChange={(c) => setForm({ ...form, currency: c })} />
+            <span style={{ fontSize: 12, color: S.sub }}>DPH:</span>
+            {[21, 12, 25].map((r) => <button key={r} type="button" onClick={() => setVatRate(r)} style={chip(false)}>{r} %</button>)}
+            <button type="button" onClick={() => setForm({ ...form, vat: "" })} style={chip(false)}>{tr("bez")}</button>
+          </div>
+          <Field label={tr("Hotel / objekt (ako se odnosi na njega)")}>
+            <select value={form.objectId || ""} onChange={(e) => setForm({ ...form, objectId: e.target.value })}>
+              <option value="">{tr("— općenito, firma —")}</option>
+              {sortedObjects(data.objects.filter((o) => !o.archived || o.id === form.objectId)).map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}
+            </select>
+          </Field>
+          <Field label={tr("Slika ili PDF računa")}>
+            <input ref={fileRef} type="file" accept="image/*,application/pdf" onChange={(e) => setFile(e.target.files?.[0] || null)} style={{ padding: 8 }} />
+            {(form.filePath || form.fileUrl) && !file && (
+              <div style={{ fontSize: 12.5, marginTop: 4 }}>
+                <button type="button" onClick={() => openFile(form)} style={{ ...icon, fontSize: 12.5, color: S.blue, fontWeight: 700 }}>📎 {tr("otvori priloženi račun")}</button>
+                {form.filePath && <button type="button" onClick={() => setForm({ ...form, filePath: "" })} style={{ ...icon, fontSize: 12.5, color: S.red }}>{tr("ukloni")}</button>}
+              </div>
+            )}
+          </Field>
+          <Field label={tr("Ili link (npr. Google Drive)")}><input value={form.fileUrl} onChange={(e) => setForm({ ...form, fileUrl: e.target.value })} placeholder="https://drive.google.com/…" /></Field>
+          <Field label={tr("Napomena")}><input value={form.note} onChange={(e) => setForm({ ...form, note: e.target.value })} /></Field>
+          {err && <div style={{ color: S.red, fontSize: 13, marginBottom: 8, fontWeight: 600 }}>{err}</div>}
+          <div style={{ display: "flex", gap: 8 }}>
+            <Btn onClick={save} disabled={busy} style={{ flex: 1 }}>{busy ? tr("Spremam…") : tr("Spremi")}</Btn>
+            <Btn kind="ghost" onClick={() => { setForm(null); setFile(null); }} disabled={busy}>{tr("Odustani")}</Btn>
+          </div>
+        </Card>
+      )}
+
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 10 }}>
+        <button onClick={() => setPm("all")} style={chip(pm === "all")}>{tr("Sve")} ({inMonth.length})</button>
+        {Object.entries(PAY_METHOD).map(([k, v]) => {
+          const n = inMonth.filter((e) => e.payMethod === k).length;
+          return n ? <button key={k} onClick={() => setPm(k)} style={chip(pm === k)}>{tr(v.short)} ({n})</button> : null;
+        })}
+      </div>
+
+      {inMonth.length === 0 && !form ? (
+        <Card style={{ background: S.blueSoft, borderColor: S.blueSoft, fontSize: 13.5 }}>
+          <div style={{ fontWeight: 700, marginBottom: 4 }}>{tr("Nema računa za ovaj mjesec.")}</div>
+          {tr("Ovdje upisuješ blokove i račune: gorivo, materijal, parking, cestarine, papirnica… Uslikaj račun mobitelom i priloži ga. Gotovina i privatno plaćeni troškovi sami ulaze u Financije; kartica i prijenos su već na izvodu.")}
+        </Card>
+      ) : (
+        <>
+          {list.length > 0 && (
+            <Card>
+              <div style={row}><span>{tr("Ukupno s DPH")}</span><b className="num">{Kc(gross)}</b></div>
+              <div style={row}><span>{tr("Od toga DPH")}</span><b className="num" style={{ color: S.sub }}>{Kc(vat)}</b></div>
+              <div style={row}><span>{tr("Bez DPH")}</span><b className="num">{Kc(gross - vat)}</b></div>
+              <div style={{ ...row, borderBottom: "none" }}><span>{tr("Ulazi u Financije (gotovina + privatno, bez DPH)")}</span><b className="num" style={{ color: S.red }}>− {Kc(inFin)}</b></div>
+              {Object.keys(byCat).length > 1 && (
+                <div style={{ marginTop: 8, fontSize: 12.5, color: S.sub }}>
+                  {Object.entries(byCat).sort((a, b) => b[1].sum - a[1].sum).map(([k, v]) => <div key={k}>{catLabel(k)}: <b>{Kc(v.sum)}</b> ({v.n})</div>)}
+                </div>
+              )}
+            </Card>
+          )}
+          <Card style={{ padding: 6 }}>
+            {list.map((e) => (
+              <div key={e.id} style={{ display: "flex", gap: 8, alignItems: "center", padding: "9px 8px", borderBottom: `1px solid ${S.line}` }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontWeight: 700, fontSize: 14, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{e.supplier || e.description}</div>
+                  <div style={{ fontSize: 12, color: S.sub }}>
+                    {fmtDate(e.date)} · {catLabel(e.category)}{e.supplier && e.description ? ` · ${e.description}` : ""}{e.objectId ? ` · 🏨 ${objName(e.objectId)}` : ""}
+                  </div>
+                  <div style={{ fontSize: 11.5, color: e.payMethod === "privatno" && !e.refundedDate ? S.amber : S.sub, fontWeight: 600 }}>
+                    {tr(PAY_METHOD[e.payMethod].label)}{e.paidBy ? ` · ${e.paidBy}` : ""}
+                    {e.payMethod === "privatno" && (e.refundedDate
+                      ? <> · ✓ {tr("vraćeno")} {fmtDate(e.refundedDate)} <button onClick={() => api.setExpenseRefunded(e, null)} title={tr("Poništi")} style={{ ...icon, fontSize: 11 }}>↩</button></>
+                      : <> · <button onClick={() => api.setExpenseRefunded(e, todayISO())} style={{ ...icon, fontSize: 11.5, color: S.green, fontWeight: 800 }}>{tr("označi vraćeno")}</button></>)}
+                    {!e.filePath && !e.fileUrl && <span style={{ color: S.red }}> · {tr("bez slike računa")}</span>}
+                  </div>
+                </div>
+                <div style={{ textAlign: "right" }}>
+                  <b className="num" style={{ fontSize: 14 }}>{money(e.amount, e.currency)}</b>
+                  {e.vat > 0 && <div className="num" style={{ fontSize: 11, color: S.sub }}>DPH {money(e.vat, e.currency)}</div>}
+                </div>
+                <div style={{ display: "flex", flexDirection: "column" }}>
+                  {(e.filePath || e.fileUrl) && <button onClick={() => openFile(e)} title={tr("Otvori račun")} style={icon}>📎</button>}
+                  <button onClick={() => startEdit(e)} title={tr("Uredi")} style={icon}>✏️</button>
+                  <button onClick={() => del(e)} title={tr("Obriši")} style={{ ...icon, color: S.red }}>🗑</button>
+                </div>
+              </div>
+            ))}
+          </Card>
+        </>
+      )}
+    </div>
+  );
+}
+
+/* ================================================================== */
 /*  FINANCIJE — bankovni izvodi, mjesečni pregled, procjena poreza     */
 /*  Tablice: bank_imports, bank_transactions, bank_rules (samo admin)  */
 /* ================================================================== */
@@ -3296,6 +3560,15 @@ function FinancePanel({ data, api }) {
 
   /* ---------- izračuni ---------- */
   const { months, byCat } = finYear(txs, year, rate);
+  // blokovi/računi plaćeni gotovinom ili privatno nisu na izvodu — dodaj ih kao trošak (bez DPH)
+  const cashExp = (data.expenses || []).filter((e) => e.date?.startsWith(String(year)) && PAY_METHOD[e.payMethod]?.inFinance);
+  cashExp.forEach((e) => {
+    const net = toCzk(e.amount - e.vat, e.currency, rate), mo = months[Number(e.date.slice(5, 7)) - 1];
+    mo.cost += net; mo.expCount = (mo.expCount || 0) + 1;
+    (byCat[e.category] ||= { gross: 0, net: 0, count: 0 });
+    byCat[e.category].gross -= toCzk(e.amount, e.currency, rate); byCat[e.category].net -= net; byCat[e.category].count++;
+  });
+  const cashExpNet = cashExp.reduce((t, e) => t + toCzk(e.amount - e.vat, e.currency, rate), 0);
   const invNet = Array(12).fill(0);
   (data.objectInvoices || []).forEach((i) => {
     const mo = invoiceTaxMonth(i);
@@ -3511,7 +3784,7 @@ function FinancePanel({ data, api }) {
             <div style={{ ...row, fontSize: 15, borderBottom: "none" }}><b>Dobit</b><b className="num" style={{ color: est.profit >= 0 ? S.green : S.red }}>{Kc(est.profit)}</b></div>
             {sumM("owner") > 0 && <div style={{ fontSize: 12.5, color: S.sub }}>Isplaćeno vlasniku ove godine: {Kc(sumM("owner"))} (nije trošak)</div>}
             <div style={{ fontSize: 11.5, color: S.sub, marginTop: 4 }}>
-              {revBasis === "banka" ? "Prihod = uplate na račun umanjene za DPH (prema stopi kategorije)." : "Prihod = izdane fakture (bez DPH) iz kartice Objekti, po DUZP-u."} Troškovi = isplate s izvoda bez DPH-a. Plaće isplaćene u gotovini nisu na izvodu — dodaj ih ručno u Transakcijama ako idu u knjige.
+              {revBasis === "banka" ? "Prihod = uplate na račun umanjene za DPH (prema stopi kategorije)." : "Prihod = izdane fakture (bez DPH) iz kartice Objekti, po DUZP-u."} Troškovi = isplate s izvoda bez DPH-a{cashExpNet > 0 ? ` + ${Kc(cashExpNet)} računa plaćenih gotovinom ili privatno (🛒 Troškovi i računi)` : ""}. Plaće isplaćene u gotovini nisu na izvodu — dodaj ih ručno u Transakcijama ako idu u knjige.
             </div>
           </Card>
 
@@ -3549,7 +3822,7 @@ function FinancePanel({ data, api }) {
           <Card>
             <div style={{ fontWeight: 700, marginBottom: 8 }}>Po mjesecima</div>
             <div style={{ ...row, color: S.sub, fontSize: 12, fontWeight: 700 }}><span style={{ flex: 1 }}>Mjesec</span><span style={{ width: 90, textAlign: "right" }}>Prihodi</span><span style={{ width: 90, textAlign: "right" }}>Troškovi</span><span style={{ width: 90, textAlign: "right" }}>Rezultat</span></div>
-            {months.map((m, i) => (m.count || invNet[i]) ? (
+            {months.map((m, i) => (m.count || m.expCount || invNet[i]) ? (
               <div key={m.month} onClick={() => { setFMonth(m.month); setFCat("all"); setView("transakcije"); }} style={{ ...row, cursor: "pointer" }}>
                 <span style={{ flex: 1 }}>{mName(i)}{m.uncat ? <span style={{ color: S.amber }}> · ❔{m.uncat}</span> : null}</span>
                 <span className="num" style={{ width: 90, textAlign: "right", color: S.green }}>{Kc(incomeOf(i))}</span>
@@ -4101,6 +4374,28 @@ function NightlyBackups() {
 /*  FAKTURE — PLAĆENO / NEPLAĆENO                                      */
 /*  out = izdane (object_invoices), in = primljene (purchase_invoices) */
 /* ================================================================== */
+/* ---------- troškovi (blokovi i računi) ---------- */
+// u Financije ulaze samo gotovina i privatno — kartica i banka su već na bankovnom izvodu
+const PAY_METHOD = {
+  gotovina: { label: "💵 Gotovina firme", short: "gotovina", inFinance: true },
+  kartica: { label: "💳 Kartica firme", short: "kartica", inFinance: false },
+  banka: { label: "🏦 Prijenos s računa", short: "banka", inFinance: false },
+  privatno: { label: "👤 Privatno (vratiti)", short: "privatno", inFinance: true },
+};
+const EXPENSE_CATS = FIN_CATS.filter(([, , kind]) => kind === "cost");
+const mapExpense = (e) => ({
+  id: e.id, date: e.exp_date, supplier: e.supplier || "", description: e.description || "", category: e.category || "ostali_troskovi",
+  amount: Number(e.amount) || 0, vat: Number(e.vat_amount) || 0, currency: e.currency === "EUR" ? "EUR" : "CZK",
+  payMethod: PAY_METHOD[e.pay_method] ? e.pay_method : "gotovina", paidBy: e.paid_by || "", refundedDate: e.refunded_date || "",
+  objectId: e.object_id || null, filePath: e.file_path || "", fileUrl: e.file_url || "", note: e.note || "", createdAt: e.created_at,
+});
+const expenseRow = (f) => ({
+  exp_date: f.date, supplier: (f.supplier || "").trim(), description: (f.description || "").trim(), category: f.category || "ostali_troskovi",
+  amount: round2(f.amount || 0), vat_amount: round2(f.vat || 0), currency: f.currency === "EUR" ? "EUR" : "CZK",
+  pay_method: f.payMethod || "gotovina", paid_by: f.payMethod === "privatno" ? (f.paidBy || "").trim() : "",
+  refunded_date: f.payMethod === "privatno" ? (f.refundedDate || null) : null,
+  object_id: f.objectId || null, file_path: f.filePath || "", file_url: (f.fileUrl || "").trim(), note: (f.note || "").trim(),
+});
 const invPayState = (inv) => {
   if (inv.paidDate) return { paid: true, overdue: false, days: null };
   if (!inv.dueDate) return { paid: false, overdue: false, days: null };
@@ -4382,6 +4677,7 @@ function AdminPanels({ data, api, panel, setPanel, onOpenWorker, onOpenProfile }
       {panel === "candidates" && <CandidatesPanel data={data} api={api} />}
       {panel === "ai" && <AiAssistantPanel data={data} />}
       {panel === "finance" && <FinancePanel data={data} api={api} />}
+      {panel === "expenses" && <ExpensesPanel data={data} api={api} />}
       {panel === "cash" && <CashPanel data={data} api={api} />}
       {panel === "office" && <OfficePanel data={data} api={api} />}
 
@@ -4493,14 +4789,15 @@ function AdminPanels({ data, api, panel, setPanel, onOpenWorker, onOpenProfile }
           if (packBusy) return;
           setPackBusy(kind); setPackMsg("");
           try {
-            const args = { supabase, month: vatMonth, out: v.out, inn: v.inn, objName,
+            const exp = (data.expenses || []).filter((e) => monthKey(e.date) === vatMonth);
+            const args = { supabase, month: vatMonth, out: v.out, inn: v.inn, exp, objName,
               onProgress: (i, n) => setPackMsg(tr("Preuzimam fakture… {0}/{1}", i, n)) };
             const res = kind === "zip"
               ? await downloadAccountantZip(args)
               : await printAccountantPack({ ...args, pdfjsLib, company });
-            setPackMsg(res.missing.length
+            setPackMsg((res.missing.length
               ? tr("Gotovo. Bez PDF-a ({0}): {1} — dodaj PDF uz te fakture pa ponovi.", res.missing.length, res.missing.map((r) => r.number || r.party).join(", "))
-              : tr("Gotovo ✓ Sve fakture imaju PDF."));
+              : tr("Gotovo ✓ Sve fakture imaju PDF.")) + (exp.length ? " " + tr("Uz to {0} računa iz 🛒 Troškova{1}.", exp.length, res.expMissing?.length ? tr(" ({0} bez slike)", res.expMissing.length) : "") : ""));
             api.logDoc(`${kind === "zip" ? "Preuzeo ZIP" : "Otvorio ispis"} faktura za knjigovođu (${vatMonth})`);
           } catch (e) { setPackMsg(tr("Greška: ") + (e.message || e)); }
           finally { setPackBusy(""); }

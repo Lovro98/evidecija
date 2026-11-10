@@ -80,6 +80,17 @@ function collect({ out, inn, objName }) {
 }
 const round2 = (n) => Math.round(n * 100) / 100;
 
+// účtenky (blokovi) za mjesec — iz tablice expenses (oblik mapExpense u App.jsx)
+const PAY_CZ = { gotovina: "hotově", kartica: "kartou firmy", banka: "převodem", privatno: "soukromě" };
+function collectExp(exp = [], objName) {
+  return [...exp].sort((a, b) => String(a.date).localeCompare(String(b.date))).map((e) => ({
+    kind: "exp", number: "", party: e.supplier || e.description, description: e.description || "", duzp: e.date,
+    base: round2((Number(e.amount) || 0) - (Number(e.vat) || 0)), vat: Number(e.vat) || 0, total: Number(e.amount) || 0,
+    currency: e.currency, filePath: e.filePath || "", fileUrl: e.fileUrl || "", pay: PAY_CZ[e.payMethod] || e.payMethod,
+    object: e.objectId ? objName(e.objectId) : "", note: [e.paidBy && `platil ${e.paidBy}`, e.note].filter(Boolean).join(" · "),
+  }));
+}
+
 async function fetchFile(supabase, path) {
   const { data, error } = await supabase.storage.from("invoices").download(path);
   if (error || !data) return null;
@@ -87,18 +98,22 @@ async function fetchFile(supabase, path) {
 }
 
 /* ---------- 1) ZIP ---------- */
-export async function downloadAccountantZip({ supabase, month, out, inn, objName, onProgress }) {
+export async function downloadAccountantZip({ supabase, month, out, inn, exp, objName, onProgress }) {
   const { outRows, inRows } = collect({ out, inn, objName });
-  const files = [], missing = [];
-  const all = [...outRows, ...inRows];
+  const expRows = collectExp(exp, objName);
+  const files = [], missing = [], expMissing = [];
+  const all = [...outRows, ...inRows, ...expRows];
   let n = 0;
   for (const r of all) {
     onProgress?.(++n, all.length);
-    const folder = r.kind === "out" ? "Vydané faktury" : "Přijaté faktury";
-    if (!r.filePath) { missing.push(r); continue; }
+    const folder = r.kind === "out" ? "Vydané faktury" : r.kind === "in" ? "Přijaté faktury" : "Účtenky";
+    const miss = r.kind === "exp" ? expMissing : missing;
+    if (!r.filePath) { miss.push(r); continue; }
     const data = await fetchFile(supabase, r.filePath);
-    if (!data) { missing.push(r); continue; }
-    const base = r.kind === "out" ? `${safeName(r.number)}_${safeName(r.party)}` : `${fmtD(r.duzp).replace(/\. /g, "-")}_${safeName(r.party)}_${safeName(r.number)}`;
+    if (!data) { miss.push(r); continue; }
+    const base = r.kind === "out" ? `${safeName(r.number)}_${safeName(r.party)}`
+      : r.kind === "exp" ? `${fmtD(r.duzp).replace(/\. /g, "-")}_${safeName(r.party)}_${Math.round(r.total)}`
+      : `${fmtD(r.duzp).replace(/\. /g, "-")}_${safeName(r.party)}_${safeName(r.number)}`;
     let name = `${folder}/${base}.${extOf(r.filePath)}`;
     let k = 2; while (files.some((f) => f.name === name)) name = `${folder}/${base}_${k++}.${extOf(r.filePath)}`;
     files.push({ name, data });
@@ -114,34 +129,44 @@ export async function downloadAccountantZip({ supabase, month, out, inn, objName
     { key: "currency", header: "Měna", width: 7, type: "center" },
     { key: "pdf", header: "PDF v balíčku", width: 13, type: "center" },
   ];
-  const toRow = (r) => ({ ...r, duzp: xDate(r.duzp), pdf: missing.includes(r) ? "CHYBÍ" : "ano" });
+  const toRow = (r) => ({ ...r, duzp: xDate(r.duzp), pdf: missing.includes(r) || expMissing.includes(r) ? (r.fileUrl ? "odkaz" : "CHYBÍ") : "ano" });
   const xbuf = await styledXlsxBuffer({ sheets: [
     { name: "Vydané faktury", title: `Vydané faktury – ${monthLabel(month)}`, columns: cols.map((c) => (c.key === "party" ? { ...c, header: "Odběratel" } : c)),
       rows: outRows.map(toRow), total: { label: "CELKEM", keys: ["base", "vat", "total"] } },
     { name: "Přijaté faktury", title: `Přijaté faktury – ${monthLabel(month)}`, columns: [...cols.map((c) => (c.key === "party" ? { ...c, header: "Dodavatel" } : c)), { key: "note", header: "Poznámka", width: 40, wrap: true }],
       rows: inRows.map(toRow), total: { label: "CELKEM", keys: ["base", "vat", "total"] }, tabColor: "FF2B5D8A" },
+    ...(expRows.length ? [{ name: "Účtenky", title: `Účtenky a výdaje – ${monthLabel(month)}`, columns: [
+      { key: "duzp", header: "Datum", width: 12, type: "date" }, { key: "party", header: "Dodavatel", width: 28 },
+      { key: "description", header: "Popis", width: 26, wrap: true },
+      { key: "base", header: "Základ", width: 13, type: "money" }, { key: "vat", header: "DPH", width: 12, type: "money" },
+      { key: "total", header: "Celkem", width: 13, type: "money" }, { key: "currency", header: "Měna", width: 7, type: "center" },
+      { key: "pay", header: "Placeno", width: 13, type: "center" }, { key: "object", header: "Objekt", width: 16 },
+      { key: "pdf", header: "Doklad v balíčku", width: 14, type: "center" }, { key: "note", header: "Poznámka", width: 30, wrap: true },
+    ], rows: expRows.map(toRow), total: { label: "CELKEM", keys: ["base", "vat", "total"] }, tabColor: "FFB97F1E" }] : []),
   ] });
   files.unshift({ name: `Přehled faktur ${month}.xlsx`, data: new Uint8Array(xbuf) });
 
   download(makeZip(files), `Faktury_${month}_Molnar_Rose.zip`);
-  return { count: files.length - 1, missing };
+  return { count: files.length - 1, missing, expMissing };
 }
 
 /* ---------- 2) Ispis: pregled + sve stranice faktura ---------- */
-export async function printAccountantPack({ supabase, pdfjsLib, month, out, inn, objName, company, onProgress }) {
+export async function printAccountantPack({ supabase, pdfjsLib, month, out, inn, exp, objName, company, onProgress }) {
   const w = window.open("", "_blank");
   if (!w) throw new Error("Preglednik je blokirao novi prozor — dopusti skočne prozore za ovu stranicu.");
   w.document.write(`<!doctype html><meta charset="utf-8"><title>Faktury ${esc(month)}</title><body style="font-family:Arial,sans-serif;padding:24px">Připravuji dokument k tisku…</body>`);
 
   const { outRows, inRows } = collect({ out, inn, objName });
-  const pages = [], missing = [];
-  const all = [...outRows, ...inRows];
+  const expRows = collectExp(exp, objName);
+  const pages = [], missing = [], expMissing = [];
+  const all = [...outRows, ...inRows, ...expRows];
   let n = 0;
   for (const r of all) {
     onProgress?.(++n, all.length);
-    if (!r.filePath) { missing.push(r); continue; }
+    const miss = r.kind === "exp" ? expMissing : missing;
+    if (!r.filePath) { miss.push(r); continue; }
     const data = await fetchFile(supabase, r.filePath);
-    if (!data) { missing.push(r); continue; }
+    if (!data) { miss.push(r); continue; }
     if (isImage(r.filePath)) {
       const url = URL.createObjectURL(new Blob([data]));
       pages.push({ r, src: await new Promise((res) => { const img = new Image(); img.onload = () => { const c = document.createElement("canvas"); c.width = img.naturalWidth; c.height = img.naturalHeight; c.getContext("2d").drawImage(img, 0, 0); res(c.toDataURL("image/jpeg", 0.9)); URL.revokeObjectURL(url); }; img.onerror = () => res(null); img.src = url; }) });
@@ -157,7 +182,7 @@ export async function printAccountantPack({ supabase, pdfjsLib, month, out, inn,
         await page.render({ canvasContext: c.getContext("2d"), viewport: vp }).promise;
         pages.push({ r, src: c.toDataURL("image/jpeg", 0.88) });
       }
-    } catch { missing.push(r); }
+    } catch { (r.kind === "exp" ? expMissing : missing).push(r); }
   }
 
   const sum = (rows, k, cur) => rows.filter((r) => r.currency === cur).reduce((s, r) => s + r[k], 0);
@@ -167,7 +192,7 @@ export async function printAccountantPack({ supabase, pdfjsLib, month, out, inn,
     <h2>${title} (${rows.length})</h2>
     ${rows.length === 0 ? `<p class="sub">Žádné faktury.</p>` : `<table>
       <tr><th>Číslo</th><th>${partyLabel}</th><th>DUZP</th><th>Základ</th><th>DPH</th><th>Celkem</th><th>PDF</th></tr>
-      ${rows.map((r) => `<tr><td>${esc(r.number)}</td><td>${esc(r.party)}</td><td>${fmtD(r.duzp)}</td><td>${fmtMoney(r.base, r.currency)}</td><td>${fmtMoney(r.vat, r.currency)}</td><td>${fmtMoney(r.total, r.currency)}</td><td>${missing.includes(r) ? '<b class="miss">chybí</b>' : "✓"}</td></tr>`).join("")}
+      ${rows.map((r) => `<tr><td>${esc(r.kind === "exp" ? r.pay : r.number)}</td><td>${esc(r.party)}${r.kind === "exp" && r.description && r.description !== r.party ? ` <span class="sub">${esc(r.description)}</span>` : ""}</td><td>${fmtD(r.duzp)}</td><td>${fmtMoney(r.base, r.currency)}</td><td>${fmtMoney(r.vat, r.currency)}</td><td>${fmtMoney(r.total, r.currency)}</td><td>${missing.includes(r) || expMissing.includes(r) ? '<b class="miss">chybí</b>' : "✓"}</td></tr>`).join("")}
       ${totals(rows)}</table>`}`;
 
   const html = `<!doctype html><html><head><meta charset="utf-8"><title>Faktury ${esc(monthLabel(month))} – ${esc(company)}</title>
@@ -195,10 +220,11 @@ export async function printAccountantPack({ supabase, pdfjsLib, month, out, inn,
   <div class="sub">${esc(company)} · podle DUZP · vytvořeno ${fmtD(new Date().toISOString().slice(0, 10))}</div>
   ${table("Vydané faktury", "Odběratel", outRows)}
   ${table("Přijaté faktury", "Dodavatel", inRows)}
+  ${expRows.length ? table("Účtenky a výdaje (sloupec Číslo = způsob platby)", "Dodavatel", expRows) : ""}
   ${missing.length ? `<p class="miss" style="margin-top:14px">⚠️ U ${missing.length} faktur chybí PDF v Evidenci — nejsou vytištěny: ${missing.map((r) => esc(r.number || r.party)).join(", ")}.</p>` : ""}
 </div>
-${pages.filter((p) => p.src).map((p) => `<div class="page"><div class="label">${p.r.kind === "out" ? "Vydaná" : "Přijatá"} faktura ${esc(p.r.number)} · ${esc(p.r.party)}</div><img src="${p.src}"></div>`).join("")}
+${pages.filter((p) => p.src).map((p) => `<div class="page"><div class="label">${p.r.kind === "out" ? "Vydaná faktura" : p.r.kind === "in" ? "Přijatá faktura" : "Účtenka"} ${esc(p.r.number)} · ${esc(p.r.party)}</div><img src="${p.src}"></div>`).join("")}
 </body></html>`;
   w.document.open(); w.document.write(html); w.document.close();
-  return { pages: pages.length, missing };
+  return { pages: pages.length, missing, expMissing };
 }
