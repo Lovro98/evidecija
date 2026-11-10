@@ -2861,7 +2861,7 @@ function UnpaidPanel({ data, api, onOpenWorker }) {
   const [rows, setRows] = useState(null);      // koverte sa stanjem (view unpaid_wages_balance)
   const [pays, setPays] = useState([]);        // pojedinačne isplate
   const [loadErr, setLoadErr] = useState("");
-  const [obj, setObj] = useState(null);        // null = popis objekata, inače object_id ("none" = bez objekta)
+  const [obj, setObj] = useState(null);        // null = popis objekata, inače object_id ("none" = bez objekta, "*" = svi hoteli zajedno)
   const [view, setView] = useState("mjeseci"); // mjeseci | osobe | ukupno
   const [selMonth, setSelMonth] = useState(null);
   const [selPerson, setSelPerson] = useState(null);
@@ -2889,10 +2889,12 @@ function UnpaidPanel({ data, api, onOpenWorker }) {
   const OPEN = 0.004;
   const isOpen = (x) => x.remaining > OPEN;
   const objKey = (r) => r.object_id || "none";
-  const objName = (k) => k === "none" ? "Bez objekta" : (data.objects.find((o) => o.id === k)?.name || rows.find((r) => r.object_id === k)?.object_name || "—");
+  const ALL = "*";
+  const objName = (k) => k === ALL ? "Svi hoteli" : k === "none" ? "Bez objekta" : (data.objects.find((o) => o.id === k)?.name || rows.find((r) => r.object_id === k)?.object_name || "—");
   const sum = (list, f) => list.reduce((s, x) => s + x[f], 0);
   const personKey = (r) => r.worker_id || "name:" + r.worker_name;
-  const keyOf = (r) => personKey(r) + "|" + objKey(r);
+  // u pregledu "svi hoteli" ista osoba je jedna grupa bez obzira na hotel
+  const keyOf = (r) => obj === ALL ? personKey(r) : personKey(r) + "|" + objKey(r);
   const paysOf = (wageId) => pays.filter((p) => p.unpaid_wage_id === wageId);
   const visibleRows = (list) => showClosed ? list : list.filter(isOpen);
   const totals = (list) => ({ amount: sum(list, "amount"), paid: sum(list, "paid"), remaining: sum(list, "remaining"), count: list.length });
@@ -2907,7 +2909,7 @@ function UnpaidPanel({ data, api, onOpenWorker }) {
   const objList = groupBy(rows, objKey, (r) => ({ name: objName(objKey(r)) }))
     .map((o) => ({ ...o, people: new Set(o.list.filter(isOpen).map(personKey)).size }))
     .sort((a, b) => b.remaining - a.remaining || a.name.localeCompare(b.name, "hr"));
-  const fr = obj ? rows.filter((r) => objKey(r) === obj) : rows;           // koverte objekta
+  const fr = obj && obj !== ALL ? rows.filter((r) => objKey(r) === obj) : rows;           // koverte objekta
   const months = groupBy(fr, (r) => r.month, (r) => ({ month: r.month }))
     .map((m) => ({ ...m, people: new Set(m.list.filter(isOpen).map(personKey)).size }))
     .sort((a, b) => a.month.localeCompare(b.month));
@@ -2966,7 +2968,7 @@ function UnpaidPanel({ data, api, onOpenWorker }) {
     }, `Neisplaćeno: obrisao kovertu ${r.worker_name} ${r.month}`);
     if (ok) load();
   };
-  const openNew = () => { setNf({ ...nf, objectId: obj && obj !== "none" ? obj : nf.objectId, month: selMonth || nf.month }); setNewOpen(!newOpen); };
+  const openNew = () => { setNf({ ...nf, objectId: obj && obj !== "none" && obj !== ALL ? obj : nf.objectId, month: selMonth || nf.month }); setNewOpen(!newOpen); };
   const addWage = async () => {
     const w = data.workers.find((x) => x.id === nf.workerId);
     const amount = parseNum(nf.amount);
@@ -3048,13 +3050,19 @@ function UnpaidPanel({ data, api, onOpenWorker }) {
       ))}
     </div>
   );
+  // obj === null → kartica "Po hotelima"; "*" → mjeseci/osobe preko svih hotela
+  const pickTab = (id) => {
+    if (id === "hoteli") return goObj(null);
+    if (!obj) { setObj(ALL); window.scrollTo({ top: 0, behavior: "smooth" }); }
+    goView(id);
+  };
   const tabs = () => (
     <div style={{ display: "flex", background: "#E9ECE6", borderRadius: 12, padding: 3, marginBottom: 12 }}>
-      {[["mjeseci", "Po mjesecima"], ["osobe", "Po osobama"], ["ukupno", "Ukupno"]].map(([id, label]) => {
-        const on = view === id && !selMonth && !selPerson;
-        const active = view === id;
+      {[...(!obj || obj === ALL ? [["hoteli", "Po hotelima"]] : []), ["mjeseci", "Po mjesecima"], ["osobe", "Po osobama"], ...(obj && obj !== ALL ? [["ukupno", "Ukupno"]] : [])].map(([id, label]) => {
+        const active = !obj ? id === "hoteli" : view === id;
+        const on = active && !selMonth && !selPerson;
         return (
-          <button key={id} onClick={() => goView(id)} style={{ flex: 1, border: "none", borderRadius: 10, padding: "9px 6px", cursor: "pointer", fontSize: 13.5,
+          <button key={id} onClick={() => pickTab(id)} style={{ flex: 1, border: "none", borderRadius: 10, padding: "9px 6px", cursor: "pointer", fontSize: 13.5,
             fontWeight: active ? 700 : 500, background: active ? "#fff" : "transparent", color: active ? S.green : S.sub,
             boxShadow: active ? "0 1px 3px rgba(0,0,0,.08)" : "none", opacity: on || active ? 1 : 0.9 }}>{label}</button>
         );
@@ -3086,7 +3094,7 @@ function UnpaidPanel({ data, api, onOpenWorker }) {
     return (
       <div key={r.id} style={{ padding: "11px 0", borderBottom: `1px solid ${S.line}` }}>
         <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "baseline" }}>
-          <div style={{ fontWeight: 700, fontSize: 14.5, minWidth: 0 }}>{label} {r.section && <span style={{ fontWeight: 500, color: S.sub, fontSize: 12.5 }}>· {r.section}</span>}</div>
+          <div style={{ fontWeight: 700, fontSize: 14.5, minWidth: 0 }}>{label} {r.section && <span style={{ fontWeight: 500, color: S.sub, fontSize: 12.5 }}>· {r.section}</span>}{obj === ALL && <span style={{ fontWeight: 500, color: S.sub, fontSize: 12.5 }}> · 🏨 {objName(objKey(r))}</span>}</div>
           <div className="num" style={{ fontSize: 13.5, whiteSpace: "nowrap" }}>
             <span style={{ color: S.sub }}>{czk(r.amount)}</span>{" → "}
             <b style={{ color: isOpen(r) ? S.amber : S.green }}>{isOpen(r) ? czk(r.remaining) : "✓"}</b>
@@ -3142,6 +3150,7 @@ function UnpaidPanel({ data, api, onOpenWorker }) {
     const shown = showClosed ? objList : objList.filter(isOpen);
     return (
       <div style={{ marginTop: 8 }}>
+        {tabs()}
         {summary({ label: "Ukupno dugujem — svi objekti", t: allT, sub: `${objList.filter(isOpen).length} objekata` })}
         {newForm}
         <div style={{ fontSize: 12.5, fontWeight: 700, color: S.sub, textTransform: "uppercase", letterSpacing: 0.6, margin: "4px 2px 8px" }}>{tr("Odaberi objekt")}</div>
@@ -3151,7 +3160,7 @@ function UnpaidPanel({ data, api, onOpenWorker }) {
     );
   }
 
-  const crumbsBase = [["Svi objekti", () => goObj(null)]];
+  const crumbsBase = obj === ALL ? [] : [["Svi objekti", () => goObj(null)]];
 
   /* ---------------- 2a) jedan mjesec ---------------- */
   if (selMonth) {
@@ -3215,7 +3224,7 @@ function UnpaidPanel({ data, api, onOpenWorker }) {
       {view === "osobe" && (
         <>
           {shownPeople.length === 0 && <Empty text={tr("Nema neisplaćenih osoba. 🎉")} />}
-          {shownPeople.map((g) => rowCard({ key: g.key, title: g.name, sub: g.list.filter(isOpen).sort((a, b) => a.month.localeCompare(b.month)).map((r) => monthLabel(r.month)).join(", ") || "sve isplaćeno", t: g, onClick: () => openPerson(g.key) }))}
+          {shownPeople.map((g) => rowCard({ key: g.key, title: g.name, sub: (g.list.filter(isOpen).sort((a, b) => a.month.localeCompare(b.month)).map((r) => monthLabel(r.month)).join(", ") || "sve isplaćeno") + (obj === ALL ? " · " + [...new Set(g.list.map((r) => objName(objKey(r))))].join(", ") : ""), t: g, onClick: () => openPerson(g.key) }))}
         </>
       )}
 
