@@ -902,7 +902,7 @@ async function fetchAll(isAdmin) {
     objects: (objects.data || []).map((o) => ({
       id: o.id, name: o.name, billRate: billMap[o.id]?.rate || 0, billCur: billMap[o.id]?.cur || countryCur(o.country || "HR"), country: o.country || "HR",
       archived: !!o.archived, archivedDate: o.archived_date || "", monthlyBudget: billMap[o.id]?.budget || 0,
-      invoiceCustomerName: o.invoice_customer_name || "",
+      invoiceCustomerName: o.invoice_customer_name || "", agency: (o.agency || "").trim(),
     })),
     logs: (logs.data || []).map((l) => ({
       id: l.id, workerId: l.worker_id, objectId: l.object_id || "", date: l.work_date,
@@ -1273,6 +1273,8 @@ export default function App() {
       `Premjestio objekt ${o.name} u: ${COUNTRY_NAME[country] || country}`),
     setInvoiceCustomerName: (o, name) => act(() => upd("objects", o.id, { invoice_customer_name: name }),
       `Postavio naziv kupca na fakturi za ${o.name}: "${name}" (za prepoznavanje kod uvoza PDF faktura)`),
+    setObjectAgency: (o, agency) => act(() => upd("objects", o.id, { agency }),
+      agency ? `Stavio objekt ${o.name} pod agenciju: ${agency}` : `Maknuo objekt ${o.name} iz agencije`),
     delObject: (o) => act(() => softDel("objects", o.id), `Obrisao objekt: ${o.name}`),
     archiveObject: (o, on) => act(() => upd("objects", o.id, { archived: on, archived_date: on ? todayISO() : null }),
       on ? `Zatvorio objekt: ${o.name}` : `Ponovno otvorio objekt: ${o.name}`),
@@ -3155,7 +3157,22 @@ function UnpaidPanel({ data, api, onOpenWorker }) {
         {newForm}
         <div style={{ fontSize: 12.5, fontWeight: 700, color: S.sub, textTransform: "uppercase", letterSpacing: 0.6, margin: "4px 2px 8px" }}>{tr("Odaberi objekt")}</div>
         {shown.length === 0 && <Empty text={tr("Nema neisplaćenih koverti. 🎉")} />}
-        {shown.map((o) => rowCard({ key: o.key, title: `🏨 ${o.name}`, sub: `${plural(o.people, "osoba", "osobe", "osoba")} s dugom · ${plural(o.list.filter(isOpen).length, "koverta", "koverte", "koverti")}`, t: o, onClick: () => goObj(o.key) }))}
+        {(() => {
+          const agencyOf = (k) => data.objects.find((o) => o.id === k)?.agency || "";
+          const card = (o) => rowCard({ key: o.key, title: `🏨 ${o.name}`, sub: `${plural(o.people, "osoba", "osobe", "osoba")} s dugom · ${plural(o.list.filter(isOpen).length, "koverta", "koverte", "koverti")}`, t: o, onClick: () => goObj(o.key) });
+          const agencies = [...new Set(shown.map((o) => agencyOf(o.key)).filter(Boolean))].sort((a, b) => a.localeCompare(b, "hr"));
+          if (!agencies.length) return shown.map(card);
+          const head = (label, list) => (
+            <div key={"h:" + label} style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, fontWeight: 800, color: S.blue, textTransform: "uppercase", letterSpacing: 0.5, margin: "14px 2px 8px" }}>
+              <span>{label}</span><span className="num" style={{ color: S.amber }}>{czk(sum(list, "remaining"))}</span>
+            </div>
+          );
+          const rest = shown.filter((o) => !agencyOf(o.key));
+          return [
+            ...agencies.flatMap((a) => { const g = shown.filter((o) => agencyOf(o.key) === a); return [head("🏢 " + a, g), ...g.map(card)]; }),
+            ...(rest.length ? [head("Ostali objekti", rest), ...rest.map(card)] : []),
+          ];
+        })()}
       </div>
     );
   }
@@ -6630,7 +6647,16 @@ function ObjectsTab({ data, api, onOpenObject }) {
       )}
       {shown.length === 0 ? <Empty text={tr("Još nema objekata u: {0}.", COUNTRY_NAME[country])} /> : (() => {
         const filtered = shown.filter((o) => o.name.toLowerCase().includes(q.trim().toLowerCase()));
-        return filtered.length === 0 ? <Empty text={tr("Nema rezultata.")} /> : filtered.map(renderObject);
+        if (filtered.length === 0) return <Empty text={tr("Nema rezultata.")} />;
+        // objekti iste agencije (npr. Euroagentura) idu zajedno pod naslov, ostali ispod
+        const agencies = [...new Set(filtered.map((o) => o.agency).filter(Boolean))].sort((a, b) => a.localeCompare(b, "hr"));
+        if (!agencies.length) return filtered.map(renderObject);
+        const head = (label, n) => <div key={"h:" + label} style={{ fontSize: 13, fontWeight: 800, color: S.blue, textTransform: "uppercase", letterSpacing: 0.5, margin: "14px 4px 8px" }}>{label} ({n})</div>;
+        const rest = filtered.filter((o) => !o.agency);
+        return [
+          ...agencies.flatMap((a) => { const g = filtered.filter((o) => o.agency === a); return [head("🏢 " + a, g.length), ...g.map(renderObject)]; }),
+          ...(rest.length ? [head(tr("Ostali objekti"), rest.length), ...rest.map(renderObject)] : []),
+        ];
       })()}
 
       {closedList.length > 0 && (
@@ -8110,6 +8136,9 @@ function ObjectDetail({ object, data, api, onBack, onOpenWorker }) {
   const invPdfTarget = useRef(null);
 
   const [custNameEdit, setCustNameEdit] = useState(object.invoiceCustomerName || "");
+  const [agencyEdit, setAgencyEdit] = useState(object.agency || "");
+  useEffect(() => { setAgencyEdit(object.agency || ""); }, [object.id, object.agency]);
+  const agencyNames = [...new Set(data.objects.map((o) => o.agency).filter(Boolean))].sort((a, b) => a.localeCompare(b, "hr"));
   useEffect(() => { setRateEdit(String(object.billRate || "")); setBillCur(object.billCur || "EUR"); setBudgetEdit(String(object.monthlyBudget || "")); setCustNameEdit(object.invoiceCustomerName || ""); }, [object.id, object.billRate, object.billCur, object.monthlyBudget, object.invoiceCustomerName]);
 
   const loadInvoices = useCallback(async () => {
@@ -8493,6 +8522,15 @@ function ObjectDetail({ object, data, api, onBack, onOpenWorker }) {
               <div style={{ fontSize: 11.5, color: S.sub, marginTop: 4 }}>
                 {tr("Mora točno odgovarati imenu \"Odběratel\" na fakturi — Objekti tab → \"📥 Uvoz faktura\" će onda ovaj objekt sam prepoznati.")}
               </div>
+            </Field>
+
+            <Field label={tr("Agencija (grupa hotela) — nije obavezno")}>
+              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                <input list="agency-names" value={agencyEdit} onChange={(e) => setAgencyEdit(e.target.value)} placeholder={tr("npr. Euroagentura")} />
+                <datalist id="agency-names">{agencyNames.map((a) => <option key={a} value={a} />)}</datalist>
+                <Btn small onClick={() => api.setObjectAgency(object, agencyEdit.trim())}>{tr("Spremi")}</Btn>
+              </div>
+              <div style={{ fontSize: 11.5, color: S.sub, marginTop: 4 }}>{tr("Objekti iste agencije prikazuju se zajedno u Objektima i u Neisplaćenom.")}</div>
             </Field>
 
             <Field label={tr("Mjesečni proračun troška ({0}) — nije obavezno", bc === "CZK" ? "Kč" : "€")}>

@@ -1024,3 +1024,6 @@ alter table public.expenses enable row level security;
 drop policy if exists "exp_admin_all" on public.expenses;
 create policy "exp_admin_all" on public.expenses for all to authenticated
   using (is_admin()) with check (is_admin());
+
+-- Agencija (grupa hotela, npr. Euroagentura) — objekti iste agencije prikazuju se zajedno
+alter table public.objects add column if not exists agency text not null default '';
