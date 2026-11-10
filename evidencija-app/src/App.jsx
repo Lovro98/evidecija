@@ -9483,7 +9483,11 @@ function PaymentsTab({ data, api, onOpenWorker }) {
   const [pq, setPq] = useState("");
   const wName = (id) => data.workers.find((x) => x.id === id)?.name || "Obrisan radnik";
   const oName = (id) => data.objects.find((o) => o.id === id)?.name || "Obrisan objekt";
-  const bulkWorkers = workersAtObject(data, filterObj);
+  // tražilica: ime radnika, napomena, hotel ili agencija hotela (npr. Euroagentura)
+  const pqf = fold(pq.trim());
+  const objHit = (oid) => { const o = data.objects.find((x) => x.id === oid); return !!o && (fold(o.name).includes(pqf) || fold(o.agency || "").includes(pqf)); };
+  const workerHit = (wk) => !pqf || fold(wk.name).includes(pqf) || objHit(wk.objectId);
+  const bulkWorkers = workersAtObject(data, filterObj).filter(workerHit);
   const bulkEntryCount = Object.values(bulkAmounts).filter((v) => (parseNum(v) || 0) > 0).length;
   const submitBulk = async () => {
     const entries = Object.entries(bulkAmounts)
@@ -9511,10 +9515,14 @@ function PaymentsTab({ data, api, onOpenWorker }) {
     setForm({ ...form, amount: "", note: "" });
   };
   const recentAll = [...data.payments].sort((a, b) => b.date.localeCompare(a.date));
-  const pqTrim = pq.trim().toLowerCase();
-  const recent = pqTrim
-    ? recentAll.filter((p) => (p.note || "").toLowerCase().includes(pqTrim) || (p.workerId ? wName(p.workerId) : oName(p.objectId)).toLowerCase().includes(pqTrim)).slice(0, 60)
-    : recentAll.slice(0, 15);
+  const pqTrim = pqf;
+  const payHit = (p) => {
+    if (fold(p.note || "").includes(pqf)) return true;
+    if (p.objectId && objHit(p.objectId)) return true;
+    const wk = p.workerId && data.workers.find((x) => x.id === p.workerId);
+    return wk ? workerHit(wk) : fold(oName(p.objectId)).includes(pqf);
+  };
+  const recent = pqf ? recentAll.filter(payHit).slice(0, 60) : recentAll.slice(0, 15);
   const tagStyle = (p) => p.type === "avans" ? { color: S.amber, bg: S.amberSoft }
     : p.type === "bonus" ? { color: S.green, bg: S.greenSoft }
     : p.type === "racun" ? { color: S.blue, bg: S.blueSoft }
@@ -9522,6 +9530,10 @@ function PaymentsTab({ data, api, onOpenWorker }) {
   return (
     <>
       <div style={{ fontSize: 17, fontWeight: 700, marginBottom: 10 }}>{api.t("paymentsTitle")}</div>
+      <div style={{ position: "relative", marginBottom: 12 }}>
+        <input value={pq} onChange={(e) => setPq(e.target.value)} placeholder={tr("🔍 Traži radnika, hotel ili agenciju (npr. Euroagentura)…")} style={{ paddingRight: pq ? 36 : undefined }} />
+        {pq && <button onClick={() => setPq("")} title={tr("Očisti")} style={{ position: "absolute", right: 8, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", color: S.sub, fontSize: 16, cursor: "pointer" }}>✕</button>}
+      </div>
       <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
         {[["radnik", api.t("forWorker")], ["objekt", api.t("forObject")]].map(([id, label]) => (
           <button key={id} onClick={() => setTarget(id)} style={{ flex: 1, padding: "10px 8px", borderRadius: 10, fontWeight: 700, fontSize: 13.5, cursor: "pointer",
@@ -9557,7 +9569,7 @@ function PaymentsTab({ data, api, onOpenWorker }) {
                     if (wk) setCur(wCur(wk));
                   }}>
                     <option value="">{tr("— odaberi —")}</option>
-                    {workersAtObject(data, filterObj).map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}
+                    {workersAtObject(data, filterObj).filter((w) => workerHit(w) || w.id === form.workerId).map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}
                   </select>
                   {filterObj && workersAtObject(data, filterObj).length === 0 && (
                     <div style={{ fontSize: 12, color: S.sub, marginTop: 4 }}>{tr("Nitko još nije upisan na ovom objektu.")}</div>
@@ -9642,9 +9654,7 @@ function PaymentsTab({ data, api, onOpenWorker }) {
         </Card>
       )}
       <PaymentsMonthOverview data={data} onOpenWorker={onOpenWorker} />
-      {recentAll.length > 15 && (
-        <input value={pq} onChange={(e) => setPq(e.target.value)} placeholder={tr("🔍 Traži stariji upis po imenu ili napomeni (za brisanje)…")} style={{ marginBottom: 10 }} />
-      )}
+      {pqf && recent.length === 0 && <Empty text={tr("Nema upisa za \"{0}\".", pq.trim())} />}
       {recent.length > 0 && (
         <Card>
           <div style={{ fontWeight: 700, marginBottom: 8 }}>{pqTrim ? tr("Rezultati ({0})", recent.length) : api.t("recent")}</div>
