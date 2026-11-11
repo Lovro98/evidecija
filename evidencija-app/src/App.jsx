@@ -10436,7 +10436,7 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
           ].filter(Boolean),
         };
       }).sort((a, b) => (a.workerId ? 0 : 1) - (b.workerId ? 0 : 1) || a.rawName.localeCompare(b.rawName, "hr"));
-      setMzdyReview({ month: mo, rows, prikazy, docs, addReminders: prikazy.length > 0 });
+      setMzdyReview({ month: mo, rows, prikazy, docs, addReminders: prikazy.length > 0, remindMissing: rows.some((r) => !r.workerId) });
     } catch (err) {
       setMzdyErr(tr("Ne mogu pročitati datoteku: ") + (err.message || err));
     }
@@ -10448,7 +10448,8 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
     const lastDay = `${mo}-${String(new Date(yy, mm, 0).getDate()).padStart(2, "0")}`;
     const nextMonth20 = (() => { const d = new Date(yy, mm, 20); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-20`; })();
     const rows = mzdyReview.rows.filter((r) => r.include && r.workerId && !r.locked);
-    if (!rows.length && !(mzdyReview.addReminders && mzdyReview.prikazy.length)) { setMzdyErr(tr("Ništa nije odabrano za spremanje.")); return; }
+    const missing = mzdyReview.rows.filter((r) => !r.workerId).map((r) => r.rawName);
+    if (!rows.length && !(mzdyReview.addReminders && mzdyReview.prikazy.length) && !(mzdyReview.remindMissing && missing.length)) { setMzdyErr(tr("Ništa nije odabrano za spremanje.")); return; }
     setMzdyBusy(true); setMzdyErr("");
     const uid = api.uid();
     const tag = `Dobírka (Mzdy PDF ${String(mm).padStart(2, "0")}/${yy})`;
@@ -10477,6 +10478,14 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
           }
           const { error } = await supabase.from("payments").insert({ worker_id: r.workerId, object_id: null, pay_date: lastDay, type: "racun",
             amount: bank, note: tag, deduct: true, currency: r.currency, created_by: uid });
+          if (error) throw error;
+        }
+      }
+      // radnici koji imaju pásku, a nema ih u aplikaciji → podsjetnik
+      if (mzdyReview.remindMissing && missing.length) {
+        const text = `Mzdy ${String(mm).padStart(2, "0")}/${yy}: nema u aplikaciji (dodaj radnika) – ${missing.join(", ")}`;
+        if (!(data.reminders || []).some((x) => x.text === text)) {
+          const { error } = await supabase.from("reminders").insert({ text, due_date: todayISO(), created_by: uid });
           if (error) throw error;
         }
       }
@@ -11006,6 +11015,17 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
             <Field label={tr("Mjesec")}>
               <input type="month" value={mzdyReview.month} onChange={(e) => setMzdyReview({ ...mzdyReview, month: e.target.value })} />
             </Field>
+            {(() => { const miss = mzdyReview.rows.filter((r) => !r.workerId); return miss.length > 0 && (
+              <div style={{ background: S.redSoft, border: `1px solid ${S.red}`, borderRadius: 10, padding: "9px 12px", marginBottom: 12 }}>
+                <div style={{ fontWeight: 800, fontSize: 13.5, color: S.red, marginBottom: 4 }}>{tr("⚠️ Imaju pásku, a nema ih u aplikaciji ({0})", miss.length)}</div>
+                {miss.map((r, k) => <div key={k} className="num" style={{ fontSize: 13 }}>• {r.rawName}{r.src?.dobirka ? " · " + tr("na račun {0}", czk(r.src.dobirka)) : ""}</div>)}
+                <div style={{ fontSize: 11.5, color: S.sub, marginTop: 4 }}>{tr("Dodaj ih kao radnike (ili ih odaberi ručno ispod ako su pod drugim imenom).")}</div>
+                <label style={{ display: "flex", alignItems: "center", gap: 7, fontSize: 12.5, cursor: "pointer", marginTop: 6 }}>
+                  <input type="checkbox" checked={!!mzdyReview.remindMissing} onChange={(e) => setMzdyReview({ ...mzdyReview, remindMissing: e.target.checked })} style={{ width: 16, height: 16 }} />
+                  {tr("Spremi kao podsjetnik")}
+                </label>
+              </div>
+            ); })()}
             {mzdyReview.rows.map((row, i) => (
               <div key={i} style={{ border: `1px solid ${row.include && row.workerId ? S.green : S.line}`, borderRadius: 12, padding: "10px 12px", marginBottom: 10, opacity: row.locked ? 0.6 : 1 }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
