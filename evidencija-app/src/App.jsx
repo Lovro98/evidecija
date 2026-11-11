@@ -1671,7 +1671,7 @@ export default function App() {
   const workerDetailEl = worker && <WorkerDetail key={worker.id} worker={worker} data={data} api={api} onBack={() => setOpenWorker(null)} />;
   const objectDetailEl = object && (object.isAgency
     ? <AgencyDetail key={object.id} agency={object.name} data={data} api={api} onBack={() => setOpenObject(null)} onOpenObject={setOpenObject} />
-    : <ObjectDetail key={object.id} object={object} data={data} api={api} onBack={() => setOpenObject(null)} onOpenWorker={setOpenWorker} />);
+    : <ObjectDetail key={object.id} object={object} data={data} api={api} onBack={() => setOpenObject(null)} onOpenWorker={(id) => { setOpenWorker(id); window.scrollTo({ top: 0 }); }} />);
 
   return (
     <div style={{ minHeight: "100vh", background: S.bg, color: S.ink, fontFamily: APP_FONT, paddingBottom: wide ? 24 : 96, paddingLeft: wide ? 88 : 0 }}>
@@ -1712,9 +1712,10 @@ export default function App() {
             <div style={{ position: "sticky", top: 84, maxHeight: "calc(100vh - 100px)", overflowY: "auto", paddingRight: 4 }}>
               {tab === "radnici"
                 ? <WorkersTab data={data} api={api} onOpen={setOpenWorker} onOpenObject={(id) => { setTab("objekti"); setOpenWorker(null); setOpenObject(id); }} />
-                : <ObjectsTab data={data} api={api} onOpenObject={setOpenObject} />}
+                : <ObjectsTab data={data} api={api} onOpenObject={(id) => { setOpenWorker(null); setOpenObject(id); }} />}
             </div>
-            <div style={{ minWidth: 0 }}>{tab === "radnici" ? workerDetailEl : objectDetailEl}</div>
+            {/* u Hotelima: klik na radnika otvara njegov profil desno, "natrag" vraća na hotel */}
+            <div style={{ minWidth: 0 }}>{tab === "radnici" ? workerDetailEl : (worker ? workerDetailEl : objectDetailEl)}</div>
           </div>
         ) : worker ? workerDetailEl
           : object ? objectDetailEl
