@@ -615,10 +615,12 @@ function mzdyOfficeRow(data, w, p, mo) {
     rawName: p.name, kat: p.kat, tarif: p.tarif, corrected: p.corrected, src: p, workerId: w.id, currency: "CZK", office: true,
     socZdr: "0", bank: String(p.dobirka || 0), dobirkaKc: p.dobirka, contrib: String(contrib),
     contribDetail: `zaposlenik ${czk(emp)} + firma ${czk(firm)}`, cashPlan,
+    // nema plaće u Uredu → upiši je iz pásky (predloženo = na račun; ako dobiva i gotovinu, upiši ukupnu plaću)
+    needSalary: !sal, newSalary: !sal && p.dobirka > 0 ? String(p.dobirka) : "",
     include: !locked, addBank: p.dobirka > 0, exBank, exNote: 0, locked,
     warn: [
       sal && p.dobirka > 0 && Math.round(p.dobirka) !== Math.round(sal.bank) ? `Páska kaže ${czk(p.dobirka)} na račun, a u Uredu je dogovoreno ${czk(sal.bank)}` : "",
-      !sal ? "u Uredu nema upisane plaće za taj mjesec — gotovina se neće predložiti" : "",
+      !sal ? "u Uredu još nema plaće — upisat će se iz pásky od ovog mjeseca (ako dobiva i gotovinu, upiši ukupnu plaću)" : "",
       exBank > 0 ? `već upisano na račun ${czk(exBank)}${Math.round(exBank) === Math.round(p.dobirka) ? " (isto)" : " — zamijenit će se iznosom iz pásky"}` : "",
       exContrib > 0 ? `doprinosi već upisani ${czk(exContrib)} — zamijenit će se` : "",
       sal && sal.salary > 0 && bankNow > sal.salary ? "na račun je više od plaće — provjeri" : "",
@@ -648,8 +650,17 @@ async function saveMzdyOfficeRow(data, r, mo, lastDay, tag, uid) {
     if (error) throw error;
     bank = nb;
   }
+  // nema plaće u Uredu → upiši je iz pásky (vrijedi od tog mjeseca)
+  let sal = officeSalaryFor(office, r.workerId, mo);
+  const ns = round2(parseNum(r.newSalary) || 0);
+  if (!sal && ns > 0) {
+    const nbank = Math.min(round2(bank), ns);
+    const { error } = await supabase.from("office_salaries").insert({ worker_id: r.workerId, from_month: mo, salary_czk: ns, bank_czk: nbank,
+      note: `iz ${tag}`, created_by: uid });
+    if (error) throw error;
+    sal = { salary: ns, bank: nbank };
+  }
   // gotovina = plaća − banka (+ dodaci − avansi/odbici); prijedlog čeka odobrenje
-  const sal = officeSalaryFor(office, r.workerId, mo);
   if (!sal) return;
   const other = pays.filter((x) => x.type !== "racun");
   const plus = other.filter((x) => x.type === "bonus").reduce((t, x) => t + x.amount, 0);
@@ -11038,6 +11049,14 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
                   <input type="checkbox" checked={row.addBank} onChange={(e) => setRow(i, { addBank: e.target.checked })} style={{ width: 16, height: 16 }} />
                   {tr("Upiši \"na račun\" iz pásky")}
                 </label>
+                {row.office && row.needSalary && (
+                  <Field label={tr("Plaća ukupno (Kč/mj.) — upisat će se u Ured od {0}", monthLabel(mzdyReview.month))}>
+                    <input inputMode="decimal" value={row.newSalary} onChange={(e) => setRow(i, { newSalary: e.target.value })} placeholder={tr("banka + gotovina")} />
+                  </Field>
+                )}
+                {row.office && row.needSalary && parseNum(row.newSalary) > 0 && (
+                  <div className="num" style={{ fontSize: 12, color: S.sub }}>{tr("banka {0} · gotovina {1}", czk(parseNum(row.bank) || 0), czk(Math.max(0, round2((parseNum(row.newSalary) || 0) - (parseNum(row.bank) || 0)))))}</div>
+                )}
                 {row.office && <div className="num" style={{ fontSize: 12, color: S.sub, marginTop: 4 }}>{row.contribDetail}{row.cashPlan != null ? " · " + tr("gotovina {0}", czk(row.cashPlan)) : ""}</div>}
                 {row.warn.map((w, k) => <div key={k} style={{ fontSize: 12, color: S.amber, marginTop: 4 }}>{w}</div>)}
               </div>
