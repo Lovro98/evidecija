@@ -1031,3 +1031,21 @@ alter table public.objects add column if not exists agency text not null default
 alter table public.object_invoices alter column object_id drop not null;
 alter table public.object_invoices add column if not exists agency text not null default '';
 alter table public.object_invoices add column if not exists split jsonb not null default '[]'::jsonb;
+
+-- URED isplate (2026-11-11): banka označena kao plaćena + gotovina dana u dijelovima (dok ne dođe na 0)
+create table if not exists public.office_paid (
+  id uuid primary key default gen_random_uuid(),
+  worker_id uuid not null references public.workers(id),
+  month text not null check (month ~ '^\d{4}-\d{2}$'),
+  kind text not null check (kind in ('bank','cash')),
+  amount numeric not null default 0 check (amount >= 0),
+  pay_date date not null default current_date,
+  note text not null default '',
+  created_by uuid default auth.uid(),
+  created_at timestamptz not null default now(),
+  deleted_at timestamptz
+);
+create index if not exists office_paid_worker_idx on public.office_paid(worker_id, month);
+alter table public.office_paid enable row level security;
+create policy op_admin_all on public.office_paid for all
+  using ((select public.is_admin())) with check ((select public.is_admin()));
