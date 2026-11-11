@@ -526,7 +526,10 @@ const findWorkerByName = (workers, rawName) => {
 /* ---------- Mzdy PDF-ovi od knjigovođe: pásky, oprava, mzdové náklady, příkazy k úhradě ---------- */
 // soc.-zdr. koji se odbija na koverti (fiksno prema ugovoru): puno radno vrijeme / pola / DPČ-DPP
 const SOCZDR_FULL = 5500, SOCZDR_HALF = 3300, FULL_TARIF = 22400;
-const socZdrFor = (p) => (/^DP[PČC]$/i.test(p.kat || "") || (!p.zdrav && !p.soc) ? 0 : (p.tarif >= FULL_TARIF ? SOCZDR_FULL : SOCZDR_HALF));
+// HPP puni / pola s pásky: sati po odrađenom danu (8 h = puni, 4 h = pola); bez dana po tarifu ili fondu
+const hppFull = (p) => { const perDay = p.days > 0 ? p.hours / p.days : 0; return perDay > 0 ? perDay >= 6 : p.tarif > 0 ? p.tarif >= FULL_TARIF : (p.fondHours || 0) >= 120; };
+// na koverti: HPP puni 5500, HPP pola 3300, DPČ/DPP 0
+const socZdrFor = (p) => (/^DP[PČC]$/i.test(p.kat || "") || (!p.zdrav && !p.soc) ? 0 : (hppFull(p) ? SOCZDR_FULL : SOCZDR_HALF));
 const mzdyAmount = (line) => {
   const nums = [...line.matchAll(/(\d[\d\s]*(?:[.,]\d+)?)\s*K\s*č/gi)];
   return nums.length ? czNum(nums[nums.length - 1][1]) : 0;
@@ -7342,8 +7345,7 @@ function contractOf(data, workerId) {
   const k = x.kat.toUpperCase().replace("DPC", "DPČ");
   if (k !== "HPP") return { label: k, month: x.month, tone: "amber" };
   // puni/pola: sati po odrađenom danu (8 h = puni, 4 h = pola); bez dana po tarifu
-  const perDay = x.days > 0 ? x.hours / x.days : 0;
-  const full = perDay > 0 ? perDay >= 6 : x.tarif > 0 ? x.tarif >= FULL_TARIF : x.fondHours >= 120;
+  const full = hppFull(x);
   return { label: full ? "HPP puni" : "HPP pola", month: x.month, tone: full ? "green" : "blue" };
 }
 function ContractTag({ data, workerId, admin, small }) {
@@ -11091,7 +11093,7 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ fontWeight: 700, fontSize: 14.5 }}>{row.rawName} {row.office && <Tag color={S.blue} bg={S.blueSoft}>{tr("👔 Ured")}</Tag>} {row.corrected && <Tag color={S.blue} bg={S.blueSoft}>{tr("oprava")}</Tag>}</div>
                     <div className="num" style={{ fontSize: 12, color: S.sub }}>
-                      {row.kat}{row.src?.hours ? tr(" · {0} odrađeno", fmtH(row.src.hours)) + (row.src.fondHours ? tr(" (fond {0})", fmtH(row.src.fondHours)) : "") : ""}{row.tarif ? tr(" · tarif {0} ({1} radno vrijeme)", czk(row.tarif), row.tarif >= FULL_TARIF ? tr("puno") : tr("pola")) : ""}
+                      {/^HPP$/i.test(row.kat || "") ? (hppFull(row.src || {}) ? tr("HPP puni") : tr("HPP pola")) : row.kat}{row.src?.hours ? tr(" · {0} odrađeno", fmtH(row.src.hours)) + (row.src.fondHours ? tr(" (fond {0})", fmtH(row.src.fondHours)) : "") : ""}{row.tarif ? tr(" · tarif {0}", czk(row.tarif)) : ""}{!row.office && /^HPP$/i.test(row.kat || "") ? tr(" → koverta −{0}", czk(hppFull(row.src || {}) ? SOCZDR_FULL : SOCZDR_HALF)) : ""}
                     </div>
                   </div>
                 </div>
