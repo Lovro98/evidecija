@@ -553,7 +553,7 @@ function parseMzdyPasky(lines) {
     const dh = line.match(/(\d+(?:[.,]\d+)?)\s*dny\s+(\d+(?:[.,]\d+)?)\s*hod/i);
     if (dh && /Odpracov/i.test(line)) { cur.days = czNum(dh[1]); cur.hours = czNum(dh[2]); }
     else if (dh && /Fond/i.test(line)) cur.fondHours = czNum(dh[2]);
-    const t = line.match(/M.{1,3}s.{1,3}n.{1,3}\s*tarif\s+(\d[\d\s]*)\s*K\s*č/i);
+    const t = line.match(/tarif\s*:?\s*(\d[\d\s]*?)\s*K\s*[čc]/i);
     if (t) cur.tarif = czNum(t[1]);
     if (/Zdrav\.?\s*poj/i.test(line)) cur.zdrav = mzdyAmount(line);
     else if (/Soc\.?\s*poj/i.test(line)) cur.soc = mzdyAmount(line);
