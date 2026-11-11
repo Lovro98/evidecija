@@ -7927,8 +7927,10 @@ function officeRows(office, mo) {
   return [...office.workers].filter((w) => !w.archived || office.payments.some((p) => p.workerId === w.id && monthKey(p.date) === mo))
     .sort((a, b) => a.name.localeCompare(b.name, "hr")).map((w) => {
       const sal = officeSalaryFor(office, w.id, mo);
-      const salary = sal ? sal.salary : 0;
       const plannedBank = sal ? sal.bank : 0;
+      // "prema mzdy": banka = plaća → plaća svaki mjesec = ono što páska pošalje na račun, gotovine nema
+      const byMzdy = !!sal && sal.salary > 0 && sal.bank >= sal.salary;
+      let salary = sal ? sal.salary : 0;
       const pays = office.payments.filter((p) => p.workerId === w.id && monthKey(p.date) === mo && (p.currency || "CZK") === "CZK");
       const sum = (f) => round2(pays.filter(f).reduce((t, p) => t + p.amount, 0));
       const bankPaid = sum((p) => p.type === "racun");
@@ -7938,8 +7940,8 @@ function officeRows(office, mo) {
       const contrib = sum((p) => p.type !== "racun" && p.type !== "bonus" && p.type !== "avans" && !p.deduct);
       const booked = pays.some((p) => p.type === "racun") || office.payouts.some((x) => x.workerId === w.id && x.month === mo);
       const bank = booked ? bankPaid : plannedBank;
-      // sve na banku (banka = plaća): gotovine nema — vrijedi koliko páska stvarno pošalje na račun
-      const allBank = !!sal && sal.salary > 0 && sal.bank >= sal.salary;
+      if (byMzdy && booked) salary = bankPaid;
+      const allBank = byMzdy;
       const cash = allBank ? round2(bonuses - advances - deductions) : round2(salary + bonuses - bank - advances - deductions);
       const payout = office.payouts.find((x) => x.workerId === w.id && x.month === mo) || null;
       const paidRecs = (office.paid || []).filter((x) => x.workerId === w.id && x.month === mo);
@@ -7950,7 +7952,7 @@ function officeRows(office, mo) {
       const bankDone = bank <= 0 || !!bankRec;
       const cashDone = cashLeft <= 0;
       const allPaid = salary > 0 && bankDone && cashDone;
-      return { w, sal, salary, plannedBank, bank, cash, contrib, bonuses, advances, deductions, pays, booked, payout,
+      return { w, sal, byMzdy, salary, plannedBank, bank, cash, contrib, bonuses, advances, deductions, pays, booked, payout,
         bankRec, cashGiven, cashGivenSum, cashLeft, bankDone, cashDone, allPaid };
     });
 }
@@ -7973,7 +7975,7 @@ function OfficePanel({ data, api }) {
   };
   const tot = rows.reduce((t, r) => ({ salary: t.salary + r.salary, bank: t.bank + r.bank, cash: t.cash + r.cash, contrib: t.contrib + r.contrib }),
     { salary: 0, bank: 0, cash: 0, contrib: 0 });
-  const toBook = rows.filter((r) => !r.booked && r.salary > 0 && !r.w.archived);
+  const toBook = rows.filter((r) => !r.booked && r.salary > 0 && !r.w.archived && !r.byMzdy); // "prema mzdy" se upisuje samo iz Mzdy PDF-a
   const openEdit = (w) => { setEdit(w || "new"); setForm(w ? { name: w.name, position: w.position, phone: w.phone, bankAccount: w.bankAccount }
     : { name: "", position: "", phone: "", bankAccount: "", salary: "", bank: "", fromMonth: mo }); };
   const saveEdit = async () => {
@@ -8053,7 +8055,8 @@ function OfficePanel({ data, api }) {
             <Btn small kind="ghost" onClick={() => openEdit(r.w)}>{tr("Uredi")}</Btn>
           </div>
           <div className="num" style={{ marginTop: 8, display: "grid", gap: 3 }}>
-            <div style={cell}><span>{tr("Plaća")}{r.sal ? " (" + tr("od {0}", monthLabel(r.sal.fromMonth)) + ")" : ""}</span><b>{r.sal ? czk(r.salary) : tr("nije upisana")}</b></div>
+            <div style={cell}><span>{tr("Plaća")}{r.byMzdy ? " (" + tr("prema mzdy, samo banka") + ")" : r.sal ? " (" + tr("od {0}", monthLabel(r.sal.fromMonth)) + ")" : ""}</span>
+              <b>{!r.sal ? tr("nije upisana") : r.byMzdy && !r.booked ? tr("čeka mzdy") : czk(r.salary)}</b></div>
             <div style={cell}><span>{tr("Na banku")}{r.booked ? "" : tr(" (plan)")}</span><b style={{ color: S.blue }}>{czk(r.bank)}</b></div>
             {r.bonuses > 0 && <div style={cell}><span>{tr("Dodaci")}</span><b>+{czk(r.bonuses)}</b></div>}
             {(r.advances + r.deductions) > 0 && <div style={cell}><span>{tr("Avansi i odbici")}</span><b>−{czk(round2(r.advances + r.deductions))}</b></div>}
@@ -8071,8 +8074,9 @@ function OfficePanel({ data, api }) {
           {r.salary > 0 && (
             <div style={{ marginTop: 8, borderTop: `1px solid ${S.line}`, paddingTop: 8, display: "grid", gap: 6 }}>
               <div style={{ ...cell, alignItems: "center" }}>
-                <span>🏦 {tr("Banka")} <b className="num">{czk(r.bank)}</b></span>
-                {r.bank <= 0 ? <span style={{ color: S.sub }}>{tr("nema")}</span>
+                <span>🏦 {tr("Banka")} <b className="num">{r.byMzdy && !r.booked ? "—" : czk(r.bank)}</b></span>
+                {r.byMzdy && !r.booked ? <span style={{ color: S.sub }}>{tr("čeka mzdy")}</span>
+                  : r.bank <= 0 ? <span style={{ color: S.sub }}>{tr("nema")}</span>
                   : r.bankRec ? <span style={{ color: S.green, fontWeight: 700 }}>{tr("✓ Plaćeno {0}", fmtDate(r.bankRec.date))}{" "}
                       <a onClick={() => api.officeDelPaid(r.bankRec, r.w.name)} style={{ cursor: "pointer", color: S.red, marginLeft: 6 }}>✕</a></span>
                   : <Btn small onClick={() => api.officeMarkBankPaid(r.w, mo, r.bank)}>{tr("Plaćeno (banka)")}</Btn>}
