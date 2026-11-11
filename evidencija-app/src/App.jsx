@@ -548,7 +548,7 @@ function parseMzdyPasky(lines) {
   const push = () => { if (cur && cur.name) out.push(cur); cur = null; };
   for (const line of lines) {
     const m = line.match(/(\d{2,6})\s*\S{0,3}\s*([A-ZÁ-Ž][A-Za-zÁ-Žá-ž]+(?:\s+[A-Za-zÁ-Žá-ž]+)+?)\s*\S{0,3}\s*(\d{6}\/\d{3,4})\s*\S{0,3}\s*(\S{2,4})\s*\S{0,3}\s*(\d{4})\s*\/\s*(\d{2})/);
-    if (m) { push(); cur = { name: m[2].trim(), kat: m[4].toUpperCase(), month: `${m[5]}-${m[6]}`, tarif: 0, zdrav: 0, soc: 0, pojist: 0, dobirka: 0, hruba: 0, hours: 0, days: 0, fondHours: 0 }; continue; }
+    if (m) { push(); cur = { name: m[2].trim(), kat: m[4].toUpperCase(), month: `${m[5]}-${m[6]}`, tarif: 0, zdrav: 0, soc: 0, pojist: 0, dobirka: 0, hruba: 0, hours: 0, days: 0, fondHours: 0, zaloha: 0, sleva: 0 }; continue; }
     if (!cur) continue;
     const dh = line.match(/(\d+(?:[.,]\d+)?)\s*dny\s+(\d+(?:[.,]\d+)?)\s*hod/i);
     if (dh && /Odpracov/i.test(line)) { cur.days = czNum(dh[1]); cur.hours = czNum(dh[2]); }
@@ -560,6 +560,8 @@ function parseMzdyPasky(lines) {
     else if (/Pojistn.{0,3}zam.{0,4}stnavatel/i.test(line)) cur.pojist = mzdyAmount(line);
     else if (/Hrub.{1,2}\s*mzda/i.test(line)) cur.hruba = mzdyAmount(line);
     if (/Dob.{1,2}rka/i.test(line)) cur.dobirka = mzdyAmount(line);
+    if (/Z.loha\s*na\s*da/i.test(line)) cur.zaloha = mzdyAmount(line);
+    else if (/Sleva\s*na\s*dani/i.test(line)) cur.sleva = mzdyAmount(line);
   }
   push();
   return out;
@@ -624,7 +626,7 @@ function mzdyOfficeRow(data, w, p, mo) {
     contribDetail: `zaposlenik ${czk(emp)} + firma ${czk(firm)}`, cashPlan,
     // nema plaće u Uredu → upiši je iz pásky (predloženo = na račun; ako dobiva i gotovinu, upiši ukupnu plaću)
     needSalary: !sal, newSalary: !sal && p.dobirka > 0 ? String(p.dobirka) : "",
-    include: !locked, addBank: p.dobirka > 0, exBank, exNote: 0, locked,
+    include: !locked, addBank: p.dobirka > 0, exBank, exNote: 0, locked, selfPay: false,
     warn: [
       sal && !allBank && p.dobirka > 0 && Math.round(p.dobirka) !== Math.round(sal.bank) ? `Páska kaže ${czk(p.dobirka)} na račun, a u Uredu je dogovoreno ${czk(sal.bank)}` : "",
       !sal ? "u Uredu još nema plaće — upisat će se iz pásky od ovog mjeseca (ako dobiva i gotovinu, upiši ukupnu plaću)" : "",
@@ -684,6 +686,51 @@ async function saveMzdyOfficeRow(data, r, mo, lastDay, tag, uid) {
     if (error) throw error;
   }
 }
+/* Sami plaćaju: zaposleni preko mzdy, ali sve troškove (na račun + doprinosi + porez) plaćaju firmi sami.
+   Ako su povezani s radnikom, iznos se skida s koverte tog radnika. */
+const selfPayCalc = (p) => {
+  const dan = round2(Math.max(0, (p.zaloha || 0) - (p.sleva || 0)));
+  const emp = round2((p.zdrav || 0) + (p.soc || 0));
+  return { dobirka: p.dobirka || 0, zdrav: p.zdrav || 0, soc: p.soc || 0, dan, pojist: p.pojist || 0,
+    total: round2((p.dobirka || 0) + emp + dan + (p.pojist || 0)) };
+};
+function mzdySelfRow(data, w, p, mo) {
+  const c = selfPayCalc(p);
+  const linked = w.linkedWorkerId ? data.workers.find((x) => x.id === w.linkedWorkerId) : null;
+  return {
+    rawName: p.name, kat: p.kat, tarif: p.tarif, corrected: p.corrected, src: p, workerId: w.id, currency: "CZK", office: false, selfPay: true,
+    socZdr: "0", bank: "0", addBank: false, include: true, locked: false, total: String(c.total),
+    contribDetail: `na račun ${czk(c.dobirka)} + soc. i zdrav. ${czk(round2(c.zdrav + c.soc))} + porez ${czk(c.dan)} + pojistné firme ${czk(c.pojist)}`,
+    warn: [linked ? `skida se s koverte: ${linked.name}` : "nije povezan s radnikom — plaća sam (Više → Sami plaćaju)"],
+  };
+}
+async function saveSelfPayRow(data, r, mo, lastDay, uid) {
+  const w = ((data.selfPay && data.selfPay.workers) || []).find((x) => x.id === r.workerId);
+  if (!w) return;
+  const c = selfPayCalc(r.src || {});
+  const total = round2(parseNum(r.total) || 0);
+  const linked = w.linkedWorkerId ? data.workers.find((x) => x.id === w.linkedWorkerId) : null;
+  const { error } = await supabase.from("self_pay_months").upsert({ worker_id: w.id, month: mo, dobirka: c.dobirka, zdrav: c.zdrav, soc: c.soc, dan: c.dan,
+    pojist: c.pojist, total, linked_worker_id: linked ? linked.id : null, created_by: uid, updated_at: new Date().toISOString() }, { onConflict: "worker_id,month" });
+  if (error) throw error;
+  await syncSelfPayDeduction(data, w, mo, total, lastDay, uid);
+}
+// odbitak na koverti povezanog radnika: stari za taj mjesec se briše, upisuje se novi
+async function syncSelfPayDeduction(data, w, mo, total, lastDay, uid) {
+  const tag = `[sp:${w.id}]`;
+  const { error: e1 } = await supabase.from("payments").update({ deleted_at: new Date().toISOString() }).like("note", `%${tag}%`)
+    .gte("pay_date", `${mo}-01`).lte("pay_date", lastDay).is("deleted_at", null);
+  if (e1) throw e1;
+  const linked = w.linkedWorkerId ? data.workers.find((x) => x.id === w.linkedWorkerId) : null;
+  if (!linked || !(total > 0)) return;
+  const cur = wCur(linked);
+  const czkRate = Number(data.settings?.czk_rate) || 25;
+  const amount = cur === "CZK" ? total : round2(total / czkRate);
+  const { error } = await supabase.from("payments").insert({ worker_id: linked.id, object_id: null, pay_date: lastDay, type: "ostalo", amount, currency: cur,
+    deduct: true, note: `Mzdy ${w.name} ${monthLabel(mo)} – sami plaćaju ${tag}`, created_by: uid });
+  if (error) throw error;
+}
+
 function matchWorkerFuzzy(workers, rawName) {
   const exact = findWorkerByName(workers, rawName);
   if (exact) return exact;
@@ -933,8 +980,14 @@ async function fetchAll(isAdmin) {
   }
   const billMap = Object.fromEntries(billing.map((b) => [b.object_id, { rate: Number(b.bill_rate) || 0, cur: b.bill_currency === "CZK" ? "CZK" : "EUR", budget: Number(b.monthly_budget) || 0 }]));
   // fiksne mjesečne plaće ureda (RLS: samo admin)
-  let officeSalaries = [], officePaid = [], mzdyInfo = [];
+  let officeSalaries = [], officePaid = [], mzdyInfo = [], selfPayMonths = [], selfPayPaid = [];
   if (isAdmin) {
+    const [spm, spp] = await Promise.all([supabase.from("self_pay_months").select("*").order("month"),
+      supabase.from("self_pay_paid").select("*").is("deleted_at", null).order("pay_date")]);
+    if (!spm.error) selfPayMonths = (spm.data || []).map((r) => ({ id: r.id, workerId: r.worker_id, month: r.month, dobirka: Number(r.dobirka) || 0,
+      zdrav: Number(r.zdrav) || 0, soc: Number(r.soc) || 0, dan: Number(r.dan) || 0, pojist: Number(r.pojist) || 0, total: Number(r.total) || 0,
+      linkedWorkerId: r.linked_worker_id || "" }));
+    if (!spp.error) selfPayPaid = (spp.data || []).map((r) => ({ id: r.id, workerId: r.worker_id, month: r.month, amount: Number(r.amount) || 0, date: r.pay_date }));
     const mi = await supabase.from("mzdy_info").select("*").order("month");
     if (!mi.error) mzdyInfo = (mi.data || []).map((r) => ({ workerId: r.worker_id, month: r.month, kat: r.kat || "", hours: Number(r.hours) || 0,
       days: Number(r.days) || 0, fondHours: Number(r.fond_hours) || 0, tarif: Number(r.tarif) || 0, hruba: Number(r.hruba) || 0, dobirka: Number(r.dobirka) || 0 }));
@@ -955,6 +1008,7 @@ async function fetchAll(isAdmin) {
       rateCurrency: w.rate_currency === "CZK" ? "CZK" : "EUR",
       positionRates: (w.position_rates && typeof w.position_rates === "object") ? w.position_rates : {},
       isOffice: !!w.is_office,
+      isSelfPay: !!w.is_self_pay, linkedWorkerId: w.linked_worker_id || "",
     })),
     objects: (objects.data || []).map((o) => ({
       id: o.id, name: o.name, billRate: billMap[o.id]?.rate || 0, billCur: billMap[o.id]?.cur || countryCur(o.country || "HR"), country: o.country || "HR",
@@ -1027,6 +1081,8 @@ async function fetchAll(isAdmin) {
     objectMembers: members,
     audit, trash,
   };
+  out.selfPay = { workers: out.workers.filter((w) => w.isSelfPay && !w.isOffice), months: selfPayMonths, paid: selfPayPaid };
+  out.workers = out.workers.filter((w) => !w.isSelfPay || w.isOffice);
   return splitOffice(out, officeSalaries, officePaid);
 }
 
@@ -1455,6 +1511,25 @@ export default function App() {
     approvePayout: (payout, wName) => act(() => upd("payouts", payout.id, { approved: true, approved_by: session.user.id, approved_at: new Date().toISOString() }),
       `Odobrio isplatu: ${wName} za ${payout.month}`),
     unmarkPaid: (payout, wName) => act(() => softDel("payouts", payout.id), `Otključao/odbacio isplatu: ${wName} za ${payout.month}`),
+    /* ---- Sami plaćaju (zaposleni preko mzdy, troškove plaćaju sami) ---- */
+    selfPayAdd: (f) => act(() => ins("workers", { name: f.name.trim(), phone: (f.phone || "").trim(), rate_currency: "CZK", is_self_pay: true,
+      linked_worker_id: f.linkedWorkerId || null, created_by: session.user.id }), `Dodao (sami plaćaju): ${f.name.trim()}`),
+    selfPayUpdate: (w, f) => act(async () => {
+      await upd("workers", w.id, { name: f.name.trim(), phone: (f.phone || "").trim(), linked_worker_id: f.linkedWorkerId || null });
+      // povezivanje se mijenja → prepiši odbitke na kovertama za mjesece koji su već učitani
+      if ((w.linkedWorkerId || "") !== (f.linkedWorkerId || "")) {
+        const nw = { ...w, name: f.name.trim(), linkedWorkerId: f.linkedWorkerId || "" };
+        for (const m of ((data?.selfPay?.months) || []).filter((x) => x.workerId === w.id)) {
+          await syncSelfPayDeduction(data, nw, m.month, m.total, lastDayOfMonth(m.month), session.user.id);
+          await supabase.from("self_pay_months").update({ linked_worker_id: f.linkedWorkerId || null }).eq("id", m.id);
+        }
+      }
+    }, `Uredio (sami plaćaju): ${f.name.trim()}`),
+    selfPayArchive: (w, archived) => act(() => upd("workers", w.id, { archived, archived_date: archived ? todayISO() : null }),
+      `${archived ? "Arhivirao" : "Vratio"} (sami plaćaju): ${w.name}`),
+    selfPayAddPaid: (w, mo, amount) => act(() => ins("self_pay_paid", { worker_id: w.id, month: mo, amount, pay_date: todayISO(), created_by: session.user.id }),
+      `Sami plaćaju: ${w.name} platio ${czk(amount)} za ${mo}`),
+    selfPayDelPaid: (x, wName) => act(() => softDel("self_pay_paid", x.id), `Sami plaćaju: obrisao uplatu ${wName} ${czk(x.amount)} (${x.month})`),
     /* ---- Ured (fiksne mjesečne plaće, odvojeno od hotela) ---- */
     officeAddWorker: (f) => act(async () => {
       const { data: row, error } = await supabase.from("workers").insert({ name: f.name.trim(), position: (f.position || "").trim(), phone: (f.phone || "").trim(),
@@ -2894,7 +2969,7 @@ function CandidatesPanel({ data, api }) {
   );
 }
 const ADMIN_MENU = [
-  ["ai", "🤖", "AI asistent"], ["candidates", "🧑‍🍳", "Kandidati (prijave)"], ["approvals", "⏳", "Odobravanje isplata"], ["office", "👔", "Ured (zaposlenici i plaće)"], ["cash", "💵", "Gotovina kod koordinatora"], ["finance", "💼", "Financije (banka i porezi)"], ["expenses", "🛒", "Troškovi i računi (blokovi)"], ["unpaid", "💰", "Neisplaćeno (dugovi radnicima)"], ["invoices", "💳", "Fakture — plaćeno / neplaćeno"], ["vat", "🧾", "DPH"], ["users", "👥", "Korisnici i provizije"],
+  ["ai", "🤖", "AI asistent"], ["candidates", "🧑‍🍳", "Kandidati (prijave)"], ["approvals", "⏳", "Odobravanje isplata"], ["office", "👔", "Ured (zaposlenici i plaće)"], ["selfpay", "🧾", "Sami plaćaju (mzdy)"], ["cash", "💵", "Gotovina kod koordinatora"], ["finance", "💼", "Financije (banka i porezi)"], ["expenses", "🛒", "Troškovi i računi (blokovi)"], ["unpaid", "💰", "Neisplaćeno (dugovi radnicima)"], ["invoices", "💳", "Fakture — plaćeno / neplaćeno"], ["vat", "🧾", "DPH"], ["users", "👥", "Korisnici i provizije"],
   ["firm", "🏢", "Podaci firme i postavke"], ["audit", "📜", "Povijest radnji"], ["logins", "🔐", "Prijave"],
   ["errors", "🐛", "Greške aplikacije"], ["trash", "🗑", "Koš (obrisano)"],
 ];
@@ -4819,6 +4894,7 @@ function AdminPanels({ data, api, panel, setPanel, onOpenWorker, onOpenProfile }
       {panel === "expenses" && <ExpensesPanel data={data} api={api} />}
       {panel === "cash" && <CashPanel data={data} api={api} />}
       {panel === "office" && <OfficePanel data={data} api={api} />}
+      {panel === "selfpay" && <SelfPayPanel data={data} api={api} />}
 
       {panel === "users" && (
         <Card style={{ marginTop: 8 }}>
@@ -8190,6 +8266,126 @@ function OfficePanel({ data, api }) {
   );
 }
 
+/* ================================================================== */
+/*  SAMI PLAĆAJU — zaposleni preko mzdy, sve troškove plaćaju sami     */
+/* ================================================================== */
+function SelfPayPanel({ data, api }) {
+  const sp = data.selfPay || { workers: [], months: [], paid: [] };
+  const [mo, setMo] = useState(prevMonthKey(curMonth()));
+  const [edit, setEdit] = useState(null);   // worker | "new"
+  const [form, setForm] = useState({});
+  const [pay, setPay] = useState({});
+  const [showOld, setShowOld] = useState(false);
+  const wName = (id) => data.workers.find((x) => x.id === id)?.name || "";
+  const openEdit = (w) => { setEdit(w || "new"); setForm(w ? { name: w.name, phone: w.phone, linkedWorkerId: w.linkedWorkerId } : { name: "", phone: "", linkedWorkerId: "" }); };
+  const save = async () => {
+    if (!(form.name || "").trim()) return;
+    const ok = edit === "new" ? await api.selfPayAdd(form) : await api.selfPayUpdate(edit, form);
+    if (ok) setEdit(null);
+  };
+  const rows = sortedWorkers(sp.workers.filter((w) => showOld || !w.archived)).map((w) => {
+    const m = sp.months.find((x) => x.workerId === w.id && x.month === mo) || null;
+    const paid = sp.paid.filter((x) => x.workerId === w.id && x.month === mo);
+    const paidSum = round2(paid.reduce((t, x) => t + x.amount, 0));
+    const linked = w.linkedWorkerId ? data.workers.find((x) => x.id === w.linkedWorkerId) : null;
+    const left = m ? round2(Math.max(0, m.total - paidSum)) : 0;
+    const done = !!m && (linked ? true : left <= 0);
+    return { w, m, paid, paidSum, linked, left, done };
+  });
+  const withMonth = rows.filter((r) => r.m);
+  const tot = withMonth.reduce((t, r) => t + r.m.total, 0);
+  const cell = { fontSize: 13, display: "flex", justifyContent: "space-between", gap: 8 };
+  const addPay = async (r) => {
+    const a = round2(parseNum(pay[r.w.id]) || 0);
+    if (a <= 0) return;
+    if (await api.selfPayAddPaid(r.w, mo, a)) setPay({ ...pay, [r.w.id]: "" });
+  };
+  return (
+    <div style={{ marginTop: 8 }}>
+      <Card>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 6 }}>
+          <div style={{ fontWeight: 700, flex: "1 1 160px" }}>{tr("🧾 Sami plaćaju (mzdy)")}</div>
+          <input type="month" value={mo} onChange={(e) => e.target.value && setMo(e.target.value)} style={{ width: 150 }} />
+        </div>
+        <div style={{ fontSize: 11.5, color: S.sub, marginBottom: 8 }}>
+          {tr("Zaposleni preko mzdy koji sve troškove plaćaju sami: na račun + soc. i zdrav. + porez + pojistné firme. Iznos se učita iz Mzdy PDF-a. Ako osobu povežeš s radnikom, iznos mu se skida s koverte; inače upisuješ koliko je platio dok ne dođe na 0.")}
+        </div>
+        <div className="num" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(120px,1fr))", gap: 6, fontSize: 13 }}>
+          <div><div style={{ color: S.sub, fontSize: 11.5 }}>{tr("Moraju platiti")}</div><b>{czk(round2(tot))}</b></div>
+          <div><div style={{ color: S.sub, fontSize: 11.5 }}>{tr("Riješeno")}</div>
+            <b style={{ color: withMonth.length && withMonth.every((r) => r.done) ? S.green : S.red }}>{withMonth.filter((r) => r.done).length} / {withMonth.length}</b></div>
+        </div>
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 10 }}>
+          <Btn small kind="ghost" onClick={() => openEdit(null)}>{tr("+ Nova osoba")}</Btn>
+          {sp.workers.some((w) => w.archived) && <Btn small kind="ghost" onClick={() => setShowOld(!showOld)}>{showOld ? tr("Sakrij bivše") : tr("Prikaži bivše")}</Btn>}
+        </div>
+      </Card>
+
+      {edit && (
+        <Card style={{ marginTop: 8 }}>
+          <div style={{ fontWeight: 700, marginBottom: 8 }}>{edit === "new" ? tr("Nova osoba (sami plaćaju)") : tr("Uredi: {0}", edit.name)}</div>
+          <Field label={tr("Prezime i ime (kao na pásci)")}><input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /></Field>
+          <Field label={tr("Telefon")}><input value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} /></Field>
+          <Field label={tr("Skidaj s koverte radnika (opcionalno)")}>
+            <select value={form.linkedWorkerId} onChange={(e) => setForm({ ...form, linkedWorkerId: e.target.value })}>
+              <option value="">{tr("— nije povezan, plaća sam —")}</option>
+              {sortedWorkers(data.workers.filter((w) => !w.archived)).map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}
+            </select>
+          </Field>
+          <div style={{ display: "flex", gap: 6 }}>
+            <Btn small onClick={save}>{tr("Spremi")}</Btn>
+            <Btn small kind="ghost" onClick={() => setEdit(null)}>{tr("Odustani")}</Btn>
+            {edit !== "new" && <Btn small kind="ghost" onClick={async () => { if (await api.selfPayArchive(edit, !edit.archived)) setEdit(null); }}>{edit.archived ? tr("Vrati") : tr("Arhiviraj")}</Btn>}
+          </div>
+        </Card>
+      )}
+
+      {rows.length === 0 && <Empty text={tr("Još nema nikoga. Dodaj osobu (ime kao na pásci) pa učitaj Mzdy PDF.")} />}
+      {rows.map((r) => (
+        <Card key={r.w.id} style={{ marginTop: 8, ...(r.m ? { borderLeft: `5px solid ${r.done ? S.green : S.red}`, background: r.done ? S.greenSoft : undefined } : {}) }}>
+          <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "flex-start" }}>
+            <div>
+              <div style={{ fontWeight: 800 }}>{r.w.name}{r.w.archived ? tr(" (bivši)") : ""}<ContractTag data={data} workerId={r.w.id} admin={api.admin} small />
+                {r.m && <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 800, padding: "2px 7px", borderRadius: 10, color: "#fff", background: r.done ? S.green : S.red }}>
+                  {r.done ? tr("✓ RIJEŠENO") : tr("NEPLAĆENO")}</span>}
+              </div>
+              <div style={{ fontSize: 12.5, color: S.sub }}>{r.linked ? tr("skida se s koverte: {0}", r.linked.name) : tr("plaća sam")}</div>
+            </div>
+            <Btn small kind="ghost" onClick={() => openEdit(r.w)}>{tr("Uredi")}</Btn>
+          </div>
+          {!r.m ? <div style={{ fontSize: 12.5, color: S.sub, marginTop: 6 }}>{tr("Za {0} još nema mzdy.", monthLabel(mo))}</div> : (
+            <div className="num" style={{ marginTop: 8, display: "grid", gap: 3 }}>
+              <div style={cell}><span>{tr("Na račun (Dobírka)")}</span><span>{czk(r.m.dobirka)}</span></div>
+              <div style={cell}><span>{tr("Soc. i zdrav. (zaposlenik)")}</span><span>{czk(round2(r.m.zdrav + r.m.soc))}</span></div>
+              <div style={cell}><span>{tr("Porez (záloha − sleva)")}</span><span>{czk(r.m.dan)}</span></div>
+              <div style={cell}><span>{tr("Pojistné firme")}</span><span>{czk(r.m.pojist)}</span></div>
+              <div style={{ ...cell, fontWeight: 800, borderTop: `1px solid ${S.line}`, paddingTop: 4 }}><span>{tr("Mora platiti")}</span><span>{czk(r.m.total)}</span></div>
+              {r.linked ? (
+                <div style={{ fontSize: 12.5, color: S.green, fontWeight: 700 }}>{tr("✓ Skinuto s koverte: {0} (−{1})", r.linked.name, czk(r.m.total))}</div>
+              ) : (<>
+                {r.paid.map((x) => (
+                  <div key={x.id} style={{ ...cell, fontSize: 12, color: S.sub }}>
+                    <span>{fmtDate(x.date)} · {tr("platio")}</span>
+                    <span>−{czk(x.amount)} <a onClick={() => api.selfPayDelPaid(x, r.w.name)} style={{ cursor: "pointer", color: S.red, marginLeft: 6 }}>✕</a></span>
+                  </div>
+                ))}
+                <div style={{ ...cell, fontWeight: 700, color: r.left > 0 ? S.red : S.green }}><span>{tr("Ostalo")}</span><span>{r.left > 0 ? czk(r.left) : tr("✓ na nuli")}</span></div>
+                {r.left > 0 && (
+                  <div style={{ display: "flex", gap: 6, alignItems: "center", marginTop: 4 }}>
+                    <input inputMode="decimal" value={pay[r.w.id] || ""} onChange={(e) => setPay({ ...pay, [r.w.id]: e.target.value })} placeholder={tr("koliko je platio (Kč)")} style={{ flex: 1, fontSize: 13 }} />
+                    <Btn small onClick={() => addPay(r)} disabled={!(parseNum(pay[r.w.id]) > 0)}>{tr("Platio")}</Btn>
+                    <Btn small kind="ghost" onClick={() => setPay({ ...pay, [r.w.id]: String(r.left) })}>{tr("Sve")}</Btn>
+                  </div>
+                )}
+              </>)}
+            </div>
+          )}
+        </Card>
+      ))}
+    </div>
+  );
+}
+
 function CashPanel({ data, api }) {
   const coordinators = [...(data.profiles || [])].filter((p) => p.role !== "admin").sort((a, b) => (a.name || "").localeCompare(b.name || "", "hr"));
   const bal = cashBalances(data);
@@ -10465,7 +10661,10 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
       people.forEach((p) => { monthCounts[p.month] = (monthCounts[p.month] || 0) + 1; });
       const mo = Object.entries(monthCounts).sort((a, b) => b[1] - a[1])[0][0];
       const officeWs = (data.office && data.office.workers) || [];
+      const selfWs = ((data.selfPay && data.selfPay.workers) || []).filter((w) => !w.archived);
       const rows = [...people.values()].map((p) => {
+        const sw = matchWorkerFuzzy(selfWs, p.name);
+        if (sw) return mzdySelfRow(data, sw, p, mo);
         const hw = matchWorkerFuzzy(data.workers, p.name);
         const ow = hw ? null : matchWorkerFuzzy(officeWs, p.name);
         if (ow) return mzdyOfficeRow(data, ow, p, mo);
@@ -10515,7 +10714,8 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
         dobirka: r.src.dobirka || 0, created_by: uid, updated_at: new Date().toISOString() }));
       if (info.length) { const { error } = await supabase.from("mzdy_info").upsert(info, { onConflict: "worker_id,month" }); if (error) throw error; }
       for (const r of rows.filter((x) => x.office)) await saveMzdyOfficeRow(data, r, mo, lastDay, `Mzdy PDF ${String(mm).padStart(2, "0")}/${yy}`, uid);
-      for (const r of rows.filter((x) => !x.office)) {
+      for (const r of rows.filter((x) => x.selfPay)) await saveSelfPayRow(data, r, mo, lastDay, uid);
+      for (const r of rows.filter((x) => !x.office && !x.selfPay)) {
         const soc = round2(parseNum(r.socZdr) || 0);
         // soc.-zdr.: stara napomena za taj mjesec se zamjenjuje novom
         const old = (data.payrollNotes || []).filter((n) => n.workerId === r.workerId && n.month === mo);
@@ -11091,7 +11291,7 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
                 <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
                   <input type="checkbox" checked={row.include} disabled={row.locked || !row.workerId} onChange={(e) => setRow(i, { include: e.target.checked })} style={{ width: 18, height: 18 }} />
                   <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontWeight: 700, fontSize: 14.5 }}>{row.rawName} {row.office && <Tag color={S.blue} bg={S.blueSoft}>{tr("👔 Ured")}</Tag>} {row.corrected && <Tag color={S.blue} bg={S.blueSoft}>{tr("oprava")}</Tag>}</div>
+                    <div style={{ fontWeight: 700, fontSize: 14.5 }}>{row.rawName} {row.office && <Tag color={S.blue} bg={S.blueSoft}>{tr("👔 Ured")}</Tag>}{row.selfPay && <Tag color="#8A4B0F" bg={S.amberSoft}>{tr("🧾 Sami plaćaju")}</Tag>} {row.corrected && <Tag color={S.blue} bg={S.blueSoft}>{tr("oprava")}</Tag>}</div>
                     <div className="num" style={{ fontSize: 12, color: S.sub }}>
                       {/^HPP$/i.test(row.kat || "") ? (hppFull(row.src || {}) ? tr("HPP puni") : tr("HPP pola")) : row.kat}{row.src?.hours ? tr(" · {0} odrađeno", fmtH(row.src.hours)) + (row.src.fondHours ? tr(" (fond {0})", fmtH(row.src.fondHours)) : "") : ""}{row.tarif ? tr(" · tarif {0}", czk(row.tarif)) : ""}{!row.office && /^HPP$/i.test(row.kat || "") ? tr(" → koverta −{0}", czk(hppFull(row.src || {}) ? SOCZDR_FULL : SOCZDR_HALF)) : ""}
                     </div>
@@ -11101,18 +11301,29 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
                   <select value={row.workerId} onChange={(e) => {
                     const ow = ((data.office && data.office.workers) || []).find((x) => x.id === e.target.value);
                     if (ow) { setRow(i, { ...mzdyOfficeRow(data, ow, row.src, mzdyReview.month), include: !row.locked }); return; }
+                    const sw = ((data.selfPay && data.selfPay.workers) || []).find((x) => x.id === e.target.value);
+                    if (sw) { setRow(i, { ...mzdySelfRow(data, sw, row.src, mzdyReview.month) }); return; }
                     const wk = data.workers.find((x) => x.id === e.target.value);
                     const cur = wk ? wCur(wk) : "CZK";
                     const toCur = (v) => String(cur === row.currency ? v : cur === "CZK" ? round2((parseNum(v) || 0) * czkRate) : round2((parseNum(v) || 0) / czkRate));
-                    setRow(i, { workerId: e.target.value, currency: cur, office: false, socZdr: row.office ? String(socZdrFor(row.src)) : toCur(row.socZdr), bank: toCur(row.bank), include: !!e.target.value && !row.locked });
+                    setRow(i, { workerId: e.target.value, currency: cur, office: false, selfPay: false, warn: [], socZdr: row.office ? String(socZdrFor(row.src)) : toCur(row.socZdr), bank: toCur(row.bank), include: !!e.target.value && !row.locked });
                   }}>
                     <option value="">{tr("— nije prepoznat, odaberi ručno —")}</option>
                     {sortedWorkers(data.workers).map((w) => <option key={w.id} value={w.id}>{w.name}{w.archived ? tr(" (bivši)") : ""}</option>)}
                     {((data.office && data.office.workers) || []).length > 0 && <optgroup label={tr("👔 Ured")}>
                       {sortedWorkers(data.office.workers).map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}
                     </optgroup>}
+                    {((data.selfPay && data.selfPay.workers) || []).length > 0 && <optgroup label={tr("🧾 Sami plaćaju")}>
+                      {sortedWorkers(data.selfPay.workers).map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}
+                    </optgroup>}
                   </select>
                 </Field>
+                {row.selfPay ? (<>
+                  <Field label={tr("Mora platiti (Kč) — na račun + doprinosi + porez")}>
+                    <input inputMode="decimal" value={row.total} onChange={(e) => setRow(i, { total: e.target.value })} />
+                  </Field>
+                  <div className="num" style={{ fontSize: 12, color: S.sub }}>{row.contribDetail}</div>
+                </>) : (<>
                 <div style={{ display: "flex", gap: 8 }}>
                   <div style={{ flex: 1 }}>
                     {row.office ? (
@@ -11134,6 +11345,7 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
                   <input type="checkbox" checked={row.addBank} onChange={(e) => setRow(i, { addBank: e.target.checked })} style={{ width: 16, height: 16 }} />
                   {tr("Upiši \"na račun\" iz pásky")}
                 </label>
+                </>)}
                 {row.office && row.needSalary && (
                   <Field label={tr("Plaća ukupno (Kč/mj.) — upisat će se u Ured od {0}", monthLabel(mzdyReview.month))}>
                     <input inputMode="decimal" value={row.newSalary} onChange={(e) => setRow(i, { newSalary: e.target.value })} placeholder={tr("banka + gotovina")} />
@@ -11142,7 +11354,7 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
                 {row.office && row.needSalary && parseNum(row.newSalary) > 0 && (
                   <div className="num" style={{ fontSize: 12, color: S.sub }}>{tr("banka {0} · gotovina {1}", czk(parseNum(row.bank) || 0), czk(Math.max(0, round2((parseNum(row.newSalary) || 0) - (parseNum(row.bank) || 0)))))}</div>
                 )}
-                {row.office && <div className="num" style={{ fontSize: 12, color: S.sub, marginTop: 4 }}>{row.contribDetail}{row.cashPlan != null ? " · " + tr("gotovina {0}", czk(row.cashPlan)) : ""}</div>}
+                {row.office && !row.selfPay && <div className="num" style={{ fontSize: 12, color: S.sub, marginTop: 4 }}>{row.contribDetail}{row.cashPlan != null ? " · " + tr("gotovina {0}", czk(row.cashPlan)) : ""}</div>}
                 {row.warn.map((w, k) => <div key={k} style={{ fontSize: 12, color: S.amber, marginTop: 4 }}>{w}</div>)}
               </div>
             ))}
