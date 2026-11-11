@@ -913,11 +913,14 @@ async function fetchAll(isAdmin) {
   }
   const billMap = Object.fromEntries(billing.map((b) => [b.object_id, { rate: Number(b.bill_rate) || 0, cur: b.bill_currency === "CZK" ? "CZK" : "EUR", budget: Number(b.monthly_budget) || 0 }]));
   // fiksne mjesečne plaće ureda (RLS: samo admin)
-  let officeSalaries = [];
+  let officeSalaries = [], officePaid = [];
   if (isAdmin) {
     const os = await supabase.from("office_salaries").select("*").is("deleted_at", null).order("from_month");
     if (!os.error) officeSalaries = (os.data || []).map((r) => ({ id: r.id, workerId: r.worker_id, fromMonth: r.from_month,
       salary: Number(r.salary_czk) || 0, bank: Number(r.bank_czk) || 0, note: r.note || "" }));
+    const op = await supabase.from("office_paid").select("*").is("deleted_at", null).order("pay_date");
+    if (!op.error) officePaid = (op.data || []).map((r) => ({ id: r.id, workerId: r.worker_id, month: r.month, kind: r.kind,
+      amount: Number(r.amount) || 0, date: r.pay_date, note: r.note || "" }));
   }
 
   const out = {
@@ -1000,12 +1003,12 @@ async function fetchAll(isAdmin) {
     objectMembers: members,
     audit, trash,
   };
-  return splitOffice(out, officeSalaries);
+  return splitOffice(out, officeSalaries, officePaid);
 }
 
 /* Ured nije objekt: uredski zaposlenici (workers.is_office) i njihove isplate/payouti/napomene
    izdvajaju se u data.office, pa ih hoteli, obračun, koverte, fakture i izvještaji uopće ne vide. */
-function splitOffice(out, salaries) {
+function splitOffice(out, salaries, paid = []) {
   const ids = new Set(out.workers.filter((w) => w.isOffice).map((w) => w.id));
   const not = (x) => !ids.has(x.workerId);
   const is = (x) => ids.has(x.workerId);
@@ -1022,6 +1025,7 @@ function splitOffice(out, salaries) {
       payments: out.payments.filter(is),
       payouts: out.payouts.filter(is),
       salaries,
+      paid,
     },
   };
 }
@@ -1461,6 +1465,12 @@ export default function App() {
       amount, currency: "CZK", note: `soc. i zdrav. – plaća ${monthLabel(mo)}`, deduct: false, created_by: session.user.id }),
       `Upisao doprinose (ured): ${w.name} ${czk(amount)} za ${mo}`),
     officeDelPayment: (p, wName) => act(() => softDel("payments", p.id), `Obrisao stavku ureda: ${wName} ${p.note || p.type} ${czk(p.amount)}`),
+    officeMarkBankPaid: (w, mo, amount, date) => act(() => ins("office_paid", { worker_id: w.id, month: mo, kind: "bank", amount, pay_date: date || todayISO(), created_by: session.user.id }),
+      `Ured: banka plaćena — ${w.name} za ${mo} (${czk(amount)})`),
+    officeAddCashGiven: (w, mo, amount, date) => act(() => ins("office_paid", { worker_id: w.id, month: mo, kind: "cash", amount, pay_date: date || todayISO(), created_by: session.user.id }),
+      `Ured: dao gotovinu — ${w.name} za ${mo} (${czk(amount)})`),
+    officeDelPaid: (x, wName) => act(() => softDel("office_paid", x.id),
+      `Ured: obrisao ${x.kind === "bank" ? "oznaku banka plaćena" : "gotovinu"} — ${wName} ${czk(x.amount)} (${x.month})`),
     officeSetPayout: (payout, amountKc, wName) => act(() => upd("payouts", payout.id, { amount: 0, amount_czk: amountKc }),
       `Osvježio gotovinu ureda: ${wName} za ${payout.month} (${czk(amountKc)})`),
     refreshPayout: (payout, amount, amountKc, wName) => act(() => upd("payouts", payout.id, { amount, amount_czk: amountKc || 0 }),
@@ -7916,7 +7926,16 @@ function officeRows(office, mo) {
       const bank = booked ? bankPaid : plannedBank;
       const cash = round2(salary + bonuses - bank - advances - deductions);
       const payout = office.payouts.find((x) => x.workerId === w.id && x.month === mo) || null;
-      return { w, sal, salary, plannedBank, bank, cash, contrib, bonuses, advances, deductions, pays, booked, payout };
+      const paidRecs = (office.paid || []).filter((x) => x.workerId === w.id && x.month === mo);
+      const bankRec = paidRecs.find((x) => x.kind === "bank") || null;
+      const cashGiven = paidRecs.filter((x) => x.kind === "cash");
+      const cashGivenSum = round2(cashGiven.reduce((t, x) => t + x.amount, 0));
+      const cashLeft = round2(Math.max(0, cash) - cashGivenSum);
+      const bankDone = bank <= 0 || !!bankRec;
+      const cashDone = cashLeft <= 0;
+      const allPaid = salary > 0 && bankDone && cashDone;
+      return { w, sal, salary, plannedBank, bank, cash, contrib, bonuses, advances, deductions, pays, booked, payout,
+        bankRec, cashGiven, cashGivenSum, cashLeft, bankDone, cashDone, allPaid };
     });
 }
 function OfficePanel({ data, api }) {
@@ -7926,7 +7945,16 @@ function OfficePanel({ data, api }) {
   const [form, setForm] = useState({});
   const [salEdit, setSalEdit] = useState(null); // { w, fromMonth, salary, bank }
   const [contrib, setContrib] = useState({});   // workerId -> iznos
+  const [given, setGiven] = useState({});       // workerId -> gotovina koju upisuješ
   const rows = officeRows(office, mo);
+  const payable = rows.filter((r) => r.salary > 0);
+  const paidCount = payable.filter((r) => r.allPaid).length;
+  const addGiven = async (r) => {
+    const a = round2(parseNum(given[r.w.id]) || 0);
+    if (a <= 0) return;
+    if (a > r.cashLeft && !(await uiConfirm(tr("Upisuješ {0}, a ostalo je samo {1}. Ipak upisati?", czk(a), czk(r.cashLeft))))) return;
+    if (await api.officeAddCashGiven(r.w, mo, a)) setGiven({ ...given, [r.w.id]: "" });
+  };
   const tot = rows.reduce((t, r) => ({ salary: t.salary + r.salary, bank: t.bank + r.bank, cash: t.cash + r.cash, contrib: t.contrib + r.contrib }),
     { salary: 0, bank: 0, cash: 0, contrib: 0 });
   const toBook = rows.filter((r) => !r.booked && r.salary > 0 && !r.w.archived);
@@ -7964,6 +7992,8 @@ function OfficePanel({ data, api }) {
           <div><div style={{ color: S.sub, fontSize: 11.5 }}>{tr("Na banku")}</div><b style={{ color: S.blue }}>{czk(round2(tot.bank))}</b></div>
           <div><div style={{ color: S.sub, fontSize: 11.5 }}>{tr("Gotovina")}</div><b>{czk(round2(tot.cash))}</b></div>
           <div><div style={{ color: S.sub, fontSize: 11.5 }}>{tr("Doprinosi (mzdy)")}</div><b>{tot.contrib ? czk(round2(tot.contrib)) : "—"}</b></div>
+          {payable.length > 0 && <div><div style={{ color: S.sub, fontSize: 11.5 }}>{tr("Isplaćeno")}</div>
+            <b style={{ color: paidCount === payable.length ? S.green : S.red }}>{paidCount} / {payable.length}</b></div>}
         </div>
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 10 }}>
           {toBook.length > 0 && <Btn small onClick={() => api.officeBookMonth(toBook, mo)}>{tr("Upiši plaće za {0} ({1})", monthLabel(mo), toBook.length)}</Btn>}
@@ -7994,10 +8024,13 @@ function OfficePanel({ data, api }) {
 
       {rows.length === 0 && <Empty text={tr("Nema zaposlenika ureda.")} />}
       {rows.map((r) => (
-        <Card key={r.w.id} style={{ marginTop: 8 }}>
+        <Card key={r.w.id} style={{ marginTop: 8, ...(r.salary > 0 ? { borderLeft: `5px solid ${r.allPaid ? S.green : S.red}`, background: r.allPaid ? S.greenSoft : undefined } : {}) }}>
           <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "flex-start" }}>
             <div>
-              <div style={{ fontWeight: 800 }}>{r.w.name}{r.w.archived ? tr(" (bivši)") : ""}</div>
+              <div style={{ fontWeight: 800 }}>{r.w.name}{r.w.archived ? tr(" (bivši)") : ""}
+                {r.salary > 0 && <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 800, padding: "2px 7px", borderRadius: 10, color: "#fff", background: r.allPaid ? S.green : S.red }}>
+                  {r.allPaid ? tr("✓ PLAĆENO") : tr("NEPLAĆENO")}</span>}
+              </div>
               <div style={{ fontSize: 12.5, color: S.sub }}>{r.w.position || tr("bez pozicije")}</div>
               {api.admin && <div style={{ fontSize: 12, color: S.sub }}>{tr("Račun:")}{" "}{r.w.bankAccount || tr("račun nije upisan")}</div>}
             </div>
@@ -8019,6 +8052,35 @@ function OfficePanel({ data, api }) {
                 <a onClick={() => api.officeSetPayout(r.payout, r.cash, r.w.name)} style={{ cursor: "pointer", textDecoration: "underline" }}>{tr("Osvježi")}</a></div>
             )}
           </div>
+          {r.salary > 0 && (
+            <div style={{ marginTop: 8, borderTop: `1px solid ${S.line}`, paddingTop: 8, display: "grid", gap: 6 }}>
+              <div style={{ ...cell, alignItems: "center" }}>
+                <span>🏦 {tr("Banka")} <b className="num">{czk(r.bank)}</b></span>
+                {r.bank <= 0 ? <span style={{ color: S.sub }}>{tr("nema")}</span>
+                  : r.bankRec ? <span style={{ color: S.green, fontWeight: 700 }}>{tr("✓ Plaćeno {0}", fmtDate(r.bankRec.date))}{" "}
+                      <a onClick={() => api.officeDelPaid(r.bankRec, r.w.name)} style={{ cursor: "pointer", color: S.red, marginLeft: 6 }}>✕</a></span>
+                  : <Btn small onClick={() => api.officeMarkBankPaid(r.w, mo, r.bank)}>{tr("Plaćeno (banka)")}</Btn>}
+              </div>
+              <div style={{ ...cell, alignItems: "center" }}>
+                <span>💵 {tr("Gotovina")} <b className="num">{czk(Math.max(0, r.cash))}</b></span>
+                <b className="num" style={{ color: r.cashDone ? S.green : S.red }}>{r.cashDone ? tr("✓ na nuli") : tr("ostalo {0}", czk(r.cashLeft))}</b>
+              </div>
+              {r.cashGiven.map((x) => (
+                <div key={x.id} className="num" style={{ ...cell, fontSize: 12, color: S.sub }}>
+                  <span>{fmtDate(x.date)} · {tr("dao gotovinu")}</span>
+                  <span>−{czk(x.amount)} <a onClick={() => api.officeDelPaid(x, r.w.name)} style={{ cursor: "pointer", color: S.red, marginLeft: 6 }}>✕</a></span>
+                </div>
+              ))}
+              {!r.cashDone && (
+                <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                  <input inputMode="decimal" value={given[r.w.id] || ""} onChange={(e) => setGiven({ ...given, [r.w.id]: e.target.value })}
+                    placeholder={tr("koliko gotovine si dao (Kč)")} style={{ flex: 1, fontSize: 13 }} />
+                  <Btn small onClick={() => addGiven(r)} disabled={!(parseNum(given[r.w.id]) > 0)}>{tr("Dao sam")}</Btn>
+                  <Btn small kind="ghost" onClick={() => setGiven({ ...given, [r.w.id]: String(r.cashLeft) })}>{tr("Sve")}</Btn>
+                </div>
+              )}
+            </div>
+          )}
           <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 8, alignItems: "center" }}>
             <Btn small kind="ghost" onClick={() => setSalEdit({ w: r.w, fromMonth: mo, salary: String(r.salary || ""), bank: String(r.plannedBank || "") })}>{tr("Promijeni plaću")}</Btn>
             {r.salary > 0 && <Btn small kind="ghost" onClick={() => printEnv([r])}>{tr("✉️ Koverta")}</Btn>}
