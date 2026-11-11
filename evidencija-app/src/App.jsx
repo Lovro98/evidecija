@@ -545,8 +545,11 @@ function parseMzdyPasky(lines) {
   const push = () => { if (cur && cur.name) out.push(cur); cur = null; };
   for (const line of lines) {
     const m = line.match(/(\d{2,6})\s*\S{0,3}\s*([A-ZÁ-Ž][A-Za-zÁ-Žá-ž]+(?:\s+[A-Za-zÁ-Žá-ž]+)+?)\s*\S{0,3}\s*(\d{6}\/\d{3,4})\s*\S{0,3}\s*(\S{2,4})\s*\S{0,3}\s*(\d{4})\s*\/\s*(\d{2})/);
-    if (m) { push(); cur = { name: m[2].trim(), kat: m[4].toUpperCase(), month: `${m[5]}-${m[6]}`, tarif: 0, zdrav: 0, soc: 0, pojist: 0, dobirka: 0, hruba: 0 }; continue; }
+    if (m) { push(); cur = { name: m[2].trim(), kat: m[4].toUpperCase(), month: `${m[5]}-${m[6]}`, tarif: 0, zdrav: 0, soc: 0, pojist: 0, dobirka: 0, hruba: 0, hours: 0, days: 0, fondHours: 0 }; continue; }
     if (!cur) continue;
+    const dh = line.match(/(\d+(?:[.,]\d+)?)\s*dny\s+(\d+(?:[.,]\d+)?)\s*hod/i);
+    if (dh && /Odpracov/i.test(line)) { cur.days = czNum(dh[1]); cur.hours = czNum(dh[2]); }
+    else if (dh && /Fond/i.test(line)) cur.fondHours = czNum(dh[2]);
     const t = line.match(/M.{1,3}s.{1,3}n.{1,3}\s*tarif\s+(\d[\d\s]*)\s*K\s*č/i);
     if (t) cur.tarif = czNum(t[1]);
     if (/Zdrav\.?\s*poj/i.test(line)) cur.zdrav = mzdyAmount(line);
@@ -927,8 +930,11 @@ async function fetchAll(isAdmin) {
   }
   const billMap = Object.fromEntries(billing.map((b) => [b.object_id, { rate: Number(b.bill_rate) || 0, cur: b.bill_currency === "CZK" ? "CZK" : "EUR", budget: Number(b.monthly_budget) || 0 }]));
   // fiksne mjesečne plaće ureda (RLS: samo admin)
-  let officeSalaries = [], officePaid = [];
+  let officeSalaries = [], officePaid = [], mzdyInfo = [];
   if (isAdmin) {
+    const mi = await supabase.from("mzdy_info").select("*").order("month");
+    if (!mi.error) mzdyInfo = (mi.data || []).map((r) => ({ workerId: r.worker_id, month: r.month, kat: r.kat || "", hours: Number(r.hours) || 0,
+      days: Number(r.days) || 0, fondHours: Number(r.fond_hours) || 0, tarif: Number(r.tarif) || 0, hruba: Number(r.hruba) || 0, dobirka: Number(r.dobirka) || 0 }));
     const os = await supabase.from("office_salaries").select("*").is("deleted_at", null).order("from_month");
     if (!os.error) officeSalaries = (os.data || []).map((r) => ({ id: r.id, workerId: r.worker_id, fromMonth: r.from_month,
       salary: Number(r.salary_czk) || 0, bank: Number(r.bank_czk) || 0, note: r.note || "" }));
@@ -938,6 +944,7 @@ async function fetchAll(isAdmin) {
   }
 
   const out = {
+    mzdyInfo,
     workers: (workers.data || []).map((w) => ({
       id: w.id, name: w.name, phone: w.phone || "", rate: Number(w.base_rate) || 0,
       objectId: w.object_id || "", note: w.note || "", archived: !!w.archived, archivedDate: w.archived_date || "",
@@ -7327,6 +7334,24 @@ function WorkerPortalCard({ worker }) {
   );
 }
 
+/* Mzdy (samo admin): vrsta ugovora i sati s pásky po mjesecima — ne ide na koverte */
+function MzdyInfoBox({ data, workerId, admin, month }) {
+  if (!admin) return null;
+  const list = (data.mzdyInfo || []).filter((x) => x.workerId === workerId && (!month || x.month === month)).sort((a, b) => b.month.localeCompare(a.month)).slice(0, 6);
+  if (!list.length) return null;
+  return (
+    <div style={{ marginTop: 8, background: S.blueSoft, borderRadius: 10, padding: "7px 10px", fontSize: 12.5 }}>
+      <div style={{ fontWeight: 700, color: S.blue, marginBottom: 2 }}>{tr("📄 Mzdy (vidiš samo ti)")}</div>
+      {list.map((x) => (
+        <div key={x.month} className="num" style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
+          <span>{monthLabel(x.month)} · <b>{x.kat || "—"}</b></span>
+          <span>{fmtH(x.hours)}{x.fondHours ? " / " + fmtH(x.fondHours) : ""}{x.dobirka ? " · " + czk(x.dobirka) : ""}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function WorkerDetail({ worker, data, api, onBack }) {
   const [edit, setEdit] = useState(false);
   const [form, setForm] = useState({ ...worker, rate: String(worker.rate || ""), rateCur: wCur(worker), ...splitNameForEdit(worker.name) });
@@ -7465,6 +7490,7 @@ function WorkerDetail({ worker, data, api, onBack }) {
               </div>
             )}
             {worker.note && <div style={{ marginTop: 8, fontSize: 13.5, color: S.sub, whiteSpace: "pre-wrap" }}>{worker.note}</div>}
+            <MzdyInfoBox data={data} workerId={worker.id} admin={api.admin} />
             <div style={{ display: "flex", gap: 8, marginTop: 14, flexWrap: "wrap" }}>
               <Btn small kind="ghost" onClick={() => { setForm({ ...worker, rate: String(worker.rate || ""), rateCur: wCur(worker) }); setEdit(true); }}>{tr("Uredi")}</Btn>
               <Btn small kind="ghost" onClick={() => api.archiveWorker(worker, !worker.archived)} style={{ color: worker.archived ? S.green : S.amber, fontWeight: 700 }}>
@@ -8052,6 +8078,7 @@ function OfficePanel({ data, api }) {
               </div>
               <div style={{ fontSize: 12.5, color: S.sub }}>{r.w.position || tr("bez pozicije")}</div>
               {api.admin && <div style={{ fontSize: 12, color: S.sub }}>{tr("Račun:")}{" "}{r.w.bankAccount || tr("račun nije upisan")}</div>}
+              <MzdyInfoBox data={data} workerId={r.w.id} admin={api.admin} month={mo} />
             </div>
             <Btn small kind="ghost" onClick={() => openEdit(r.w)}>{tr("Uredi")}</Btn>
           </div>
@@ -10459,6 +10486,11 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
     const uid = api.uid();
     const tag = `Dobírka (Mzdy PDF ${String(mm).padStart(2, "0")}/${yy})`;
     const ok = await api.run(async () => {
+      // samo za admina: vrsta ugovora (HPP/DPČ…) i sati s pásky — ne ide na koverte
+      const info = mzdyReview.rows.filter((r) => r.workerId && r.src).map((r) => ({ worker_id: r.workerId, month: mo, kat: r.src.kat || "",
+        hours: r.src.hours || 0, days: r.src.days || 0, fond_hours: r.src.fondHours || 0, tarif: r.src.tarif || 0, hruba: r.src.hruba || 0,
+        dobirka: r.src.dobirka || 0, created_by: uid, updated_at: new Date().toISOString() }));
+      if (info.length) { const { error } = await supabase.from("mzdy_info").upsert(info, { onConflict: "worker_id,month" }); if (error) throw error; }
       for (const r of rows.filter((x) => x.office)) await saveMzdyOfficeRow(data, r, mo, lastDay, `Mzdy PDF ${String(mm).padStart(2, "0")}/${yy}`, uid);
       for (const r of rows.filter((x) => !x.office)) {
         const soc = round2(parseNum(r.socZdr) || 0);
@@ -11038,7 +11070,7 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ fontWeight: 700, fontSize: 14.5 }}>{row.rawName} {row.office && <Tag color={S.blue} bg={S.blueSoft}>{tr("👔 Ured")}</Tag>} {row.corrected && <Tag color={S.blue} bg={S.blueSoft}>{tr("oprava")}</Tag>}</div>
                     <div className="num" style={{ fontSize: 12, color: S.sub }}>
-                      {row.kat}{row.tarif ? tr(" · tarif {0} ({1} radno vrijeme)", czk(row.tarif), row.tarif >= FULL_TARIF ? tr("puno") : tr("pola")) : ""}
+                      {row.kat}{row.src?.hours ? tr(" · {0} odrađeno", fmtH(row.src.hours)) + (row.src.fondHours ? tr(" (fond {0})", fmtH(row.src.fondHours)) : "") : ""}{row.tarif ? tr(" · tarif {0} ({1} radno vrijeme)", czk(row.tarif), row.tarif >= FULL_TARIF ? tr("puno") : tr("pola")) : ""}
                     </div>
                   </div>
                 </div>
