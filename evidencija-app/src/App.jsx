@@ -6338,7 +6338,7 @@ function WorkersTab({ data, api, onOpen, onOpenObject }) {
           <Card key={w.id} style={{ cursor: "pointer" }}>
             <div onClick={() => onOpen(w.id)} style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
               <div>
-                <div style={{ fontWeight: 700, fontSize: 15.5 }}>{w.name}{w.position && <span style={{ marginLeft: 6, fontWeight: 600, fontSize: 12, color: S.blue }}>· {w.position}</span>}</div>
+                <div style={{ fontWeight: 700, fontSize: 15.5 }}>{w.name}{w.position && <span style={{ marginLeft: 6, fontWeight: 600, fontSize: 12, color: S.blue }}>· {w.position}</span>}<ContractTag data={data} workerId={w.id} admin={api.admin} small /></div>
                 <div style={{ fontSize: 13, color: S.sub, marginTop: 2 }}>{objName(w.objectId) || "—"} · {w.phone || tr("bez broja")}</div>
               </div>
               <div style={{ textAlign: "right" }}>
@@ -6831,7 +6831,8 @@ function ObjectsTab({ data, api, onOpenObject }) {
 function DirectoryTab({ data, api, onOpen }) {
   const [q, setQ] = useState("");
   const list = [...data.workers].sort((a, b) => a.name.localeCompare(b.name, "hr"))
-    .filter((w) => { const t = q.trim().toLowerCase(); return !t || w.name.toLowerCase().includes(t) || (w.phone || "").includes(t); });
+    .filter((w) => { const t = q.trim().toLowerCase(); const c = api.admin ? contractOf(data, w.id) : null;
+      return !t || w.name.toLowerCase().includes(t) || (w.phone || "").includes(t) || (!!c && c.label.toLowerCase().replace("č", "c").includes(t.replace("č", "c"))); });
   const active = data.workers.filter((w) => !w.archived).length;
   const former = data.workers.length - active;
   const objName = (id) => data.objects.find((o) => o.id === id)?.name || "";
@@ -6887,7 +6888,7 @@ function DirectoryTab({ data, api, onOpen }) {
               <div key={w.id} onClick={() => onOpen(w.id)} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 0", cursor: "pointer",
                 borderBottom: i < g.workers.length - 1 ? `1px solid ${S.line}` : "none", opacity: w.archived ? 0.75 : 1 }}>
                 <div style={{ flex: 1 }}>
-                  <div style={{ fontWeight: 700, fontSize: 15 }}>{w.name}{w.position && <span style={{ marginLeft: 6, fontWeight: 600, fontSize: 12, color: S.blue }}>· {w.position}</span>}</div>
+                  <div style={{ fontWeight: 700, fontSize: 15 }}>{w.name}{w.position && <span style={{ marginLeft: 6, fontWeight: 600, fontSize: 12, color: S.blue }}>· {w.position}</span>}<ContractTag data={data} workerId={w.id} admin={api.admin} small /></div>
                   <div style={{ fontSize: 12.5, color: S.sub, marginTop: 1 }}>
                     {w.phone ? <a href={"tel:" + w.phone} onClick={(e) => e.stopPropagation()} style={{ color: S.sub }}>{w.phone}</a> : tr("bez broja")}
                   </div>
@@ -7334,6 +7335,26 @@ function WorkerPortalCard({ worker }) {
   );
 }
 
+/* Vrsta zaposlenja s posljednje pásky: HPP puni / HPP pola / DPČ / DPP (samo admin) */
+function contractOf(data, workerId) {
+  const x = (data.mzdyInfo || []).filter((i) => i.workerId === workerId).sort((a, b) => b.month.localeCompare(a.month))[0];
+  if (!x || !x.kat) return null;
+  const k = x.kat.toUpperCase().replace("DPC", "DPČ");
+  if (k !== "HPP") return { label: k, month: x.month, tone: "amber" };
+  // puni/pola: sati po odrađenom danu (8 h = puni, 4 h = pola); bez dana po tarifu
+  const perDay = x.days > 0 ? x.hours / x.days : 0;
+  const full = perDay > 0 ? perDay >= 6 : x.tarif > 0 ? x.tarif >= FULL_TARIF : x.fondHours >= 120;
+  return { label: full ? "HPP puni" : "HPP pola", month: x.month, tone: full ? "green" : "blue" };
+}
+function ContractTag({ data, workerId, admin, small }) {
+  if (!admin) return null;
+  const c = contractOf(data, workerId);
+  if (!c) return null;
+  const col = { green: [S.green, S.greenSoft], blue: [S.blue, S.blueSoft], amber: ["#8A4B0F", S.amberSoft] }[c.tone];
+  return <span title={tr("s pásky {0}", monthLabel(c.month))} style={{ marginLeft: 6, fontSize: small ? 10.5 : 11.5, fontWeight: 800, padding: "1px 7px", borderRadius: 10,
+    color: col[0], background: col[1], whiteSpace: "nowrap", verticalAlign: "middle" }}>{c.label}</span>;
+}
+
 /* Mzdy (samo admin): vrsta ugovora i sati s pásky po mjesecima — ne ide na koverte */
 function MzdyInfoBox({ data, workerId, admin, month }) {
   if (!admin) return null;
@@ -7474,7 +7495,7 @@ function WorkerDetail({ worker, data, api, onBack }) {
           <>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
               <div>
-                <div style={{ fontSize: 19, fontWeight: 800 }}>{worker.name}</div>
+                <div style={{ fontSize: 19, fontWeight: 800 }}>{worker.name}<ContractTag data={data} workerId={worker.id} admin={api.admin} /></div>
                 <div style={{ color: S.sub, fontSize: 13.5, marginTop: 3 }}>{worker.archived ? tr("📁 Bivši radnik · ") : ""}{objName(worker.objectId) || tr("Bez objekta")}{worker.position ? " · " + worker.position : ""}</div>
               </div>
               {rateNow(data, worker) > 0
@@ -8072,7 +8093,7 @@ function OfficePanel({ data, api }) {
         <Card key={r.w.id} style={{ marginTop: 8, ...(r.salary > 0 ? { borderLeft: `5px solid ${r.allPaid ? S.green : S.red}`, background: r.allPaid ? S.greenSoft : undefined } : {}) }}>
           <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "flex-start" }}>
             <div>
-              <div style={{ fontWeight: 800 }}>{r.w.name}{r.w.archived ? tr(" (bivši)") : ""}
+              <div style={{ fontWeight: 800 }}>{r.w.name}{r.w.archived ? tr(" (bivši)") : ""}<ContractTag data={data} workerId={r.w.id} admin={api.admin} small />
                 {r.salary > 0 && <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 800, padding: "2px 7px", borderRadius: 10, color: "#fff", background: r.allPaid ? S.green : S.red }}>
                   {r.allPaid ? tr("✓ PLAĆENO") : tr("NEPLAĆENO")}</span>}
               </div>
