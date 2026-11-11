@@ -1642,7 +1642,7 @@ export default function App() {
   const showFab = !detailOpen && !adminPanel && ["danas", "radnici", "sati", "objekti"].includes(tab);
   const title = adminPanel ? tr((ADMIN_MENU.find((m) => m[0] === adminPanel) || [])[2] || "")
     : worker && !splitList ? worker.name : object && !splitList ? object.name : openedProfile ? openedProfile.name
-    : tab === "vise" ? tr("Više") : tab === "kandidati" ? tr("Kandidati") : tab === "objekti" ? tr("Hoteli") : t(TAB_TITLE_KEY[tab] || "tabDanas");
+    : tab === "vise" ? tr("Više") : tab === "kandidati" ? tr("Kandidati") : tab === "fakture" ? tr("Fakture") : tab === "objekti" ? tr("Hoteli") : t(TAB_TITLE_KEY[tab] || "tabDanas");
 
   const workerDetailEl = worker && <WorkerDetail key={worker.id} worker={worker} data={data} api={api} onBack={() => setOpenWorker(null)} />;
   const objectDetailEl = object && (object.isAgency
@@ -1710,6 +1710,7 @@ export default function App() {
             {tab === "sati" && <HoursTab data={data} api={api} onOpenWorker={setOpenWorker} />}
             {tab === "isplate" && <PaymentsTab data={data} api={api} onOpenWorker={setOpenWorker} />}
             {tab === "obracun" && <ReportTab data={data} api={api} admin={admin} onOpenWorker={setOpenWorker} />}
+            {tab === "fakture" && admin && <InvoicesMonthTab data={data} api={api} />}
           </>
         )}
       </div>
@@ -1906,7 +1907,7 @@ function Ico({ name, size = 22, stroke = 2 }) {
 }
 const NAV_ITEMS = [["danas", "home", "tabDanas"], ["radnici", "users", "tabRadnici"], ["sati", "clock", "tabSati"], ["objekti", "building", "Hoteli"], ["vise", "grid", "Više"]];
 const navLabel = (t, key) => (key.startsWith("tab") ? t(key) : tr(key));
-const MORE_TABS = ["imenik", "isplate", "obracun", "kandidati"];
+const MORE_TABS = ["imenik", "isplate", "obracun", "kandidati", "fakture"];
 const ADMIN_ICON = { ai: "sparkles", candidates: "userPlus", approvals: "check", cash: "cash", finance: "bank", expenses: "cart", unpaid: "envelope", vat: "receipt", users: "users", firm: "settings", audit: "history", logins: "lock", errors: "bug", trash: "trash" };
 const Badge = ({ n, style }) => n > 0 ? (
   <span style={{ minWidth: 18, height: 18, borderRadius: 99, background: "#C2410C", color: "#fff", fontSize: 10.5, fontWeight: 800,
@@ -2002,6 +2003,7 @@ function MoreTab({ data, admin, recruiter, t, lang, setLang, goTab, openPanel, o
   const grid = { display: "grid", gridTemplateColumns: `repeat(${wide ? 4 : 3}, minmax(0, 1fr))`, gap: 8 };
   const work = [["imenik", "book", t("tabImenik"), "blue"], ["isplate", "wallet", t("tabIsplate"), "green"], ["obracun", "chart", t("tabObracun"), "blue"]];
   if (recruiter) work.unshift(["kandidati", "userPlus", tr("Kandidati"), "green"]);
+  if (admin) work.push(["fakture", "receipt", tr("Fakture"), "amber"]);
   const toneOf = { approvals: "amber", unpaid: "red", cash: "green", finance: "blue", expenses: "amber", vat: "blue", users: "blue", firm: "gray", audit: "gray", logins: "gray", errors: "gray", trash: "gray" };
   return (
     <>
@@ -4647,10 +4649,13 @@ function InvoicesPayPanel({ data, api }) {
       </div>
     </Card>
   );
-  function renderRow(r) {
+  function renderRow(r) { return <InvoicePayRow key={r.kind + r.inv.id} r={r} api={api} />; }
+}
+
+function InvoicePayRow({ r, api }) {
         const label = `${r.party} ${r.number}`;
         return (
-          <div key={r.kind + r.inv.id} style={{ padding: "9px 0", borderBottom: `1px solid ${S.line}`, borderLeft: r.st.overdue ? `4px solid ${S.red}` : "4px solid transparent", paddingLeft: 8 }}>
+          <div style={{ padding: "9px 0", borderBottom: `1px solid ${S.line}`, borderLeft: r.st.overdue ? `4px solid ${S.red}` : "4px solid transparent", paddingLeft: 8 }}>
             <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
               <div style={{ minWidth: 0 }}>
                 <div style={{ fontWeight: 700, fontSize: 13.5, color: r.st.overdue ? S.red : S.ink }}>{r.party}</div>
@@ -4664,7 +4669,76 @@ function InvoicesPayPanel({ data, api }) {
             <div style={{ marginTop: 6 }}><InvoicePayControl key={r.inv.paidDate + r.inv.dueDate} kind={r.kind} inv={r.inv} label={label} api={api} /></div>
           </div>
         );
-  }
+}
+
+/* ---------- kartica Fakture: sve fakture (izdane i primljene) za odabrani mjesec ---------- */
+function InvoicesMonthTab({ data, api }) {
+  // zadano: tekući mjesec, a ako u njemu još nema faktura — prošli
+  const [mk, setMk] = useState(() => (allInvoicesForPay(data).some((r) => r.month === curMonth()) ? curMonth() : prevMonthKey(curMonth())));
+  const [side, setSide] = useState("all"); // all | out | in
+  const [filter, setFilter] = useState("all"); // all | unpaid | paid
+  const shift = (d) => { const [y, m] = mk.split("-").map(Number); const t = new Date(y, m - 1 + d, 1); setMk(`${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, "0")}`); };
+  const monthRows = allInvoicesForPay(data).filter((r) => r.month === mk).map((r) => ({ ...r, st: invPayState(r.inv) }));
+  const shown = monthRows
+    .filter((r) => side === "all" || r.kind === side)
+    .filter((r) => filter === "all" ? true : filter === "paid" ? r.st.paid : !r.st.paid)
+    .sort((a, b) => (a.kind === b.kind ? 0 : a.kind === "out" ? -1 : 1) || (a.party || "").localeCompare(b.party || "") || (a.number || "").localeCompare(b.number || ""));
+  const sumBy = (list) => { const t = {}; list.forEach((r) => { t[r.currency] = round2((t[r.currency] || 0) + r.total); }); return Object.entries(t).filter(([, v]) => v).map(([c, v]) => money(v, c)).join(" + ") || "0"; };
+  const out = monthRows.filter((r) => r.kind === "out"), inn = monthRows.filter((r) => r.kind === "in");
+  const chipBtn = (val, cur, set, txt) => (
+    <button onClick={() => set(val)} style={{ border: `1px solid ${cur === val ? S.deep : S.line}`, background: cur === val ? S.deep : "#fff", color: cur === val ? "#fff" : S.ink,
+      borderRadius: 99, padding: "6px 12px", fontSize: 12.5, fontWeight: 700, cursor: "pointer" }}>{txt}</button>
+  );
+  const box = (title, list, bg) => {
+    const unpaid = list.filter((r) => !r.st.paid);
+    return (
+      <div style={{ background: bg, borderRadius: 12, padding: 10, minWidth: 0 }}>
+        <div style={{ fontSize: 11.5, color: S.sub, fontWeight: 700 }}>{title} · {list.length}</div>
+        <div className="num" style={{ fontWeight: 800, fontSize: 15 }}>{sumBy(list)}</div>
+        <div style={{ fontSize: 11.5, color: unpaid.length ? S.amber : S.green, fontWeight: 700 }}>
+          {unpaid.length ? `⏳ ${tr("Neplaćeno")} ${unpaid.length}: ${sumBy(unpaid)}` : list.length ? `✓ ${tr("Sve plaćeno")}` : "—"}
+        </div>
+      </div>
+    );
+  };
+  const arrow = { width: 40, height: 40, borderRadius: 12, border: `1px solid ${S.line}`, background: "#fff", cursor: "pointer", fontSize: 18, color: S.ink };
+  return (
+    <Card>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 12 }}>
+        <button onClick={() => shift(-1)} aria-label={tr("Prethodni mjesec")} style={arrow}>‹</button>
+        <div style={{ textAlign: "center", minWidth: 0 }}>
+          <div style={{ fontWeight: 800, fontSize: 17 }}>{mName(Number(mk.slice(5, 7)) - 1)} {mk.slice(0, 4)}</div>
+          <input type="month" value={mk} onChange={(e) => e.target.value && setMk(e.target.value)} aria-label={tr("Mjesec")} style={{ width: 150, marginTop: 4 }} />
+        </div>
+        <button onClick={() => shift(1)} aria-label={tr("Sljedeći mjesec")} style={arrow}>›</button>
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 10 }}>
+        {box(tr("Izdane"), out, S.blueSoft)}
+        {box(tr("Primljene"), inn, S.amberSoft)}
+      </div>
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 6 }}>
+        {chipBtn("all", side, setSide, `${tr("Sve")} (${monthRows.length})`)}
+        {chipBtn("out", side, setSide, `${tr("Izdane")} (${out.length})`)}
+        {chipBtn("in", side, setSide, `${tr("Primljene")} (${inn.length})`)}
+      </div>
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 10 }}>
+        {chipBtn("all", filter, setFilter, tr("Plaćene i neplaćene"))}
+        {chipBtn("unpaid", filter, setFilter, tr("Neplaćene"))}
+        {chipBtn("paid", filter, setFilter, tr("Plaćene"))}
+      </div>
+      {shown.length === 0
+        ? <div style={{ color: S.sub, fontSize: 13, padding: "8px 0" }}>{tr("Nema faktura za ovaj mjesec.")}</div>
+        : shown.map((r) => <InvoicePayRow key={r.kind + r.inv.id} r={r} api={api} />)}
+      {shown.length > 0 && (
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 8, paddingTop: 10, fontWeight: 800, fontSize: 13.5 }}>
+          <span>{tr("Ukupno")} ({shown.length})</span><span className="num">{sumBy(shown)}</span>
+        </div>
+      )}
+      <div style={{ fontSize: 11.5, color: S.sub, marginTop: 10 }}>
+        {tr("Izdane fakture se vežu uz razdoblje (mjesec rada), primljene uz DUZP.")}
+      </div>
+    </Card>
+  );
 }
 
 function AdminPanels({ data, api, panel, setPanel, onOpenWorker, onOpenProfile }) {
