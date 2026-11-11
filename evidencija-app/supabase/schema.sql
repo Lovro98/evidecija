@@ -1049,3 +1049,42 @@ create index if not exists office_paid_worker_idx on public.office_paid(worker_i
 alter table public.office_paid enable row level security;
 create policy op_admin_all on public.office_paid for all
   using ((select public.is_admin())) with check ((select public.is_admin()));
+
+-- SAMI PLAĆAJU (2026-11-11): zaposleni preko mzdy koji sve troškove plaćaju sami; povezivanje s radnikom = odbitak na njegovoj koverti
+alter table public.workers add column if not exists is_self_pay boolean not null default false;
+alter table public.workers add column if not exists linked_worker_id uuid references public.workers(id) on delete set null;
+create table if not exists public.self_pay_months (
+  id uuid primary key default gen_random_uuid(),
+  worker_id uuid not null references public.workers(id) on delete cascade,
+  month text not null check (month ~ '^\d{4}-\d{2}$'),
+  dobirka numeric not null default 0, zdrav numeric not null default 0, soc numeric not null default 0,
+  dan numeric not null default 0, pojist numeric not null default 0, total numeric not null default 0,
+  linked_worker_id uuid references public.workers(id) on delete set null,
+  created_by uuid default auth.uid(), updated_at timestamptz not null default now(),
+  unique (worker_id, month)
+);
+alter table public.self_pay_months enable row level security;
+create policy spm_admin_all on public.self_pay_months for all using ((select public.is_admin())) with check ((select public.is_admin()));
+create table if not exists public.self_pay_paid (
+  id uuid primary key default gen_random_uuid(),
+  worker_id uuid not null references public.workers(id) on delete cascade,
+  month text not null check (month ~ '^\d{4}-\d{2}$'),
+  amount numeric not null check (amount > 0),
+  pay_date date not null default current_date,
+  created_by uuid default auth.uid(), created_at timestamptz not null default now(), deleted_at timestamptz
+);
+alter table public.self_pay_paid enable row level security;
+create policy spp_admin_all on public.self_pay_paid for all using ((select public.is_admin())) with check ((select public.is_admin()));
+
+-- MZDY INFO (2026-11-11): vrsta ugovora i sati s pásky (samo admin)
+create table if not exists public.mzdy_info (
+  id uuid primary key default gen_random_uuid(),
+  worker_id uuid not null references public.workers(id) on delete cascade,
+  month text not null check (month ~ '^\d{4}-\d{2}$'),
+  kat text not null default '', hours numeric not null default 0, days numeric not null default 0, fond_hours numeric not null default 0,
+  tarif numeric not null default 0, hruba numeric not null default 0, dobirka numeric not null default 0,
+  created_by uuid default auth.uid(), updated_at timestamptz not null default now(),
+  unique (worker_id, month)
+);
+alter table public.mzdy_info enable row level security;
+create policy mi_admin_all on public.mzdy_info for all using ((select public.is_admin())) with check ((select public.is_admin()));
