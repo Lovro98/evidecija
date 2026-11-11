@@ -610,7 +610,8 @@ function mzdyOfficeRow(data, w, p, mo) {
   const emp = round2((p.zdrav || 0) + (p.soc || 0)), firm = round2(p.pojist || 0);
   const contrib = round2(emp + firm);
   const bankNow = p.dobirka > 0 ? p.dobirka : exBank;
-  const cashPlan = sal ? round2(sal.salary - bankNow) : null;
+  const allBank = !!sal && sal.salary > 0 && sal.bank >= sal.salary;
+  const cashPlan = sal ? (allBank ? 0 : round2(sal.salary - bankNow)) : null;
   return {
     rawName: p.name, kat: p.kat, tarif: p.tarif, corrected: p.corrected, src: p, workerId: w.id, currency: "CZK", office: true,
     socZdr: "0", bank: String(p.dobirka || 0), dobirkaKc: p.dobirka, contrib: String(contrib),
@@ -619,11 +620,11 @@ function mzdyOfficeRow(data, w, p, mo) {
     needSalary: !sal, newSalary: !sal && p.dobirka > 0 ? String(p.dobirka) : "",
     include: !locked, addBank: p.dobirka > 0, exBank, exNote: 0, locked,
     warn: [
-      sal && p.dobirka > 0 && Math.round(p.dobirka) !== Math.round(sal.bank) ? `Páska kaže ${czk(p.dobirka)} na račun, a u Uredu je dogovoreno ${czk(sal.bank)}` : "",
+      sal && !allBank && p.dobirka > 0 && Math.round(p.dobirka) !== Math.round(sal.bank) ? `Páska kaže ${czk(p.dobirka)} na račun, a u Uredu je dogovoreno ${czk(sal.bank)}` : "",
       !sal ? "u Uredu još nema plaće — upisat će se iz pásky od ovog mjeseca (ako dobiva i gotovinu, upiši ukupnu plaću)" : "",
       exBank > 0 ? `već upisano na račun ${czk(exBank)}${Math.round(exBank) === Math.round(p.dobirka) ? " (isto)" : " — zamijenit će se iznosom iz pásky"}` : "",
       exContrib > 0 ? `doprinosi već upisani ${czk(exContrib)} — zamijenit će se` : "",
-      sal && sal.salary > 0 && bankNow > sal.salary ? "na račun je više od plaće — provjeri" : "",
+      sal && !allBank && sal.salary > 0 && bankNow > sal.salary ? "na račun je više od plaće — provjeri" : "",
       locked ? "gotovina za taj mjesec je odobrena i zaključana" : "",
     ].filter(Boolean),
   };
@@ -665,11 +666,13 @@ async function saveMzdyOfficeRow(data, r, mo, lastDay, tag, uid) {
   const other = pays.filter((x) => x.type !== "racun");
   const plus = other.filter((x) => x.type === "bonus").reduce((t, x) => t + x.amount, 0);
   const minus = other.filter((x) => x.type === "avans" || (x.type !== "bonus" && x.deduct)).reduce((t, x) => t + x.amount, 0);
-  const cash = round2(sal.salary + plus - bank - minus);
+  const allBank = sal.salary > 0 && sal.bank >= sal.salary;
+  const cash = allBank ? round2(plus - minus) : round2(sal.salary + plus - bank - minus);
   const payout = office.payouts.find((x) => x.workerId === r.workerId && x.month === mo);
   if (payout && payout.approved) return;
   if (payout) {
-    if (round2(payout.amountKc) !== cash) { const { error } = await supabase.from("payouts").update({ amount: 0, amount_czk: Math.max(cash, 0) }).eq("id", payout.id); if (error) throw error; }
+    if (cash <= 0) { const { error } = await supabase.from("payouts").update({ deleted_at: new Date().toISOString() }).eq("id", payout.id); if (error) throw error; }
+    else if (round2(payout.amountKc) !== cash) { const { error } = await supabase.from("payouts").update({ amount: 0, amount_czk: cash }).eq("id", payout.id); if (error) throw error; }
   } else if (cash > 0) {
     const { error } = await supabase.from("payouts").insert({ worker_id: r.workerId, month: mo, amount: 0, amount_czk: cash, approved: false, created_by: uid });
     if (error) throw error;
@@ -7935,7 +7938,9 @@ function officeRows(office, mo) {
       const contrib = sum((p) => p.type !== "racun" && p.type !== "bonus" && p.type !== "avans" && !p.deduct);
       const booked = pays.some((p) => p.type === "racun") || office.payouts.some((x) => x.workerId === w.id && x.month === mo);
       const bank = booked ? bankPaid : plannedBank;
-      const cash = round2(salary + bonuses - bank - advances - deductions);
+      // sve na banku (banka = plaća): gotovine nema — vrijedi koliko páska stvarno pošalje na račun
+      const allBank = !!sal && sal.salary > 0 && sal.bank >= sal.salary;
+      const cash = allBank ? round2(bonuses - advances - deductions) : round2(salary + bonuses - bank - advances - deductions);
       const payout = office.payouts.find((x) => x.workerId === w.id && x.month === mo) || null;
       const paidRecs = (office.paid || []).filter((x) => x.workerId === w.id && x.month === mo);
       const bankRec = paidRecs.find((x) => x.kind === "bank") || null;
@@ -8105,7 +8110,7 @@ function OfficePanel({ data, api }) {
                 <Field label={tr("Od toga na banku")}><input inputMode="decimal" value={salEdit.bank} onChange={(e) => setSalEdit({ ...salEdit, bank: e.target.value })} /></Field>
                 <Field label={tr("Vrijedi od mjeseca")}><input type="month" value={salEdit.fromMonth} onChange={(e) => setSalEdit({ ...salEdit, fromMonth: e.target.value })} /></Field>
               </div>
-              <div style={{ fontSize: 11.5, color: S.sub, marginBottom: 6 }}>{tr("Gotovina = plaća − banka. Raniji mjeseci ostaju po staroj plaći.")}</div>
+              <div style={{ fontSize: 11.5, color: S.sub, marginBottom: 6 }}>{tr("Gotovina = plaća − banka. Ako je banka = plaća, gotovine nema (na račun ide koliko kaže páska). Raniji mjeseci ostaju po staroj plaći.")}</div>
               <div style={{ display: "flex", gap: 6 }}><Btn small onClick={saveSalary}>{tr("Spremi plaću")}</Btn><Btn small kind="ghost" onClick={() => setSalEdit(null)}>{tr("Odustani")}</Btn></div>
             </div>
           )}
