@@ -1,5 +1,10 @@
 // Češki prijevodi za tr() — ključ je hrvatski tekst iz App.jsx (isto kao i18n_uk.js)
 export const TR_CS = {
+ "Isplata ukupno (banka + gotovina)": "Výplata celkem (banka + hotovost)",
+ "🏦 Preko banke (na račun)": "🏦 Přes banku (na účet)",
+ "💵 Gotovina (koverte)": "💵 Hotovost (obálky)",
+ "Od koverti odbijen soc.-zdr.": "Z obálek odečteno soc.-zdr.",
+ "(ostaje firmi za osiguranje)": "(zůstává firmě na pojištění)",
  "Sve gotovina — Dobírku s mzdy (na račun) ne odbijaj s koverte": "Vše hotově — Dobírku z mezd (na účet) neodečítat z obálky",
  ", drugi tarif ili nepuni mjesec (zdrav. + soc. + pojistné) / 2, DPČ 0) i": ", jiný tarif nebo neúplný měsíc (zdrav. + soc. + pojistné) / 2, DPČ 0) a",
  ", drugi tarif (zdrav. + soc. + pojistné) / 2, DPČ 0) i": ", jiný tarif (zdrav. + soc. + pojistné) / 2, DPČ 0) a",

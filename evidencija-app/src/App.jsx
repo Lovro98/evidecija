@@ -10876,7 +10876,13 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
     net: round2(t.net + r.net), firm: round2(t.firm + r.firmCosts), bonus: round2(t.bonus + r.bonuses),
     netKc: round2(t.netKc + r.czk.net), firmKc: round2(t.firmKc + r.czk.firmCosts),
     grossKc: round2(t.grossKc + r.grossKc), bonusKc: round2(t.bonusKc + r.czk.bonuses),
-  }), { hours: 0, gross: 0, net: 0, firm: 0, bonus: 0, netKc: 0, firmKc: 0, grossKc: 0, bonusKc: 0 });
+    bank: round2(t.bank + (r.bank || 0)), bankKc: round2(t.bankKc + (r.czk.bank || 0)),
+    soc: round2(t.soc + (view === "month" ? notesSum(notesFor(data, r.w.id, month), "EUR") : 0)),
+    socKc: round2(t.socKc + (view === "month" ? notesSum(notesFor(data, r.w.id, month), "CZK") : 0)),
+  }), { hours: 0, gross: 0, net: 0, firm: 0, bonus: 0, netKc: 0, firmKc: 0, grossKc: 0, bonusKc: 0, bank: 0, bankKc: 0, soc: 0, socKc: 0 });
+  // isplata radnicima ukupno = na račun (banka) + gotovina (koverte); soc.-zdr. ostaje firmi za ČSSZ/VZP
+  const cashE = round2(totals.net - totals.soc), cashK = round2(totals.netKc - totals.socKc);
+  const paidE = round2(cashE + totals.bank), paidK = round2(cashK + totals.bankKc);
 
   const objPays = data.payments.filter((p) => !p.workerId && p.objectId && (view === "month" ? inMonth : inYear)(p.date));
   const brigadeCostsTotal = round2(periodBrigade.filter((bg) => (bg.currency || "CZK") === "EUR").reduce((s, bg) => s + bg.amount, 0));
@@ -11507,14 +11513,20 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
                 <TwoCur e={round2(totals.gross + totals.bonus)} k={round2(totals.grossKc + totals.bonusKc)} />
                 {showCombinedEur && round2(totals.grossKc + totals.bonusKc) !== 0 && <div className="num" style={{ fontSize: 11.5, color: "#9DB3A8" }}>≈ {eur(round2(totals.gross + totals.bonus + (totals.grossKc + totals.bonusKc) / czkRate))} {tr("ukupno")}</div>}
               </div>
-              <div><div style={{ color: "#9DB3A8" }}>{api.t("toPay")}</div>
-                <TwoCur e={totals.net} k={totals.netKc} color="#7FD6B4" />
-                {showCombinedEur && totals.netKc !== 0 && <div className="num" style={{ fontSize: 11.5, color: "#9DB3A8" }}>≈ {eur(round2(totals.net + totals.netKc / czkRate))} {tr("ukupno")}</div>}
+              <div><div style={{ color: "#9DB3A8" }}>{tr("Isplata ukupno (banka + gotovina)")}</div>
+                <TwoCur e={paidE} k={paidK} color="#7FD6B4" />
+                {showCombinedEur && paidK !== 0 && <div className="num" style={{ fontSize: 11.5, color: "#9DB3A8" }}>≈ {eur(round2(paidE + paidK / czkRate))} {tr("ukupno")}</div>}
               </div>
               <div><div style={{ color: "#9DB3A8" }}>{api.t("firmCosts")}</div>
                 <TwoCur e={round2(totals.firm + objCostsTotal)} k={round2(totals.firmKc + objCostsTotalKc)} />
                 {showCombinedEur && round2(totals.firmKc + objCostsTotalKc) !== 0 && <div className="num" style={{ fontSize: 11.5, color: "#9DB3A8" }}>≈ {eur(round2(totals.firm + objCostsTotal + (totals.firmKc + objCostsTotalKc) / czkRate))} {tr("ukupno")}</div>}
               </div>
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, fontSize: 13.5, marginTop: 12, paddingTop: 10, borderTop: "1px solid rgba(255,255,255,.15)" }}>
+              <div><div style={{ color: "#9DB3A8" }}>{tr("🏦 Preko banke (na račun)")}</div><TwoCur e={totals.bank} k={totals.bankKc} /></div>
+              <div><div style={{ color: "#9DB3A8" }}>{tr("💵 Gotovina (koverte)")}</div><TwoCur e={cashE} k={cashK} color="#7FD6B4" /></div>
+              {(totals.soc !== 0 || totals.socKc !== 0) && <div style={{ gridColumn: "1 / -1", fontSize: 12, color: "#9DB3A8" }}>
+                {tr("Od koverti odbijen soc.-zdr.")}{" "}{[totals.soc ? eur(totals.soc) : "", totals.socKc ? czk(totals.socKc) : ""].filter(Boolean).join(" + ")}{" "}{tr("(ostaje firmi za osiguranje)")}</div>}
             </div>
           </Card>
 

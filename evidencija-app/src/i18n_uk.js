@@ -1,6 +1,11 @@
 // Ukrajinski prijevod: ključ je hrvatski tekst iz App.jsx (tr("…")).
 // Kad nema prijevoda, prikazuje se hrvatski.
 export const TR_UK = {
+ "Isplata ukupno (banka + gotovina)": "Виплата всього (банк + готівка)",
+ "🏦 Preko banke (na račun)": "🏦 Через банк (на рахунок)",
+ "💵 Gotovina (koverte)": "💵 Готівка (конверти)",
+ "Od koverti odbijen soc.-zdr.": "З конвертів віднято soc.-zdr.",
+ "(ostaje firmi za osiguranje)": "(залишається фірмі на страхування)",
  "Sve gotovina — Dobírku s mzdy (na račun) ne odbijaj s koverte": "Усе готівкою — Dobírku з mzdy (на рахунок) не віднімати з конверта",
  ", drugi tarif ili nepuni mjesec (zdrav. + soc. + pojistné) / 2, DPČ 0) i": ", інший тариф або неповний місяць (zdrav. + soc. + pojistné) / 2, DPČ 0) і",
  ", drugi tarif (zdrav. + soc. + pojistné) / 2, DPČ 0) i": ", інший тариф (zdrav. + soc. + pojistné) / 2, DPČ 0) і",
