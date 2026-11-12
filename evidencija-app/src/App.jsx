@@ -139,6 +139,24 @@ const LogSpanLabel = ({ l }) => l.monthly
 const parseNum = (v) => parseFloat(String(v || "").replace(",", "."));
 const TYPE_LABEL = { avans: "Avans", bonus: "Bonus", gorivo: "Gorivo", ostalo: "Ostali trošak", racun: "Na račun (banka)" };
 const MZDY_NOTE_LABEL = "soc. + zdr.";
+// firma s pásky (Molnar Rose, Lamiclean …) → kratki naziv; bez firme = Molnar (naša)
+const DEFAULT_FIRM = "Molnar";
+const LEGAL_FORM_RE = /\b(s\.\s?r\.\s?o\.?|spol\.\s*s\s*r\.\s*o\.?|a\.\s?s\.|v\.\s?o\.\s?s\.|k\.\s?s\.)/i;
+const firmShort = (name) => {
+  const clean = String(name || "").replace(/^(firma|zam[eě]stnavatel|organizace|spole[cč]nost|pl[aá]tce)\s*:?\s*/i, "").replace(LEGAL_FORM_RE, "").replace(/[,.&]/g, " ").trim();
+  const w = clean.split(/\s+/)[0] || "";
+  if (!w) return DEFAULT_FIRM;
+  return w.charAt(0).toUpperCase() + w.slice(1).toLowerCase();
+};
+const isDefaultFirm = (f) => !f || f.toLowerCase() === DEFAULT_FIRM.toLowerCase();
+const firmNoteLabel = (firm) => `${MZDY_NOTE_LABEL} ${firm || DEFAULT_FIRM}`;
+// soc.-zdr. napomena iz uvoza za tu firmu (stara bez firme vrijedi kao Molnar)
+const isFirmNote = (n, firm) => (n.note || "") === firmNoteLabel(firm) || (isDefaultFirm(firm) && (n.note || "") === MZDY_NOTE_LABEL);
+// "na račun" iz uvoza za tu firmu (stari tag "Dobírka (Mzdy PDF …)" vrijedi kao Molnar)
+const isFirmPdfBank = (x, firm) => /Mzdy PDF/.test(x.note || "") && ((x.note || "").startsWith(`Dobírka ${firm || DEFAULT_FIRM} (`) || (isDefaultFirm(firm) && /^Dobírka \(Mzdy PDF/.test(x.note || "")));
+// sve soc.-zdr. napomene radnika za mjesec (može ih biti više — po firmi)
+const notesFor = (data, workerId, mo) => (data.payrollNotes || []).filter((n) => n.workerId === workerId && n.month === mo);
+const notesSum = (notes, cur) => round2((notes || []).filter((n) => n.currency === cur).reduce((t, n) => t + n.amount, 0));
 
 /* ---------- jezici (HR / CZ / UK) ---------- */
 // zasad samo hrvatski i ukrajinski (CZ/RU skriveni dok ne budu potpuno prevedeni)
@@ -560,9 +578,15 @@ function parseMzdyPasky(lines) {
   const out = [];
   let cur = null;
   const push = () => { if (cur && cur.name) out.push(cur); cur = null; };
+  let firm = "", fileFirm = "";
   for (const line of lines) {
+    // naziv firme (s.r.o. / a.s. …) u zaglavlju pásky
+    if (LEGAL_FORM_RE.test(line) && !/poj|K\s*č/i.test(line)) {
+      firm = firmShort(line); if (!fileFirm) fileFirm = firm;
+      if (cur && !cur.firm) cur.firm = firm;
+    }
     const m = line.match(/(\d{2,6})\s*\S{0,3}\s*([A-ZÁ-Ž][A-Za-zÁ-Žá-ž]+(?:\s+[A-Za-zÁ-Žá-ž]+)+?)\s*\S{0,3}\s*(\d{6}\/\d{3,4})\s*\S{0,3}\s*(\S{2,4})\s*\S{0,3}\s*(\d{4})\s*\/\s*(\d{2})/);
-    if (m) { push(); cur = { name: m[2].trim(), kat: m[4].toUpperCase(), month: `${m[5]}-${m[6]}`, tarif: 0, zdrav: 0, soc: 0, pojist: 0, dobirka: 0, hruba: 0, hours: 0, days: 0, fondHours: 0, zaloha: 0, sleva: 0 }; continue; }
+    if (m) { push(); cur = { name: m[2].trim(), kat: m[4].toUpperCase(), month: `${m[5]}-${m[6]}`, firm, tarif: 0, zdrav: 0, soc: 0, pojist: 0, dobirka: 0, hruba: 0, hours: 0, days: 0, fondHours: 0, zaloha: 0, sleva: 0 }; continue; }
     if (!cur) continue;
     const dh = line.match(/(\d+(?:[.,]\d+)?)\s*dny\s+(\d+(?:[.,]\d+)?)\s*hod/i);
     if (dh && /Odpracov/i.test(line)) { cur.days = czNum(dh[1]); cur.hours = czNum(dh[2]); }
@@ -578,6 +602,7 @@ function parseMzdyPasky(lines) {
     else if (/Sleva\s*na\s*dani/i.test(line)) cur.sleva = mzdyAmount(line);
   }
   push();
+  out.forEach((p) => { if (!p.firm) p.firm = fileFirm || DEFAULT_FIRM; });
   return out;
 }
 // mzdové náklady → { prezime: dobírka } za provjeru
@@ -7439,8 +7464,8 @@ function contractOf(data, workerId) {
   const k = x.kat.toUpperCase().replace("DPC", "DPČ");
   if (k !== "HPP") return { label: k, month: x.month, tone: "amber" };
   // puni/pola/ostalo po tarifu s pásky (bez tarifa po satima)
-  const k = hppKind(x);
-  return { label: HPP_LABEL[k], month: x.month, tone: k === "full" ? "green" : k === "half" ? "blue" : "amber" };
+  const hk = hppKind(x);
+  return { label: HPP_LABEL[hk], month: x.month, tone: hk === "full" ? "green" : hk === "half" ? "blue" : "amber" };
 }
 function ContractTag({ data, workerId, admin, small }) {
   if (!admin) return null;
@@ -7495,10 +7520,10 @@ function WorkerDetail({ worker, data, api, onBack }) {
   const shiftEnvMonth = (d) => { const [yy, mm] = envMonth.split("-").map(Number); const dt = new Date(yy, mm - 1 + d, 1); setEnvMonth(`${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, "0")}`); };
   const envRow = useMemo(() => calcRows({ ...data, workers: [worker] }, (d) => monthKey(d) === envMonth).find((r) => r.w.id === worker.id) || null,
     [data, worker, envMonth]);
-  const envNote = (data.payrollNotes || []).find((n) => n.workerId === worker.id && n.month === envMonth);
+  const envNotes = notesFor(data, worker.id, envMonth);
   const envCash = envRow ? (wCur(worker) === "CZK"
-    ? round2(envRow.czk.net - (envNote && envNote.currency === "CZK" ? envNote.amount : 0))
-    : round2(envRow.net - (envNote && envNote.currency === "EUR" ? envNote.amount : 0))) : 0;
+    ? round2(envRow.czk.net - notesSum(envNotes, "CZK"))
+    : round2(envRow.net - notesSum(envNotes, "EUR"))) : 0;
   const envBank = envRow ? bankAmountsFor(envRow) : [];
   const envPrintable = !!envRow && (envCash !== 0 || envBank.length > 0 || envRow.net !== 0 || envRow.czk.net !== 0);
 
@@ -10126,9 +10151,9 @@ function printEnvelopesDoc(data, list, { view = "month", month, admin, title }) 
     const pages = list.map((r) => {
       const objs = [...new Set(r.logs.map((l) => objName(l.objectId)).filter(Boolean))];
       const objLine = r.objLabel || (objs.length ? objs.join(", ") : (objName(r.w.objectId) || ""));
-      const note = view === "month" ? (data.payrollNotes || []).find((n) => n.workerId === r.w.id && n.month === month) : null;
-      const netE = round2(r.net - (note && note.currency === "EUR" ? note.amount : 0));
-      const netK = round2(r.czk.net - (note && note.currency === "CZK" ? note.amount : 0));
+      const notes = view === "month" ? notesFor(data, r.w.id, month) : [];
+      const netE = round2(r.net - notesSum(notes, "EUR"));
+      const netK = round2(r.czk.net - notesSum(notes, "CZK"));
       const gc = wCur(r.w);
       // koverta se ispisuje i kad je gotovina 0, ako je nešto išlo na račun (BANK redak)
       if (netE === 0 && netK === 0 && !r.bank && !r.czk.bank) return "";
@@ -10136,7 +10161,6 @@ function printEnvelopesDoc(data, list, { view = "month", month, admin, title }) 
         netE !== 0 ? eur(netE) : "",
         netK !== 0 ? czk(netK) : "",
       ].filter(Boolean);
-      const noteLabel = note?.note || MZDY_NOTE_LABEL;
       const multiPos = (r.byPos || []).length > 1;
       const posLines = multiPos ? r.byPos.map((b) => `<div>${esc(posShort(b.position) || "sati")}: ${fmtH(b.hours)} × ${money(b.rate, gc)} = ${money(b.amount, gc)}</div>`).join("") : "";
       const breakdown = [
@@ -10145,7 +10169,7 @@ function printEnvelopesDoc(data, list, { view = "month", month, admin, title }) 
         ...r.pays.filter((p) => p.type === "bonus").map((p) => `${p.note || "bonus"} +${money(p.amount, p.currency)}`),
         r.advances ? "avans −" + eur(r.advances) : "", r.czk.advances ? "avans −" + czk(r.czk.advances) : "",
         ...r.pays.filter((p) => p.type !== "avans" && p.type !== "bonus" && p.type !== "racun" && p.deduct).map((p) => `${p.note || "odbitak"} −${money(p.amount, p.currency)}`),
-        note ? `${noteLabel} −${money(note.amount, note.currency)}` : "",
+        ...notes.map((n) => `${n.note || MZDY_NOTE_LABEL} −${money(n.amount, n.currency)}`),
       ].filter(Boolean).join(" · ");
       const envPeriodLabel = view === "month" ? `${m}. ${y}.` : `${y}.`;
       return `<div class="env">
@@ -10691,7 +10715,7 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
         else if (type === "prikazy") { prikazy = parseMzdyPrikazy(lines); docs.push(`${f.name}: příkazy k úhradě`); }
         else {
           const list = parseMzdyPasky(lines);
-          list.forEach((p) => people.set(normName(p.name), { ...p, corrected: people.has(normName(p.name)) }));
+          list.forEach((p) => { const k = normName(p.name) + "|" + (p.firm || DEFAULT_FIRM).toLowerCase(); people.set(k, { ...p, corrected: people.has(k) }); });
           docs.push(`${f.name}: ${list.length} pásky${/oprav/i.test(f.name) ? " (oprava)" : ""}`);
         }
       }
@@ -10714,11 +10738,11 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
         const nk = naklady.find((n) => plainTokens(p.name)[0] === plainTokens(n.surname)[0] && plainTokens(p.name).slice(1).join(" ").startsWith(plainTokens(n.first).join(" ").slice(0, 5)));
         const exBank = w ? round2(data.payments.filter((x) => x.workerId === w.id && x.type === "racun" && monthKey(x.date) === mo && (x.currency || "EUR") === cur && !/Mzdy PDF/.test(x.note || "")).reduce((s, x) => s + x.amount, 0)) : 0;
         const bankAmt = Number(conv(p.dobirka));
-        const exNote = w ? (data.payrollNotes || []).filter((n) => n.workerId === w.id && n.month === mo).reduce((s, n) => s + n.amount, 0) : 0;
-        const exPdfBank = w ? round2(data.payments.filter((x) => x.workerId === w.id && x.type === "racun" && monthKey(x.date) === mo && /Mzdy PDF/.test(x.note || "")).reduce((s, x) => s + x.amount, 0)) : 0;
+        const exNote = w ? notesFor(data, w.id, mo).filter((n) => isFirmNote(n, p.firm)).reduce((s, n) => s + n.amount, 0) : 0;
+        const exPdfBank = w ? round2(data.payments.filter((x) => x.workerId === w.id && x.type === "racun" && monthKey(x.date) === mo && isFirmPdfBank(x, p.firm)).reduce((s, x) => s + x.amount, 0)) : 0;
         const locked = w ? !!paidFor(data, w.id, mo)?.approved : false;
         return {
-          rawName: p.name, kat: p.kat, tarif: p.tarif, corrected: p.corrected, workerId: w?.id || "", currency: cur, src: p,
+          rawName: p.name, firm: p.firm || DEFAULT_FIRM, kat: p.kat, tarif: p.tarif, corrected: p.corrected, workerId: w?.id || "", currency: cur, src: p,
           socZdr: conv(soc), bank: conv(p.dobirka), dobirkaKc: p.dobirka,
           office: false, contrib: "0", contribDetail: "",
           include: !!w && !locked, addBank: !!w && p.dobirka > 0 && !(exBank > 0),
@@ -10726,7 +10750,7 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
           warn: [
             nk && Math.round(nk.dobirka) !== Math.round(p.dobirka) ? `Mzdové náklady kažu ${czk(nk.dobirka)} na račun` : "",
             exBank > 0 ? `već ručno upisano na račun ${money(exBank, cur)}${Math.round(exBank) === Math.round(bankAmt) ? " (isto)" : ""}` : "",
-            !locked && (exNote > 0 || exPdfBank > 0) ? `već uvezeno za ovaj mjesec (soc.-zdr. ${money(exNote, cur)}, na račun ${money(exPdfBank, cur)}) — zamijenit će se ovom páskou` : "",
+            !locked && (exNote > 0 || exPdfBank > 0) ? `već uvezeno za ovaj mjesec za ${p.firm || DEFAULT_FIRM} (soc.-zdr. ${money(exNote, cur)}, na račun ${money(exPdfBank, cur)}) — zamijenit će se ovom páskou` : "",
             locked ? "mjesec je odobren i zaključan" : "",
           ].filter(Boolean),
         };
@@ -10750,7 +10774,15 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
     const tag = `Dobírka (Mzdy PDF ${String(mm).padStart(2, "0")}/${yy})`;
     const ok = await api.run(async () => {
       // samo za admina: vrsta ugovora (HPP/DPČ…) i sati s pásky — ne ide na koverte
-      const info = mzdyReview.rows.filter((r) => r.workerId && r.src).map((r) => ({ worker_id: r.workerId, month: mo, kat: r.src.kat || "",
+      // radnik na dvije firme → podaci s Molnar pásky; druga firma samo ako Molnar pásky nema
+      const infoRows = new Map();
+      mzdyReview.rows.filter((r) => r.workerId && r.src).forEach((r) => {
+        const had = infoRows.get(r.workerId);
+        const existing = (data.mzdyInfo || []).some((i) => i.workerId === r.workerId && i.month === mo);
+        if (!isDefaultFirm(r.firm) && (had || existing)) return;
+        if (!had || isDefaultFirm(r.firm)) infoRows.set(r.workerId, r);
+      });
+      const info = [...infoRows.values()].map((r) => ({ worker_id: r.workerId, month: mo, kat: r.src.kat || "",
         hours: r.src.hours || 0, days: r.src.days || 0, fond_hours: r.src.fondHours || 0, tarif: r.src.tarif || 0, hruba: r.src.hruba || 0,
         dobirka: r.src.dobirka || 0, created_by: uid, updated_at: new Date().toISOString() }));
       if (info.length) { const { error } = await supabase.from("mzdy_info").upsert(info, { onConflict: "worker_id,month" }); if (error) throw error; }
@@ -10758,15 +10790,16 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
       for (const r of rows.filter((x) => x.selfPay)) await saveSelfPayRow(data, r, mo, lastDay, uid);
       for (const r of rows.filter((x) => !x.office && !x.selfPay)) {
         const soc = round2(parseNum(r.socZdr) || 0);
-        // soc.-zdr.: stara napomena za taj mjesec se zamjenjuje novom
-        const old = (data.payrollNotes || []).filter((n) => n.workerId === r.workerId && n.month === mo);
+        // soc.-zdr.: stara napomena te firme za taj mjesec se zamjenjuje novom (druga firma ostaje)
+        const firm = r.firm || DEFAULT_FIRM;
+        const old = notesFor(data, r.workerId, mo).filter((n) => isFirmNote(n, firm));
         if (old.length) {
           const { error } = await supabase.from("payroll_notes").update({ deleted_at: new Date().toISOString() }).in("id", old.map((n) => n.id));
           if (error) throw error;
         }
         if (soc > 0) {
           const { error } = await supabase.from("payroll_notes").insert({ worker_id: r.workerId, month: mo, amount: soc, currency: r.currency,
-            source_czk: r.currency === "CZK" ? soc : round2(soc * czkRate), note: MZDY_NOTE_LABEL, created_by: uid });
+            source_czk: r.currency === "CZK" ? soc : round2(soc * czkRate), note: firmNoteLabel(firm), created_by: uid });
           if (error) throw error;
         }
         // na račun (Dobírka): prethodni uvoz iz PDF-a se zamjenjuje, ručni upisi ostaju
@@ -10774,7 +10807,7 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
         // oprava s Dobírkom 0 → briše raniji upis iz PDF-a za taj mjesec
         const zeroNow = r.src && !(r.src.dobirka > 0);
         if ((r.addBank && bank > 0) || zeroNow) {
-          const prev = data.payments.filter((x) => x.workerId === r.workerId && x.type === "racun" && monthKey(x.date) === mo && /Mzdy PDF/.test(x.note || ""));
+          const prev = data.payments.filter((x) => x.workerId === r.workerId && x.type === "racun" && monthKey(x.date) === mo && isFirmPdfBank(x, firm));
           if (prev.length) {
             const { error } = await supabase.from("payments").update({ deleted_at: new Date().toISOString() }).in("id", prev.map((x) => x.id));
             if (error) throw error;
@@ -10782,7 +10815,7 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
         }
         if (r.addBank && bank > 0) {
           const { error } = await supabase.from("payments").insert({ worker_id: r.workerId, object_id: null, pay_date: lastDay, type: "racun",
-            amount: bank, note: tag, deduct: true, currency: r.currency, created_by: uid });
+            amount: bank, note: `Dobírka ${firm} (Mzdy PDF ${String(mm).padStart(2, "0")}/${yy})`, deduct: true, currency: r.currency, created_by: uid });
           if (error) throw error;
         }
       }
@@ -10890,12 +10923,13 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
   }
 
   /* razrada obračuna jednog radnika — ista za ekran i PDF (oznake su hrvatske, na ekranu idu kroz tr) */
-  const noteFor = (r) => (view === "month" ? (data.payrollNotes || []).find((n) => n.workerId === r.w.id && n.month === month) : null);
+  const notesOf = (r) => (view === "month" ? notesFor(data, r.w.id, month) : []);
   const amtText = (e, k, gc) => [e ? eur(e) : "", k ? czk(k) : ""].filter(Boolean).join(" + ") || money(0, gc);
   const bankLabel = (r) => bankLabelFor(r, admin);
   const esc = escHtml;
   const breakdownOf = (r) => {
-    const note = noteFor(r);
+    const notes = notesOf(r);
+    const note = notes[0] || null;
     const gc = wCur(r.w);
     const items = [
       { label: "Zarada", hint: fmtH(r.hours), e: r.gross, k: r.grossKc, sign: "", always: true },
@@ -10904,11 +10938,11 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
       { label: "Avans", e: r.advances, k: r.czk.advances, sign: "−" },
       { label: "Odbici", e: r.deductions, k: r.czk.deductions, sign: "−" },
       { label: admin ? bankLabel(r) : "Na račun (banka)", e: r.bank, k: r.czk.bank, sign: "−" },
-      note ? { label: note.note || MZDY_NOTE_LABEL, e: note.currency === "EUR" ? note.amount : 0, k: note.currency === "CZK" ? note.amount : 0, sign: "−" } : null,
+      ...notes.map((n) => ({ label: n.note || MZDY_NOTE_LABEL, e: n.currency === "EUR" ? n.amount : 0, k: n.currency === "CZK" ? n.amount : 0, sign: "−" })),
     ].filter((x) => x && (x.always || x.e || x.k));
-    const netE = round2(r.net - (note && note.currency === "EUR" ? note.amount : 0));
-    const netK = round2(r.czk.net - (note && note.currency === "CZK" ? note.amount : 0));
-    return { items, netE, netK, note, gc, netText: amtText(netE, netK, gc) };
+    const netE = round2(r.net - notesSum(notes, "EUR"));
+    const netK = round2(r.czk.net - notesSum(notes, "CZK"));
+    return { items, netE, netK, note, notes, gc, netText: amtText(netE, netK, gc) };
   };
 
   const receiptOf = (r, L = (x) => x) => { const bd = breakdownOf(r); return { net: bd.netText,
@@ -11336,7 +11370,7 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
                 <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
                   <input type="checkbox" checked={row.include} disabled={row.locked || !row.workerId} onChange={(e) => setRow(i, { include: e.target.checked })} style={{ width: 18, height: 18 }} />
                   <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontWeight: 700, fontSize: 14.5 }}>{row.rawName} {row.office && <Tag color={S.blue} bg={S.blueSoft}>{tr("👔 Ured")}</Tag>}{row.selfPay && <Tag color="#8A4B0F" bg={S.amberSoft}>{tr("🧾 Sami plaćaju")}</Tag>} {row.corrected && <Tag color={S.blue} bg={S.blueSoft}>{tr("oprava")}</Tag>}</div>
+                    <div style={{ fontWeight: 700, fontSize: 14.5 }}>{row.rawName} {row.firm && <Tag color={S.sub} bg={S.blueSoft}>{row.firm}</Tag>} {row.office && <Tag color={S.blue} bg={S.blueSoft}>{tr("👔 Ured")}</Tag>}{row.selfPay && <Tag color="#8A4B0F" bg={S.amberSoft}>{tr("🧾 Sami plaćaju")}</Tag>} {row.corrected && <Tag color={S.blue} bg={S.blueSoft}>{tr("oprava")}</Tag>}</div>
                     <div className="num" style={{ fontSize: 12, color: S.sub }}>
                       {/^HPP$/i.test(row.kat || "") ? tr(HPP_LABEL[hppKind(row.src || {})]) : row.kat}{row.src?.hours ? tr(" · {0} odrađeno", fmtH(row.src.hours)) + (row.src.fondHours ? tr(" (fond {0})", fmtH(row.src.fondHours)) : "") : ""}{row.tarif ? tr(" · tarif {0}", czk(row.tarif)) : ""}{!row.office && /^HPP$/i.test(row.kat || "") ? tr(" → koverta −{0}", czk(socZdrFor(row.src || {}))) : ""}
                     </div>
@@ -11571,15 +11605,15 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
                               style={{ background: "none", border: "none", color: S.red, fontSize: 15, cursor: "pointer", padding: "0 2px" }}>✕</button>
                           </div>
                         ))}
-                        {bd.note && (
-                          <div className="num" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 13.5, padding: "4px 0", color: S.blue }}>
-                            <span>{bd.note.note || MZDY_NOTE_LABEL}{(bd.note.note || MZDY_NOTE_LABEL) === MZDY_NOTE_LABEL && <> {tr("(pola zbroja,")}{" "}{czk(bd.note.sourceCzk)})</>}</span>
+                        {bd.notes.map((n) => (
+                          <div key={n.id} className="num" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 13.5, padding: "4px 0", color: S.blue }}>
+                            <span>{n.note || MZDY_NOTE_LABEL}{(n.note || MZDY_NOTE_LABEL) === MZDY_NOTE_LABEL && <> {tr("(pola zbroja,")}{" "}{czk(n.sourceCzk)})</>}</span>
                             <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                              <span style={{ fontWeight: 600 }}>−{money(bd.note.amount, bd.note.currency)}</span>
-                              <button onClick={() => api.delPayrollNote(bd.note, r.w.name)} style={{ background: "none", border: "none", color: S.red, fontSize: 15, cursor: "pointer", padding: 2 }}>✕</button>
+                              <span style={{ fontWeight: 600 }}>−{money(n.amount, n.currency)}</span>
+                              <button onClick={() => api.delPayrollNote(n, r.w.name)} style={{ background: "none", border: "none", color: S.red, fontSize: 15, cursor: "pointer", padding: 2 }}>✕</button>
                             </span>
                           </div>
-                        )}
+                        ))}
                         <div style={head}>{tr("Obračun")}</div>
                         <div className="num" style={{ background: S.bg, borderRadius: 10, padding: "8px 12px", fontSize: 13.5 }}>
                           {bd.items.map((it, i) => (
