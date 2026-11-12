@@ -666,6 +666,10 @@ async function saveMzdyOfficeRow(data, r, mo, lastDay, tag, uid) {
   // na račun iz pásky: zamjenjuje dosadašnji upis za taj mjesec
   let bank = round2(pays.filter((x) => x.type === "racun").reduce((t, x) => t + x.amount, 0));
   const nb = round2(parseNum(r.bank) || 0);
+  if (r.src && !(r.src.dobirka > 0)) {
+    const prevPdf = pays.filter((x) => x.type === "racun" && x.note && x.note.includes(tag));
+    if (prevPdf.length) { await del(prevPdf.map((x) => x.id)); bank = round2(bank - prevPdf.reduce((t, x) => t + x.amount, 0)); }
+  }
   if (r.addBank && nb > 0) {
     await del(pays.filter((x) => x.type === "racun").map((x) => x.id));
     const { error } = await supabase.from("payments").insert({ worker_id: r.workerId, object_id: null, pay_date: lastDay, type: "racun", amount: nb,
@@ -10711,6 +10715,7 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
         const exBank = w ? round2(data.payments.filter((x) => x.workerId === w.id && x.type === "racun" && monthKey(x.date) === mo && (x.currency || "EUR") === cur && !/Mzdy PDF/.test(x.note || "")).reduce((s, x) => s + x.amount, 0)) : 0;
         const bankAmt = Number(conv(p.dobirka));
         const exNote = w ? (data.payrollNotes || []).filter((n) => n.workerId === w.id && n.month === mo).reduce((s, n) => s + n.amount, 0) : 0;
+        const exPdfBank = w ? round2(data.payments.filter((x) => x.workerId === w.id && x.type === "racun" && monthKey(x.date) === mo && /Mzdy PDF/.test(x.note || "")).reduce((s, x) => s + x.amount, 0)) : 0;
         const locked = w ? !!paidFor(data, w.id, mo)?.approved : false;
         return {
           rawName: p.name, kat: p.kat, tarif: p.tarif, corrected: p.corrected, workerId: w?.id || "", currency: cur, src: p,
@@ -10721,6 +10726,7 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
           warn: [
             nk && Math.round(nk.dobirka) !== Math.round(p.dobirka) ? `Mzdové náklady kažu ${czk(nk.dobirka)} na račun` : "",
             exBank > 0 ? `već ručno upisano na račun ${money(exBank, cur)}${Math.round(exBank) === Math.round(bankAmt) ? " (isto)" : ""}` : "",
+            !locked && (exNote > 0 || exPdfBank > 0) ? `već uvezeno za ovaj mjesec (soc.-zdr. ${money(exNote, cur)}, na račun ${money(exPdfBank, cur)}) — zamijenit će se ovom páskou` : "",
             locked ? "mjesec je odobren i zaključan" : "",
           ].filter(Boolean),
         };
@@ -10765,12 +10771,16 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
         }
         // na račun (Dobírka): prethodni uvoz iz PDF-a se zamjenjuje, ručni upisi ostaju
         const bank = round2(parseNum(r.bank) || 0);
-        if (r.addBank && bank > 0) {
+        // oprava s Dobírkom 0 → briše raniji upis iz PDF-a za taj mjesec
+        const zeroNow = r.src && !(r.src.dobirka > 0);
+        if ((r.addBank && bank > 0) || zeroNow) {
           const prev = data.payments.filter((x) => x.workerId === r.workerId && x.type === "racun" && monthKey(x.date) === mo && /Mzdy PDF/.test(x.note || ""));
           if (prev.length) {
             const { error } = await supabase.from("payments").update({ deleted_at: new Date().toISOString() }).in("id", prev.map((x) => x.id));
             if (error) throw error;
           }
+        }
+        if (r.addBank && bank > 0) {
           const { error } = await supabase.from("payments").insert({ worker_id: r.workerId, object_id: null, pay_date: lastDay, type: "racun",
             amount: bank, note: tag, deduct: true, currency: r.currency, created_by: uid });
           if (error) throw error;
