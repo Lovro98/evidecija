@@ -559,11 +559,13 @@ const findWorkerByName = (workers, rawName) => {
 /* ---------- Mzdy PDF-ovi od knjigovođe: pásky, oprava, mzdové náklady, příkazy k úhradě ---------- */
 // soc.-zdr. koji se odbija na koverti: HPP puni / pola fiksno, ostali HPP pola stvarnih doprinosa, DPČ-DPP 0
 const SOCZDR_FULL = 5500, SOCZDR_HALF = 3300, FULL_TARIF = 22400, HALF_TARIF = 11200;
-// HPP po tarifu s pásky: 22 400 = puni, 11 200 = pola, drugi tarif = "ostalo";
+// HPP po tarifu s pásky, samo za cijeli mjesec: 22 400 = puni, 11 200 = pola; drugi tarif ili nepuni mjesec = "ostalo";
 // bez tarifa po satima po odrađenom danu (≥ 6 h = puni) ili fondu
+// cijeli mjesec = odrađeno koliko je fond (npr. 22 od 22 dana); inače se računa stvarno /2
+const fullMonth = (p) => !(p.fondHours > 0) || (p.hours || 0) >= p.fondHours;
 const hppKind = (p) => {
   const t = Math.round(p.tarif || 0);
-  if (t > 0) return t === FULL_TARIF ? "full" : t === HALF_TARIF ? "half" : "other";
+  if (t > 0) return !fullMonth(p) ? "other" : t === FULL_TARIF ? "full" : t === HALF_TARIF ? "half" : "other";
   const perDay = p.days > 0 ? p.hours / p.days : 0;
   return (perDay > 0 ? perDay >= 6 : (p.fondHours || 0) >= 120) ? "full" : "half";
 };
@@ -11363,7 +11365,7 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
           <div style={{ maxWidth: 560, margin: "0 auto", background: "#fff", borderRadius: 14, padding: 18 }}>
             <div style={{ fontWeight: 800, fontSize: 17, marginBottom: 4 }}>{tr("📄 Mzdy — provjera prije spremanja")}</div>
             <div style={{ fontSize: 12.5, color: S.sub, marginBottom: 10 }}>
-              {tr("Na kovertu se oduzima")}{" "}<b>{tr("soc.-zdr.")}</b> {tr("(puno radno vrijeme")}{" "}{czk(SOCZDR_FULL)}{tr(", pola")}{" "}{czk(SOCZDR_HALF)}{tr(", drugi tarif (zdrav. + soc. + pojistné) / 2, DPČ 0) i")}{" "}<b>{tr("na račun")}</b> {tr("(Dobírka iz pásky). Svaki iznos možeš ispraviti.")}
+              {tr("Na kovertu se oduzima")}{" "}<b>{tr("soc.-zdr.")}</b> {tr("(puno radno vrijeme")}{" "}{czk(SOCZDR_FULL)}{tr(", pola")}{" "}{czk(SOCZDR_HALF)}{tr(", drugi tarif ili nepuni mjesec (zdrav. + soc. + pojistné) / 2, DPČ 0) i")}{" "}<b>{tr("na račun")}</b> {tr("(Dobírka iz pásky). Svaki iznos možeš ispraviti.")}
             </div>
             <div style={{ background: S.bg, borderRadius: 10, padding: "8px 10px", fontSize: 12, color: S.sub, marginBottom: 12 }}>
               {mzdyReview.docs.map((d, i) => <div key={i}>✓ {d}</div>)}

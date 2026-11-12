@@ -1,6 +1,7 @@
 // Ukrajinski prijevod: ključ je hrvatski tekst iz App.jsx (tr("…")).
 // Kad nema prijevoda, prikazuje se hrvatski.
 export const TR_UK = {
+ ", drugi tarif ili nepuni mjesec (zdrav. + soc. + pojistné) / 2, DPČ 0) i": ", інший тариф або неповний місяць (zdrav. + soc. + pojistné) / 2, DPČ 0) і",
  ", drugi tarif (zdrav. + soc. + pojistné) / 2, DPČ 0) i": ", інший тариф (zdrav. + soc. + pojistné) / 2, DPČ 0) і",
  "HPP puni": "HPP повний",
  "HPP pola": "HPP половина",
