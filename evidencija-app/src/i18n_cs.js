@@ -1,5 +1,6 @@
 // Češki prijevodi za tr() — ključ je hrvatski tekst iz App.jsx (isto kao i18n_uk.js)
 export const TR_CS = {
+ "Sve gotovina — Dobírku s mzdy (na račun) ne odbijaj s koverte": "Vše hotově — Dobírku z mezd (na účet) neodečítat z obálky",
  ", drugi tarif ili nepuni mjesec (zdrav. + soc. + pojistné) / 2, DPČ 0) i": ", jiný tarif nebo neúplný měsíc (zdrav. + soc. + pojistné) / 2, DPČ 0) a",
  ", drugi tarif (zdrav. + soc. + pojistné) / 2, DPČ 0) i": ", jiný tarif (zdrav. + soc. + pojistné) / 2, DPČ 0) a",
  "HPP puni": "HPP plný",

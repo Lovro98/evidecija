@@ -1069,7 +1069,7 @@ async function fetchAll(isAdmin) {
       permitExpiry: w.permit_expiry || "", contractExpiry: w.contract_expiry || "", position: w.position || "", bankAccount: bankMap[w.id] || "",
       rateCurrency: w.rate_currency === "CZK" ? "CZK" : "EUR",
       positionRates: (w.position_rates && typeof w.position_rates === "object") ? w.position_rates : {},
-      isOffice: !!w.is_office,
+      isOffice: !!w.is_office, cashOnly: !!w.mzdy_cash_only,
       isSelfPay: !!w.is_self_pay, linkedWorkerId: w.linked_worker_id || "",
     })),
     objects: (objects.data || []).map((o) => ({
@@ -1403,11 +1403,13 @@ export default function App() {
         if ((old.permitExpiry || "") !== (f.permitExpiry || "")) diffs.push(`istek dozvole ${old.permitExpiry || "—"}→${f.permitExpiry || "—"}`);
         if ((old.contractExpiry || "") !== (f.contractExpiry || "")) diffs.push(`istek ugovora ${old.contractExpiry || "—"}→${f.contractExpiry || "—"}`);
         if ((old.bankAccount || "") !== (f.bankAccount || "").trim()) diffs.push("broj računa promijenjen");
+        if (admin && f.cashOnly !== undefined && !!old.cashOnly !== !!f.cashOnly) diffs.push(f.cashOnly ? "sve gotovina (Dobírka s mzdy se ne odbija)" : "Dobírka s mzdy se opet odbija");
       }
       return act(async () => { await upd("workers", id, {
         name: newName, phone: f.phone, base_rate: parseNum(f.rate) || 0, rate_currency: f.rateCur || "EUR", object_id: f.objectId || null, note: f.note,
         permit_expiry: f.permitExpiry || null, contract_expiry: f.contractExpiry || null, position: f.position || "",
         ...(f.positionRates ? { position_rates: cleanPositionRates(f.positionRates, f.position) } : {}),
+        ...(admin && f.cashOnly !== undefined ? { mzdy_cash_only: !!f.cashOnly } : {}),
       }); if (admin && (old?.bankAccount || "") !== (f.bankAccount || "").trim()) await saveBank(id, f.bankAccount); }, `Uredio podatke radnika: ${name}${diffs.length ? " (" + diffs.join(", ") + ")" : ""}`);
     },
     setPhone: (w, phone) => act(() => upd("workers", w.id, { phone }), `Upisan broj mobitela radniku ${w.name} (digitalni obračun)`),
@@ -7698,6 +7700,9 @@ function WorkerDetail({ worker, data, api, onBack }) {
               <div style={{ flex: 1 }}><Field label={tr("Istek ugovora")}><input type="date" value={form.contractExpiry || ""} onChange={(e) => setForm({ ...form, contractExpiry: e.target.value })} /></Field></div>
             </div>
             {api.admin && <Field label={tr("Broj bankovnog računa (Číslo účtu) — za knjigovođu")}><input value={form.bankAccount || ""} onChange={(e) => setForm({ ...form, bankAccount: e.target.value })} placeholder={tr("npr. 123456789/0800")} /></Field>}
+            {api.admin && <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13.5, margin: "4px 0 10px" }}>
+              <input type="checkbox" checked={!!form.cashOnly} onChange={(e) => setForm({ ...form, cashOnly: e.target.checked })} style={{ width: 16, height: 16 }} />
+              {tr("Sve gotovina — Dobírku s mzdy (na račun) ne odbijaj s koverte")}</label>}
             <Field label={tr("Napomena")}><textarea rows={2} value={form.note} onChange={(e) => setForm({ ...form, note: e.target.value })} /></Field>
             <div style={{ display: "flex", gap: 8 }}>
               <Btn small onClick={save}>{tr("Spremi")}</Btn>
@@ -10764,12 +10769,13 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
           rawName: p.name, firm: p.firm || DEFAULT_FIRM, kat: p.kat, tarif: p.tarif, corrected: p.corrected, workerId: w?.id || "", currency: cur, src: p,
           socZdr: conv(soc), bank: conv(p.dobirka), dobirkaKc: p.dobirka,
           office: false, contrib: "0", contribDetail: "",
-          include: !!w && !locked, addBank: !!w && p.dobirka > 0 && !(exBank > 0),
+          include: !!w && !locked, addBank: !!w && !w.cashOnly && p.dobirka > 0 && !(exBank > 0),
           exBank, exNote, locked,
           warn: [
             nk && Math.round(nk.dobirka) !== Math.round(p.dobirka) ? `Mzdové náklady kažu ${czk(nk.dobirka)} na račun` : "",
             exBank > 0 ? `već ručno upisano na račun ${money(exBank, cur)}${Math.round(exBank) === Math.round(bankAmt) ? " (isto)" : ""}` : "",
             !locked && (exNote > 0 || exPdfBank > 0) ? `već uvezeno za ovaj mjesec za ${p.firm || DEFAULT_FIRM} (soc.-zdr. ${money(exNote, cur)}, na račun ${money(exPdfBank, cur)}) — zamijenit će se ovom páskou` : "",
+            w?.cashOnly ? "sve gotovina — Dobírka se ne odbija" : "",
             locked ? "mjesec je odobren i zaključan" : "",
           ].filter(Boolean),
         };
@@ -10824,7 +10830,8 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
         // na račun (Dobírka): prethodni uvoz iz PDF-a se zamjenjuje, ručni upisi ostaju
         const bank = round2(parseNum(r.bank) || 0);
         // oprava s Dobírkom 0 → briše raniji upis iz PDF-a za taj mjesec
-        const zeroNow = r.src && !(r.src.dobirka > 0);
+        const cashOnly = !!data.workers.find((x) => x.id === r.workerId)?.cashOnly;
+        const zeroNow = (r.src && !(r.src.dobirka > 0)) || cashOnly;
         if ((r.addBank && bank > 0) || zeroNow) {
           const prev = data.payments.filter((x) => x.workerId === r.workerId && x.type === "racun" && monthKey(x.date) === mo && isFirmPdfBank(x, firm));
           if (prev.length) {
@@ -10832,7 +10839,7 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
             if (error) throw error;
           }
         }
-        if (r.addBank && bank > 0) {
+        if (r.addBank && bank > 0 && !cashOnly) {
           const { error } = await supabase.from("payments").insert({ worker_id: r.workerId, object_id: null, pay_date: lastDay, type: "racun",
             amount: bank, note: `Dobírka ${firm} (Mzdy PDF ${String(mm).padStart(2, "0")}/${yy})`, deduct: true, currency: r.currency, created_by: uid });
           if (error) throw error;

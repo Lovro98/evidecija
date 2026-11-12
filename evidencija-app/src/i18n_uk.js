@@ -1,6 +1,7 @@
 // Ukrajinski prijevod: ključ je hrvatski tekst iz App.jsx (tr("…")).
 // Kad nema prijevoda, prikazuje se hrvatski.
 export const TR_UK = {
+ "Sve gotovina — Dobírku s mzdy (na račun) ne odbijaj s koverte": "Усе готівкою — Dobírku з mzdy (на рахунок) не віднімати з конверта",
  ", drugi tarif ili nepuni mjesec (zdrav. + soc. + pojistné) / 2, DPČ 0) i": ", інший тариф або неповний місяць (zdrav. + soc. + pojistné) / 2, DPČ 0) і",
  ", drugi tarif (zdrav. + soc. + pojistné) / 2, DPČ 0) i": ", інший тариф (zdrav. + soc. + pojistné) / 2, DPČ 0) і",
  "HPP puni": "HPP повний",
