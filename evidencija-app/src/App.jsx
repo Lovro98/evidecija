@@ -143,7 +143,7 @@ const MZDY_NOTE_LABEL = "soc. + zdr.";
 const DEFAULT_FIRM = "Molnar";
 const LEGAL_FORM_RE = /\b(s\.\s?r\.\s?o\.?|spol\.\s*s\s*r\.\s*o\.?|a\.\s?s\.|v\.\s?o\.\s?s\.|k\.\s?s\.)/i;
 const firmShort = (name) => {
-  const clean = String(name || "").replace(/^(firma|zam[eě]stnavatel|organizace|spole[cč]nost|pl[aá]tce)\s*:?\s*/i, "").replace(LEGAL_FORM_RE, "").replace(/[,.&]/g, " ").trim();
+  const clean = String(name || "").trim().replace(/^(firma|zam[eě]stnavatel|organizace|spole[cč]nost|pl[aá]tce)\s*:?\s*/i, "").replace(LEGAL_FORM_RE, "").replace(/[,.&]/g, " ").trim();
   const w = clean.split(/\s+/)[0] || "";
   if (!w) return DEFAULT_FIRM;
   return w.charAt(0).toUpperCase() + w.slice(1).toLowerCase();
@@ -590,18 +590,20 @@ function parseMzdyPasky(lines) {
     const m = line.match(/(\d{2,6})\s*\S{0,3}\s*([A-ZÁ-Ž][A-Za-zÁ-Žá-ž]+(?:\s+[A-Za-zÁ-Žá-ž]+)+?)\s*\S{0,3}\s*(\d{6}\/\d{3,4})\s*\S{0,3}\s*(\S{2,4})\s*\S{0,3}\s*(\d{4})\s*\/\s*(\d{2})/);
     if (m) { push(); cur = { name: fixSplitCaps(m[2].trim()), kat: m[4].toUpperCase(), month: `${m[5]}-${m[6]}`, firm, tarif: 0, zdrav: 0, soc: 0, pojist: 0, dobirka: 0, hruba: 0, hours: 0, days: 0, fondHours: 0, zaloha: 0, sleva: 0 }; continue; }
     if (!cur) continue;
+    // pdf.js zna razmaknuti slova s kvačicama ("Dob í rka") → oznake tražimo bez razmaka
+    const flat = line.replace(/\s+/g, "");
     const dh = line.match(/(\d+(?:[.,]\d+)?)\s*dny\s+(\d+(?:[.,]\d+)?)\s*hod/i);
-    if (dh && /Odpracov/i.test(line)) { cur.days = czNum(dh[1]); cur.hours = czNum(dh[2]); }
-    else if (dh && /Fond/i.test(line)) cur.fondHours = czNum(dh[2]);
+    if (dh && /Odpracov/i.test(flat)) { cur.days = czNum(dh[1]); cur.hours = czNum(dh[2]); }
+    else if (dh && /Fond/i.test(flat)) cur.fondHours = czNum(dh[2]);
     const t = line.match(/tarif\s*:?\s*(\d[\d\s]*?)\s*K\s*[čc]/i);
     if (t) cur.tarif = czNum(t[1]);
-    if (/Zdrav\.?\s*poj/i.test(line)) cur.zdrav = mzdyAmount(line);
-    else if (/Soc\.?\s*poj/i.test(line)) cur.soc = mzdyAmount(line);
-    else if (/Pojistn.{0,3}zam.{0,4}stnavatel/i.test(line)) cur.pojist = mzdyAmount(line);
-    else if (/Hrub.{1,2}\s*mzda/i.test(line)) cur.hruba = mzdyAmount(line);
-    if (/Dob.{1,2}rka/i.test(line)) cur.dobirka = mzdyAmount(line);
-    if (/Z.loha\s*na\s*da/i.test(line)) cur.zaloha = mzdyAmount(line);
-    else if (/Sleva\s*na\s*dani/i.test(line)) cur.sleva = mzdyAmount(line);
+    if (/Zdrav\.?poj/i.test(flat)) cur.zdrav = mzdyAmount(line);
+    else if (/Soc\.?poj/i.test(flat)) cur.soc = mzdyAmount(line);
+    else if (/Pojistn.?zam.?stnavatel/i.test(flat)) cur.pojist = mzdyAmount(line);
+    else if (/Hrub.mzda/i.test(flat)) cur.hruba = mzdyAmount(line);
+    if (/Dob.rka/i.test(flat)) cur.dobirka = mzdyAmount(line);
+    if (/Z.lohanada/i.test(flat)) cur.zaloha = mzdyAmount(line);
+    else if (/Slevanadani/i.test(flat)) cur.sleva = mzdyAmount(line);
   }
   push();
   out.forEach((p) => { if (!p.firm) p.firm = fileFirm || DEFAULT_FIRM; });
