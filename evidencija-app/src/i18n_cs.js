@@ -1,5 +1,9 @@
 // Češki prijevodi za tr() — ključ je hrvatski tekst iz App.jsx (isto kao i18n_uk.js)
 export const TR_CS = {
+ ", drugi tarif (zdrav. + soc. + pojistné) / 2, DPČ 0) i": ", jiný tarif (zdrav. + soc. + pojistné) / 2, DPČ 0) a",
+ "HPP puni": "HPP plný",
+ "HPP pola": "HPP poloviční",
+ "HPP ostalo": "HPP jiný",
  " (arhiviran)": " (archivován)",
  " (bivši)": " (bývalý)",
  " (drugi objekt)": " (jiný objekt)",

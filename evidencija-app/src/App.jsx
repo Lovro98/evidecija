@@ -524,12 +524,26 @@ const findWorkerByName = (workers, rawName) => {
 };
 
 /* ---------- Mzdy PDF-ovi od knjigovođe: pásky, oprava, mzdové náklady, příkazy k úhradě ---------- */
-// soc.-zdr. koji se odbija na koverti (fiksno prema ugovoru): puno radno vrijeme / pola / DPČ-DPP
-const SOCZDR_FULL = 5500, SOCZDR_HALF = 3300, FULL_TARIF = 22400;
-// HPP puni / pola s pásky: sati po odrađenom danu (8 h = puni, 4 h = pola); bez dana po tarifu ili fondu
-const hppFull = (p) => { const perDay = p.days > 0 ? p.hours / p.days : 0; return perDay > 0 ? perDay >= 6 : p.tarif > 0 ? p.tarif >= FULL_TARIF : (p.fondHours || 0) >= 120; };
-// na koverti: HPP puni 5500, HPP pola 3300, DPČ/DPP 0
-const socZdrFor = (p) => (/^DP[PČC]$/i.test(p.kat || "") || (!p.zdrav && !p.soc) ? 0 : (hppFull(p) ? SOCZDR_FULL : SOCZDR_HALF));
+// soc.-zdr. koji se odbija na koverti: HPP puni / pola fiksno, ostali HPP pola stvarnih doprinosa, DPČ-DPP 0
+const SOCZDR_FULL = 5500, SOCZDR_HALF = 3300, FULL_TARIF = 22400, HALF_TARIF = 11200;
+// HPP po tarifu s pásky: 22 400 = puni, 11 200 = pola, drugi tarif = "ostalo";
+// bez tarifa po satima po odrađenom danu (≥ 6 h = puni) ili fondu
+const hppKind = (p) => {
+  const t = Math.round(p.tarif || 0);
+  if (t > 0) return t === FULL_TARIF ? "full" : t === HALF_TARIF ? "half" : "other";
+  const perDay = p.days > 0 ? p.hours / p.days : 0;
+  return (perDay > 0 ? perDay >= 6 : (p.fondHours || 0) >= 120) ? "full" : "half";
+};
+const hppFull = (p) => hppKind(p) === "full";
+const HPP_LABEL = { full: "HPP puni", half: "HPP pola", other: "HPP ostalo" };
+// "ostalo": (zdrav. + soc. + pojistné zaměstnavatele) / 2
+const socZdrOther = (p) => round2(((p.zdrav || 0) + (p.soc || 0) + (p.pojist || 0)) / 2);
+// na koverti: HPP puni 5500, HPP pola 3300, HPP ostalo (zdrav+soc+pojistné)/2, DPČ/DPP 0
+const socZdrFor = (p) => {
+  if (/^DP[PČC]$/i.test(p.kat || "") || (!p.zdrav && !p.soc)) return 0;
+  const k = hppKind(p);
+  return k === "full" ? SOCZDR_FULL : k === "half" ? SOCZDR_HALF : socZdrOther(p);
+};
 const mzdyAmount = (line) => {
   const nums = [...line.matchAll(/(\d[\d\s]*(?:[.,]\d+)?)\s*K\s*č/gi)];
   return nums.length ? czNum(nums[nums.length - 1][1]) : 0;
@@ -7420,9 +7434,9 @@ function contractOf(data, workerId) {
   if (!x || !x.kat) return null;
   const k = x.kat.toUpperCase().replace("DPC", "DPČ");
   if (k !== "HPP") return { label: k, month: x.month, tone: "amber" };
-  // puni/pola: sati po odrađenom danu (8 h = puni, 4 h = pola); bez dana po tarifu
-  const full = hppFull(x);
-  return { label: full ? "HPP puni" : "HPP pola", month: x.month, tone: full ? "green" : "blue" };
+  // puni/pola/ostalo po tarifu s pásky (bez tarifa po satima)
+  const k = hppKind(x);
+  return { label: HPP_LABEL[k], month: x.month, tone: k === "full" ? "green" : k === "half" ? "blue" : "amber" };
 }
 function ContractTag({ data, workerId, admin, small }) {
   if (!admin) return null;
@@ -11288,7 +11302,7 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
           <div style={{ maxWidth: 560, margin: "0 auto", background: "#fff", borderRadius: 14, padding: 18 }}>
             <div style={{ fontWeight: 800, fontSize: 17, marginBottom: 4 }}>{tr("📄 Mzdy — provjera prije spremanja")}</div>
             <div style={{ fontSize: 12.5, color: S.sub, marginBottom: 10 }}>
-              {tr("Na kovertu se oduzima")}{" "}<b>{tr("soc.-zdr.")}</b> {tr("(puno radno vrijeme")}{" "}{czk(SOCZDR_FULL)}{tr(", pola")}{" "}{czk(SOCZDR_HALF)}{tr(", DPČ 0) i")}{" "}<b>{tr("na račun")}</b> {tr("(Dobírka iz pásky). Svaki iznos možeš ispraviti.")}
+              {tr("Na kovertu se oduzima")}{" "}<b>{tr("soc.-zdr.")}</b> {tr("(puno radno vrijeme")}{" "}{czk(SOCZDR_FULL)}{tr(", pola")}{" "}{czk(SOCZDR_HALF)}{tr(", drugi tarif (zdrav. + soc. + pojistné) / 2, DPČ 0) i")}{" "}<b>{tr("na račun")}</b> {tr("(Dobírka iz pásky). Svaki iznos možeš ispraviti.")}
             </div>
             <div style={{ background: S.bg, borderRadius: 10, padding: "8px 10px", fontSize: 12, color: S.sub, marginBottom: 12 }}>
               {mzdyReview.docs.map((d, i) => <div key={i}>✓ {d}</div>)}
@@ -11314,7 +11328,7 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ fontWeight: 700, fontSize: 14.5 }}>{row.rawName} {row.office && <Tag color={S.blue} bg={S.blueSoft}>{tr("👔 Ured")}</Tag>}{row.selfPay && <Tag color="#8A4B0F" bg={S.amberSoft}>{tr("🧾 Sami plaćaju")}</Tag>} {row.corrected && <Tag color={S.blue} bg={S.blueSoft}>{tr("oprava")}</Tag>}</div>
                     <div className="num" style={{ fontSize: 12, color: S.sub }}>
-                      {/^HPP$/i.test(row.kat || "") ? (hppFull(row.src || {}) ? tr("HPP puni") : tr("HPP pola")) : row.kat}{row.src?.hours ? tr(" · {0} odrađeno", fmtH(row.src.hours)) + (row.src.fondHours ? tr(" (fond {0})", fmtH(row.src.fondHours)) : "") : ""}{row.tarif ? tr(" · tarif {0}", czk(row.tarif)) : ""}{!row.office && /^HPP$/i.test(row.kat || "") ? tr(" → koverta −{0}", czk(hppFull(row.src || {}) ? SOCZDR_FULL : SOCZDR_HALF)) : ""}
+                      {/^HPP$/i.test(row.kat || "") ? tr(HPP_LABEL[hppKind(row.src || {})]) : row.kat}{row.src?.hours ? tr(" · {0} odrađeno", fmtH(row.src.hours)) + (row.src.fondHours ? tr(" (fond {0})", fmtH(row.src.fondHours)) : "") : ""}{row.tarif ? tr(" · tarif {0}", czk(row.tarif)) : ""}{!row.office && /^HPP$/i.test(row.kat || "") ? tr(" → koverta −{0}", czk(socZdrFor(row.src || {}))) : ""}
                     </div>
                   </div>
                 </div>
