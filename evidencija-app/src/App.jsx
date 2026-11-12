@@ -10384,6 +10384,16 @@ function DigitalPayroll({ ids, allRows, month, scopeLabel, data, api, admin, rec
   const [idx, setIdx] = useState(firstOpen);
   const [signing, setSigning] = useState(false);
   const [phone, setPhone] = useState("");
+  const [bank, setBank] = useState("");
+  // radnici bez bankovnog računa (samo popis ID-eva, broj računa se ne vidi) — tada se pri potpisu može upisati račun (nije obavezno)
+  const [noBank, setNoBank] = useState(() => new Set());
+  useEffect(() => {
+    let live = true;
+    supabase.rpc("workers_without_bank").then(({ data: rows, error }) => {
+      if (live && !error && Array.isArray(rows)) setNoBank(new Set(rows.map((x) => (typeof x === "string" ? x : x?.workers_without_bank || x?.id)).filter(Boolean)));
+    });
+    return () => { live = false; };
+  }, []);
   const [sig, setSig] = useState(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
@@ -10394,7 +10404,7 @@ function DigitalPayroll({ ids, allRows, month, scopeLabel, data, api, admin, rec
   const st = id ? statusOf(id) : "open";
   const doneN = list.filter((x) => statusOf(x) === "signed" || statusOf(x) === "paid").length;
 
-  const go = (n) => { if (signing || busy || n < 0 || n >= list.length) return; setIdx(n); setErr(""); setJustSigned(null); setSig(null); setPhone(""); };
+  const go = (n) => { if (signing || busy || n < 0 || n >= list.length) return; setIdx(n); setErr(""); setJustSigned(null); setSig(null); setPhone(""); setBank(""); };
   const nextOpen = () => { for (let k = 1; k < list.length; k++) { const j = (idx + k) % list.length; const s = statusOf(list[j]); if (s === "open" || s === "pending") return j; } return -1; };
   useEffect(() => {
     const onKey = (e) => { if (signing || /INPUT|TEXTAREA|SELECT/.test(e.target.tagName)) return; if (e.key === "ArrowRight") go(idx + 1); if (e.key === "ArrowLeft") go(idx - 1); };
@@ -10403,6 +10413,7 @@ function DigitalPayroll({ ids, allRows, month, scopeLabel, data, api, admin, rec
 
   const needPhone = !!r && !String(r.w.phone || "").trim();
   const phoneOk = !needPhone || phone.replace(/\D/g, "").length >= 9;
+  const needBank = !!r && noBank.has(r.w.id);
   const confirm = async () => {
     if (!sig || !r || !phoneOk) return;
     setBusy(true); setErr("");
@@ -10425,7 +10436,11 @@ function DigitalPayroll({ ids, allRows, month, scopeLabel, data, api, admin, rec
       if (!p) { if (admin) await api.markPaidApproved(r.w, month, r.net, r.czk.net); else await api.markPaid(r.w, month, r.net, r.czk.net); }
       else if (!p.approved && admin) await api.approvePayout(p, r.w.name);
       if (needPhone && phone.trim()) await api.setPhone(r.w, phone.trim().replace(/\s+/g, " "));
-      setJustSigned(r.w.id); setSigning(false); setSig(null); setPhone("");
+      if (needBank && bank.trim()) {
+        const { data: okBank } = await supabase.rpc("set_worker_bank_if_empty", { p_worker: r.w.id, p_acc: bank.trim().replace(/\s+/g, "") });
+        if (okBank) setNoBank((prev) => { const n = new Set(prev); n.delete(r.w.id); return n; });
+      }
+      setJustSigned(r.w.id); setSigning(false); setSig(null); setPhone(""); setBank("");
     } catch (e) { setErr(tr("Greška pri spremanju: ") + (e.message || e)); }
     setBusy(false);
   };
@@ -10518,8 +10533,14 @@ function DigitalPayroll({ ids, allRows, month, scopeLabel, data, api, admin, rec
                     {phone && !phoneOk && <div style={{ color: S.red, fontSize: 12.5, fontWeight: 600, marginTop: 4 }}>{tr("Upiši cijeli broj (najmanje 9 znamenki).")}</div>}
                   </label>
                 )}
+                {needBank && (
+                  <label style={{ fontWeight: 700, fontSize: 14 }}>{tr("Broj bankovnog računa (nije obavezno)")}
+                    <input inputMode="text" autoComplete="off" value={bank} onChange={(e) => setBank(e.target.value.replace(/[^\d/\- ]/g, "").slice(0, 34))}
+                      placeholder={tr("npr. 123456789/0800")} style={{ marginTop: 6, fontSize: 18, padding: "12px 14px" }} />
+                  </label>
+                )}
                 <div style={{ display: "flex", gap: 8 }}>
-                  <Btn kind="ghost" onClick={() => { setSigning(false); setSig(null); setPhone(""); }} disabled={busy}>{tr("Odustani")}</Btn>
+                  <Btn kind="ghost" onClick={() => { setSigning(false); setSig(null); setPhone(""); setBank(""); }} disabled={busy}>{tr("Odustani")}</Btn>
                   <Btn onClick={confirm} disabled={!sig || !phoneOk || busy} style={{ flex: 1, minHeight: 52 }}>{busy ? tr("Spremam…") : tr("Potvrdi potpis")}</Btn>
                 </div>
               </>

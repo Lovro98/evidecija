@@ -1028,5 +1028,6 @@ export const TR_UK = {
  "pristup nije izdan.": "доступ не видано.",
  "Skeniraj QR kod mobitelom i upiši PIN.": "Відскануйте QR-код телефоном і введіть PIN.",
  "Tvoj broj mobitela": "Ваш номер мобільного",
+ "Broj bankovnog računa (nije obavezno)": "Номер банківського рахунку (необовʼязково)",
  "Upiši cijeli broj (najmanje 9 znamenki).": "Введіть повний номер (щонайменше 9 цифр).",
 };

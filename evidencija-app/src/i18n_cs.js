@@ -1002,5 +1002,6 @@ export const TR_CS = {
  "pristup nije izdan.": "přístup nebyl vydán.",
  "Skeniraj QR kod mobitelom i upiši PIN.": "Naskenujte QR kód mobilem a zadejte PIN.",
  "Tvoj broj mobitela": "Vaše číslo mobilu",
+ "Broj bankovnog računa (nije obavezno)": "Číslo bankovního účtu (nepovinné)",
  "Upiši cijeli broj (najmanje 9 znamenki).": "Zadejte celé číslo (alespoň 9 číslic).",
 };
