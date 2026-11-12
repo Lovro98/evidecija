@@ -152,10 +152,23 @@ const firmShort = (name) => {
 };
 const isDefaultFirm = (f) => !f || f.toLowerCase() === DEFAULT_FIRM.toLowerCase();
 const firmNoteLabel = (firm) => `${MZDY_NOTE_LABEL} ${firm || DEFAULT_FIRM}`;
+// ista firma i kad je stari uvoz skratio naziv ("Dru" = "Družstvo"): bez kvačica, jedan počinje drugim
+const firmFold = (f) => String(f || DEFAULT_FIRM).normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+const sameFirm = (a, b) => { const x = firmFold(a), y = firmFold(b); return x === y || (Math.min(x.length, y.length) >= 3 && (x.startsWith(y) || y.startsWith(x))); };
 // soc.-zdr. napomena iz uvoza za tu firmu (stara bez firme vrijedi kao Molnar)
-const isFirmNote = (n, firm) => (n.note || "") === firmNoteLabel(firm) || (isDefaultFirm(firm) && (n.note || "") === MZDY_NOTE_LABEL);
+const isFirmNote = (n, firm) => {
+  const t = n.note || "";
+  if (t === MZDY_NOTE_LABEL) return isDefaultFirm(firm);
+  return t.startsWith(MZDY_NOTE_LABEL + " ") && sameFirm(t.slice(MZDY_NOTE_LABEL.length + 1), firm);
+};
 // "na račun" iz uvoza za tu firmu (stari tag "Dobírka (Mzdy PDF …)" vrijedi kao Molnar)
-const isFirmPdfBank = (x, firm) => /Mzdy PDF/.test(x.note || "") && ((x.note || "").startsWith(`Dobírka ${firm || DEFAULT_FIRM} (`) || (isDefaultFirm(firm) && /^Dobírka \(Mzdy PDF/.test(x.note || "")));
+const isFirmPdfBank = (x, firm) => {
+  const t = x.note || "";
+  if (!/Mzdy PDF/.test(t)) return false;
+  if (/^Dobírka \(Mzdy PDF/.test(t)) return isDefaultFirm(firm);
+  const m = t.match(/^Dobírka (.+?) \(Mzdy PDF/);
+  return !!m && sameFirm(m[1], firm);
+};
 // sve soc.-zdr. napomene radnika za mjesec (može ih biti više — po firmi)
 const notesFor = (data, workerId, mo) => (data.payrollNotes || []).filter((n) => n.workerId === workerId && n.month === mo);
 const notesSum = (notes, cur) => round2((notes || []).filter((n) => n.currency === cur).reduce((t, n) => t + n.amount, 0));
