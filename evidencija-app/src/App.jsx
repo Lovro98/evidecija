@@ -139,11 +139,13 @@ const LogSpanLabel = ({ l }) => l.monthly
 const parseNum = (v) => parseFloat(String(v || "").replace(",", "."));
 const TYPE_LABEL = { avans: "Avans", bonus: "Bonus", gorivo: "Gorivo", ostalo: "Ostali trošak", racun: "Na račun (banka)" };
 const MZDY_NOTE_LABEL = "soc. + zdr.";
+// pdf.js zna odvojiti slovo s kvačicom iz prezimena velikim slovima: "BIL Á K" → "BILÁK"
+const fixSplitCaps = (s) => s.replace(/([A-ZÁ-Ž])\s+([ÁČĎÉĚÍŇÓŘŠŤÚŮÝŽ])(?:\s+(?=[A-ZÁ-Ž]+(?:\s|$)))?/g, "$1$2");
 // firma s pásky (Molnar Rose, Lamiclean …) → kratki naziv; bez firme = Molnar (naša)
 const DEFAULT_FIRM = "Molnar";
 const LEGAL_FORM_RE = /\b(s\.\s?r\.\s?o\.?|spol\.\s*s\s*r\.\s*o\.?|a\.\s?s\.|v\.\s?o\.\s?s\.|k\.\s?s\.)/i;
 const firmShort = (name) => {
-  const clean = String(name || "").trim().replace(/^(firma|zam[eě]stnavatel|organizace|spole[cč]nost|pl[aá]tce)\s*:?\s*/i, "").replace(LEGAL_FORM_RE, "").replace(/[,.&]/g, " ").trim();
+  const clean = fixSplitCaps(String(name || "").trim()).replace(/^(firma|zam[eě]stnavatel|organizace|spole[cč]nost|pl[aá]tce)\s*:?\s*/i, "").replace(LEGAL_FORM_RE, "").replace(/[,.&]/g, " ").trim();
   const w = clean.split(/\s+/)[0] || "";
   if (!w) return DEFAULT_FIRM;
   return w.charAt(0).toUpperCase() + w.slice(1).toLowerCase();
@@ -574,8 +576,6 @@ function mzdyDocType(lines) {
   return "pasky";
 }
 // výplatní pásky (i "oprava") → po radniku
-// pdf.js zna odvojiti slovo s kvačicom iz prezimena velikim slovima: "BIL Á K" → "BILÁK"
-const fixSplitCaps = (s) => s.replace(/([A-ZÁ-Ž])\s+([ÁČĎÉĚÍŇÓŘŠŤÚŮÝŽ])(?:\s+(?=[A-ZÁ-Ž]+(?:\s|$)))?/g, "$1$2");
 function parseMzdyPasky(lines) {
   const out = [];
   let cur = null;
