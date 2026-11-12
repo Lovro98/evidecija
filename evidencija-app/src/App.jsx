@@ -574,6 +574,8 @@ function mzdyDocType(lines) {
   return "pasky";
 }
 // výplatní pásky (i "oprava") → po radniku
+// pdf.js zna odvojiti slovo s kvačicom iz prezimena velikim slovima: "BIL Á K" → "BILÁK"
+const fixSplitCaps = (s) => s.replace(/([A-ZÁ-Ž])\s+([ÁČĎÉĚÍŇÓŘŠŤÚŮÝŽ])(?:\s+(?=[A-ZÁ-Ž]+(?:\s|$)))?/g, "$1$2");
 function parseMzdyPasky(lines) {
   const out = [];
   let cur = null;
@@ -581,12 +583,12 @@ function parseMzdyPasky(lines) {
   let firm = "", fileFirm = "";
   for (const line of lines) {
     // naziv firme (s.r.o. / a.s. …) u zaglavlju pásky
-    if (LEGAL_FORM_RE.test(line) && !/poj|K\s*č/i.test(line)) {
+    if ((/^\s*Firma\b/i.test(line) || LEGAL_FORM_RE.test(line)) && !/poj|K\s*č/i.test(line)) {
       firm = firmShort(line); if (!fileFirm) fileFirm = firm;
       if (cur && !cur.firm) cur.firm = firm;
     }
     const m = line.match(/(\d{2,6})\s*\S{0,3}\s*([A-ZÁ-Ž][A-Za-zÁ-Žá-ž]+(?:\s+[A-Za-zÁ-Žá-ž]+)+?)\s*\S{0,3}\s*(\d{6}\/\d{3,4})\s*\S{0,3}\s*(\S{2,4})\s*\S{0,3}\s*(\d{4})\s*\/\s*(\d{2})/);
-    if (m) { push(); cur = { name: m[2].trim(), kat: m[4].toUpperCase(), month: `${m[5]}-${m[6]}`, firm, tarif: 0, zdrav: 0, soc: 0, pojist: 0, dobirka: 0, hruba: 0, hours: 0, days: 0, fondHours: 0, zaloha: 0, sleva: 0 }; continue; }
+    if (m) { push(); cur = { name: fixSplitCaps(m[2].trim()), kat: m[4].toUpperCase(), month: `${m[5]}-${m[6]}`, firm, tarif: 0, zdrav: 0, soc: 0, pojist: 0, dobirka: 0, hruba: 0, hours: 0, days: 0, fondHours: 0, zaloha: 0, sleva: 0 }; continue; }
     if (!cur) continue;
     const dh = line.match(/(\d+(?:[.,]\d+)?)\s*dny\s+(\d+(?:[.,]\d+)?)\s*hod/i);
     if (dh && /Odpracov/i.test(line)) { cur.days = czNum(dh[1]); cur.hours = czNum(dh[2]); }
