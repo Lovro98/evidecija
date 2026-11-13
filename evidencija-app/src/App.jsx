@@ -1681,6 +1681,25 @@ export default function App() {
       await ins("payroll_notes", { worker_id: note.workerId, month: note.month, amount: note.amount, currency: note.currency,
         source_czk: note.sourceCzk, note: note.note || "", created_by: session.user.id });
     }, `Upisao soc.-zdr.: ${wName} −${money(note.amount, note.currency)} (${note.month})`),
+    /* Uredi koverte (Obračun): sve promjene stavki na kovertama jednim spremanjem.
+       changes: [{ w, del: [{ id, isNote }], upd: [{ id, isNote, patch }], add: [{ isNote, type, deduct, amount, currency, note, sourceCzk }],
+                   payout: { p, amount, amountKc } | null }] */
+    saveEnvelopes: (changes, mo) => act(async () => {
+      const date = todayISO().startsWith(mo) ? todayISO() : lastDayOfMonth(mo);
+      for (const c of changes) {
+        guardPaid(c.w.id, mo);
+        for (const x of c.del) await softDel(x.isNote ? "payroll_notes" : "payments", x.id);
+        for (const x of c.upd) await upd(x.isNote ? "payroll_notes" : "payments", x.id, x.patch);
+        for (const x of c.add) {
+          if (x.isNote) await ins("payroll_notes", { worker_id: c.w.id, month: mo, amount: x.amount, currency: x.currency,
+            source_czk: x.sourceCzk, note: x.note || "soc.-zdr.", created_by: session.user.id });
+          else await ins("payments", { worker_id: c.w.id, object_id: null, pay_date: date, type: x.type, amount: x.amount,
+            note: x.note || "", deduct: x.deduct, currency: x.currency, created_by: session.user.id });
+        }
+        // predložena (neodobrena) isplata prati novi iznos koverte
+        if (c.payout) await upd("payouts", c.payout.p.id, { amount: c.payout.amount, amount_czk: c.payout.amountKc || 0 });
+      }
+    }, `Uredio koverte za ${mo}: ${changes.map((c) => `${c.w.name} (${[c.add.length && `+${c.add.length}`, c.upd.length && `~${c.upd.length}`, c.del.length && `−${c.del.length}`].filter(Boolean).join(" ")})`).join(", ")}`),
     saveSettings: (s) => {
       const old = data.settings || {};
       const labels = { company_name: "naziv", address: "adresa", oib: "OIB", iban: "IBAN", czk_rate: "tečaj", czk_rate_auto: "automatski tečaj ČNB", weekend_pct: "dodatak vikend", holiday_pct: "dodatak praznik", expiry_warn_days: "dani upozorenja", payday_day: "dan isplate", payday_reminder_days: "dani podsjetnika" };
@@ -10320,6 +10339,192 @@ function AdjustForm({ r, month, api, czkRate, hasNote }) {
   );
 }
 
+/* ---------- UREDI KOVERTE (Obračun → mjesec): stavke koverti se mijenjaju/dodaju/brišu
+   i spremaju u iste tablice (payments, payroll_notes) — sve ostalo u aplikaciji se odmah osvježi ---------- */
+const ENV_KINDS = [
+  { id: "bonus", label: "Dodatak / bonus (+)", sign: "+" },
+  { id: "avans", label: "Avans (−)", sign: "−" },
+  { id: "odbitak", label: "Odbitak (−)", sign: "−" },
+  { id: "racun", label: "Na račun / banka (−)", sign: "−" },
+  { id: "soczdr", label: "Soc.-zdr. (−)", sign: "−", admin: true },
+];
+const envKindOfPay = (p) => (p.type === "bonus" ? "bonus" : p.type === "avans" ? "avans" : p.type === "racun" ? "racun" : "odbitak");
+const envLinesOf = (r, notes) => [
+  // troškovi firme (deduct=false) ne idu na kovertu → ne prikazuju se ovdje
+  ...r.pays.filter((p) => p.type === "bonus" || p.type === "avans" || p.type === "racun" || p.deduct).map((p) => ({
+    key: "p" + p.id, id: p.id, isNote: false, orig: p, kind: envKindOfPay(p), amount: String(p.amount), currency: p.currency || "EUR", note: p.note || "", date: p.date })),
+  ...notes.map((n) => ({ key: "n" + n.id, id: n.id, isNote: true, orig: n, kind: "soczdr", amount: String(n.amount), currency: n.currency, note: n.note || "" })),
+];
+const envLineChanged = (l) => !l.id || l.deleted || l.kind !== (l.isNote ? "soczdr" : envKindOfPay(l.orig))
+  || round2(parseNum(l.amount) || 0) !== round2(l.orig.amount) || l.currency !== (l.orig.currency || "EUR") || l.note.trim() !== (l.orig.note || "");
+function envTotals(r, lines) {
+  const s = { E: 0, K: 0, bankE: 0, bankK: 0, socE: 0, socK: 0 };
+  const base = { E: round2(r.gross + r.extraPay), K: round2(r.grossKc + r.extraPayKc) };
+  const sum = { E: base.E, K: base.K };
+  lines.filter((l) => !l.deleted).forEach((l) => {
+    const a = round2(parseNum(l.amount) || 0); const c = l.currency === "CZK" ? "K" : "E";
+    if (l.kind === "bonus") sum[c] += a; else sum[c] -= a;
+    if (l.kind === "racun") s["bank" + c] += a;
+    if (l.kind === "soczdr") s["soc" + c] += a;
+  });
+  // cash = gotovina u koverti; payout = iznos prijedloga isplate (kao markPaid: bez soc.-zdr.)
+  return { cashE: round2(sum.E), cashK: round2(sum.K), bankE: round2(s.bankE), bankK: round2(s.bankK),
+    payoutE: round2(sum.E + s.socE), payoutK: round2(sum.K + s.socK) };
+}
+function EnvelopeEditor({ data, api, rows, month, admin, czkRate, onClose, onPrint }) {
+  const [drafts, setDrafts] = useState({}); // workerId -> lines (samo za koverte koje se mijenjaju)
+  const [q, setQ] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const objName = (id) => data.objects.find((o) => o.id === id)?.name || "";
+  const linesFor = (r) => drafts[r.w.id] || envLinesOf(r, notesFor(data, r.w.id, month));
+  const setLines = (r, fn) => setDrafts((d) => ({ ...d, [r.w.id]: fn(d[r.w.id] || envLinesOf(r, notesFor(data, r.w.id, month))) }));
+  const setLine = (r, key, patch) => setLines(r, (ls) => ls.map((l) => (l.key === key ? { ...l, ...patch } : l)));
+  const addLine = (r) => setLines(r, (ls) => [...ls, { key: "new" + Date.now() + Math.random(), id: null, isNote: false, orig: null, kind: "bonus", amount: "", currency: wCur(r.w), note: "" }]);
+  const dirtyOf = (r) => { const ls = drafts[r.w.id]; return !!ls && ls.some((l) => (l.id ? envLineChanged(l) : String(l.amount).trim() !== "")); };
+  const shown = rows.filter((r) => !q.trim() || r.w.name.toLowerCase().includes(q.trim().toLowerCase()));
+  const dirtyRows = rows.filter(dirtyOf);
+
+  const buildChange = (r) => {
+    const ls = drafts[r.w.id] || [];
+    const c = { w: r.w, del: [], upd: [], add: [], payout: null };
+    for (const l of ls) {
+      const amount = round2(parseNum(l.amount) || 0);
+      const isNew = !l.id;
+      if (isNew && String(l.amount).trim() === "") continue;
+      if (!l.deleted && !(amount > 0)) throw new Error(tr("{0}: upiši iznos veći od 0 (ili obriši stavku).", r.w.name));
+      if (l.kind === "soczdr" && !admin) throw new Error(tr("Soc.-zdr. može mijenjati samo admin."));
+      const wantNote = l.kind === "soczdr";
+      const typeOf = (k) => (k === "odbitak" ? (l.orig && !l.isNote && envKindOfPay(l.orig) === "odbitak" ? l.orig.type : "ostalo") : k);
+      const fresh = { isNote: wantNote, type: wantNote ? null : typeOf(l.kind), deduct: l.kind !== "bonus", amount, currency: l.currency, note: l.note.trim(),
+        sourceCzk: l.currency === "CZK" ? amount : round2(amount * czkRate) };
+      if (isNew) { if (!l.deleted) c.add.push(fresh); continue; }
+      if (!envLineChanged(l)) continue;
+      if (l.deleted || l.isNote !== wantNote) { c.del.push({ id: l.id, isNote: l.isNote }); if (!l.deleted) c.add.push(fresh); continue; }
+      c.upd.push({ id: l.id, isNote: l.isNote, patch: l.isNote
+        ? { amount, currency: l.currency, note: fresh.note, ...(round2(amount) !== round2(l.orig.amount) || l.currency !== l.orig.currency ? { source_czk: fresh.sourceCzk } : {}) }
+        : { amount, currency: l.currency, note: fresh.note, type: fresh.type, deduct: fresh.deduct } });
+    }
+    const paid = paidFor(data, r.w.id, month);
+    if (paid && !paid.approved) {
+      const t = envTotals(r, ls);
+      if (round2(paid.amount || 0) !== t.payoutE || round2(paid.amountKc || 0) !== t.payoutK) c.payout = { p: paid, amount: t.payoutE, amountKc: t.payoutK };
+    }
+    return c;
+  };
+  const save = async () => {
+    setErr("");
+    let changes;
+    try { changes = dirtyRows.map(buildChange).filter((c) => c.del.length || c.upd.length || c.add.length || c.payout); }
+    catch (e) { setErr(e.message); return; }
+    if (!changes.length) { setDrafts({}); return; }
+    setBusy(true);
+    const ok = await api.saveEnvelopes(changes, month);
+    setBusy(false);
+    if (ok) setDrafts({});
+  };
+  const close = () => { if (dirtyRows.length && !window.confirm(tr("Imaš nespremljene promjene na {0} koverti. Zatvoriti bez spremanja?", dirtyRows.length))) return; onClose(); };
+  const amt = (e, k, gc) => [e ? eur(e) : "", k ? czk(k) : ""].filter(Boolean).join(" + ") || money(0, gc);
+  const inp = { padding: "8px 9px", fontSize: 14, minHeight: 38 };
+
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(10,14,12,.92)", zIndex: 60, overflowY: "auto", padding: "16px 10px 120px" }}>
+      <div style={{ maxWidth: 620, margin: "0 auto" }}>
+        <div style={{ background: "#fff", borderRadius: 14, padding: 14, marginBottom: 10 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <div style={{ fontWeight: 800, fontSize: 17, flex: 1 }}>{tr("✏️ Uredi koverte — {0}", monthLong(month))}</div>
+            <Btn small kind="ghost" onClick={close}>✕</Btn>
+          </div>
+          <div style={{ fontSize: 12.5, color: S.sub, margin: "4px 0 10px" }}>
+            {tr("Promijeni iznose, dodaj ili obriši stavke (dodatak, avans, odbitak, banka, soc.-zdr.). Nakon spremanja sve se odmah vidi u Obračunu, kartici radnika, digitalnom obračunu i na ispisu koverti. Sati se mijenjaju u Satima.")}
+          </div>
+          <input value={q} onChange={(e) => setQ(e.target.value)} placeholder={tr("🔍 Traži radnika")} style={{ width: "100%", boxSizing: "border-box" }} />
+        </div>
+
+        {shown.length === 0 && <div style={{ color: "#fff", textAlign: "center", padding: 20 }}>{tr("Nitko ne odgovara pretrazi.")}</div>}
+        {shown.map((r) => {
+          const gc = wCur(r.w);
+          const paid = paidFor(data, r.w.id, month);
+          const locked = !!(paid && paid.approved);
+          const ls = linesFor(r);
+          const t = envTotals(r, ls);
+          const dirty = dirtyOf(r);
+          const objs = [...new Set(r.logs.map((l) => objName(l.objectId)).filter(Boolean))].join(", ") || objName(r.w.objectId);
+          const multiPos = (r.byPos || []).length > 1;
+          return (
+            <div key={r.w.id} style={{ background: "#fff", borderRadius: 14, padding: 14, marginBottom: 10, border: `2px solid ${dirty ? S.amber : "transparent"}`, opacity: locked ? 0.75 : 1 }}>
+              <div style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap" }}>
+                <div style={{ fontWeight: 800, fontSize: 16, textTransform: "uppercase", letterSpacing: 0.3, flex: 1, minWidth: 0 }}>{r.w.name}</div>
+                {locked ? <Tag color={S.green} bg={S.greenSoft}>{tr("🔒 Odobreno — zaključano")}</Tag>
+                  : paid ? <Tag color={S.amber} bg={S.amberSoft}>{tr("⏳ Predloženo")}</Tag> : null}
+                {dirty && <Tag color={S.amber} bg={S.amberSoft}>{tr("nespremljeno")}</Tag>}
+              </div>
+              {objs && <div style={{ fontSize: 12.5, color: S.sub }}>{objs}</div>}
+              <div className="num" style={{ fontSize: 13.5, marginTop: 6, background: S.bg, borderRadius: 8, padding: "6px 10px" }}>
+                {multiPos ? r.byPos.map((b, i) => <div key={i}>{posShort(b.position) || tr("sati")}: {fmtH(b.hours)} × {money(b.rate, gc)} = <b>{money(b.amount, gc)}</b></div>)
+                  : <div>{tr("Zarada")}: {fmtH(r.hours)}{r.rateSet.length === 1 ? <> × {money(r.rateSet[0], gc)}</> : null} = <b>{amt(r.gross, r.grossKc, gc)}</b></div>}
+                {(r.extraPay || r.extraPayKc) ? <div>{tr("Dodatak vikend / praznik")}: <b>+{amt(r.extraPay, r.extraPayKc, gc)}</b></div> : null}
+              </div>
+
+              {ls.map((l) => {
+                const k = ENV_KINDS.find((x) => x.id === l.kind);
+                const ro = locked || (l.isNote && !admin);
+                return (
+                  <div key={l.key} style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center", marginTop: 8, opacity: l.deleted ? 0.45 : 1 }}>
+                    <select value={l.kind} disabled={ro || l.deleted} onChange={(e) => setLine(r, l.key, { kind: e.target.value })} style={{ ...inp, flex: "2 1 150px" }}>
+                      {ENV_KINDS.filter((x) => !x.admin || admin || x.id === l.kind).map((x) => <option key={x.id} value={x.id}>{tr(x.label)}</option>)}
+                    </select>
+                    <span style={{ fontWeight: 800, color: k?.sign === "+" ? S.green : S.red, width: 10 }}>{k?.sign}</span>
+                    <input inputMode="decimal" value={l.amount} disabled={ro || l.deleted} onChange={(e) => setLine(r, l.key, { amount: e.target.value })} placeholder={tr("Iznos")}
+                      style={{ ...inp, flex: "1 1 80px", textDecoration: l.deleted ? "line-through" : "none" }} />
+                    <select value={l.currency} disabled={ro || l.deleted} onChange={(e) => setLine(r, l.key, { currency: e.target.value })} style={{ ...inp, flex: "0 0 62px" }}>
+                      <option value="EUR">€</option><option value="CZK">Kč</option>
+                    </select>
+                    <input value={l.note} disabled={ro || l.deleted} onChange={(e) => setLine(r, l.key, { note: e.target.value })} placeholder={tr("Napomena (npr. jelo)")} style={{ ...inp, flex: "3 1 140px" }} />
+                    {!ro && (l.deleted
+                      ? <button onClick={() => setLine(r, l.key, { deleted: false })} title={tr("Vrati")} style={{ background: "none", border: "none", color: S.blue, fontSize: 16, cursor: "pointer", padding: 4 }}>↩</button>
+                      : <button onClick={() => (l.id ? setLine(r, l.key, { deleted: true }) : setLines(r, (xs) => xs.filter((x) => x.key !== l.key)))} title={tr("Obriši")}
+                          style={{ background: "none", border: "none", color: S.red, fontSize: 16, cursor: "pointer", padding: 4 }}>✕</button>)}
+                  </div>
+                );
+              })}
+              {!locked && <Btn small kind="ghost" onClick={() => addLine(r)} style={{ marginTop: 8 }}>{tr("＋ Dodaj stavku")}</Btn>}
+
+              <div className="num" style={{ borderTop: "2px solid " + S.ink, marginTop: 10, paddingTop: 8 }}>
+                {(t.bankE || t.bankK) ? <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13.5 }}>
+                  <span style={{ color: S.sub }}>{bankLabelFor(r, admin)}</span><b>{amt(t.bankE, t.bankK, gc)}</b></div> : null}
+                <div style={{ display: "flex", justifyContent: "space-between", fontWeight: 800, fontSize: 16 }}>
+                  <span>{tr("💵 Gotovina u koverti")}</span>
+                  <span style={{ color: t.cashE < 0 || t.cashK < 0 ? S.red : S.green }}>{amt(t.cashE, t.cashK, gc)}</span>
+                </div>
+                {paid && !locked && dirty && <div style={{ fontSize: 11.5, color: S.amber, marginTop: 4 }}>{tr("Predložena isplata će se osvježiti na novi iznos.")}</div>}
+              </div>
+              {!dirty && (
+                <div style={{ textAlign: "right", marginTop: 6 }}>
+                  <Btn small kind="ghost" onClick={() => onPrint([r])}>{tr("✉️ Ispiši kovertu")}</Btn>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      <div style={{ position: "fixed", left: 0, right: 0, bottom: 0, zIndex: 61, background: S.ink, padding: "10px 12px calc(10px + env(safe-area-inset-bottom))" }}>
+        <div style={{ maxWidth: 620, margin: "0 auto" }}>
+          {err && <div style={{ background: S.redSoft, color: S.red, borderRadius: 8, padding: "6px 10px", fontSize: 12.5, fontWeight: 600, marginBottom: 8 }}>{err}</div>}
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <Btn onClick={save} disabled={busy || !dirtyRows.length} style={{ flex: "2 1 180px" }}>
+              {busy ? tr("Spremam…") : dirtyRows.length ? tr("💾 Spremi promjene ({0})", dirtyRows.length) : tr("Nema promjena")}
+            </Btn>
+            <Btn kind="ghost" onClick={() => onPrint(shown)} disabled={busy || dirtyRows.length > 0} style={{ flex: "1 1 120px" }}>{tr("🖨️ Ispiši ({0})", shown.length)}</Btn>
+            {dirtyRows.length > 0 && <Btn kind="ghost" onClick={() => setDrafts({})} disabled={busy}>{tr("Poništi")}</Btn>}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ---------- USPOREDBA ISPLATIVOSTI HOTELA (Obračun → Analiza) ---------- */
 function HotelProfitability({ data }) {
   const [mk, setMk] = useState(curMonth());
@@ -10639,6 +10844,7 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
   const [sigTarget, setSigTarget] = useState(null); // { id, name } radnika koji trenutno potpisuje
   const [mergeBusy, setMergeBusy] = useState(false);
   const [digiIds, setDigiIds] = useState(null); // digitalni obračun: popis radnika (id) u trenutku otvaranja
+  const [envEdit, setEnvEdit] = useState(null); // Uredi koverte: popis radnika (id) u trenutku otvaranja
   const [selected, setSelected] = useState(() => new Set());
   const [bulkBusy, setBulkBusy] = useState(false);
   const [mzdyBusy, setMzdyBusy] = useState(false);
@@ -10663,7 +10869,7 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
   const toggleObjFilter = (id) => setObjFilters((prev) => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
 
   const inMonth = (d) => monthKey(d) === month;
-  useEffect(() => { setSelected(new Set()); }, [month, view, objFilters]);
+  useEffect(() => { setSelected(new Set()); setEnvEdit(null); }, [month, view, objFilters]);
   const inYear = (d) => (d || "").slice(0, 4) === String(y);
   const rows = calcRows(data, view === "month" ? inMonth : inYear, objFilters).sort((a, b) => a.w.name.localeCompare(b.w.name, "hr"));
   const payStatusOf = (r) => {
@@ -11545,6 +11751,16 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
                 <Btn onClick={() => { const ids = displayRows.map((r) => r.w.id); setDigiIds(ids); ensureCreds(ids); }} style={{ width: "100%", marginBottom: 10, minHeight: 52, fontSize: 16 }}>
                   {tr("✍ Digitalni obračun ({0})", displayRows.length)}{objFilterName ? " · " + objFilterName : ""}
                 </Btn>
+              )}
+              {view === "month" && displayRows.length > 0 && (
+                <Btn kind="ghost" onClick={() => setEnvEdit(exportTargetRows.map((r) => r.w.id))} style={{ width: "100%", marginBottom: 10, minHeight: 48, fontSize: 15 }}>
+                  {tr("✏️ Uredi koverte ({0})", exportTargetRows.length)}{selected.size > 0 ? " · " + tr("označeni") : objFilterName ? " · " + objFilterName : ""}
+                </Btn>
+              )}
+              {envEdit && view === "month" && (
+                <EnvelopeEditor data={data} api={api} admin={admin} month={month} czkRate={czkRate}
+                  rows={rows.filter((r) => envEdit.includes(r.w.id))}
+                  onClose={() => setEnvEdit(null)} onPrint={(list) => printEnvelopes(list)} />
               )}
               {view === "month" && displayRows.length > 0 && (
                 <Btn onClick={printAllByHotel} disabled={printAllBusy} style={{ width: "100%", marginBottom: 10 }}>
