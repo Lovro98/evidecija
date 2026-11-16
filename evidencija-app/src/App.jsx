@@ -2070,6 +2070,7 @@ const ICONS = {
   wallet: <><rect x="3" y="6" width="18" height="13" rx="2" /><circle cx="12" cy="12.5" r="2.5" /></>,
   chart: <path d="M4 19V5M4 19h16M8 15l3-4 3 2 5-6" />,
   check: <path d="M20 6 9 17l-5-5" />,
+  hardhat: <><path d="M3 18h18v2H3z" /><path d="M5 18v-3a7 7 0 0 1 14 0v3" /><path d="M10 8V5h4v3" /></>,
   cash: <path d="M12 2v20M17 6H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6" />,
   bank: <path d="M3 21h18M5 21V10l7-5 7 5v11M9 21v-6h6v6" />,
   envelope: <><rect x="3" y="7" width="18" height="12" rx="2" /><path d="M3 10l9 5 9-5" /></>,
@@ -2100,7 +2101,7 @@ function Ico({ name, size = 22, stroke = 2 }) {
 const NAV_ITEMS = [["danas", "home", "tabDanas"], ["radnici", "users", "tabRadnici"], ["sati", "clock", "tabSati"], ["objekti", "building", "Hoteli"], ["vise", "grid", "Više"]];
 const navLabel = (t, key) => (key.startsWith("tab") ? t(key) : tr(key));
 const MORE_TABS = ["imenik", "isplate", "obracun", "kandidati"];
-const ADMIN_ICON = { ai: "sparkles", candidates: "userPlus", approvals: "check", cash: "cash", finance: "bank", expenses: "cart", unpaid: "envelope", vat: "receipt", users: "users", firm: "settings", audit: "history", logins: "lock", errors: "bug", trash: "trash" };
+const ADMIN_ICON = { ai: "sparkles", candidates: "userPlus", approvals: "check", brigade: "hardhat", cash: "cash", finance: "bank", expenses: "cart", unpaid: "envelope", vat: "receipt", users: "users", firm: "settings", audit: "history", logins: "lock", errors: "bug", trash: "trash" };
 const Badge = ({ n, style }) => n > 0 ? (
   <span style={{ minWidth: 18, height: 18, borderRadius: 99, background: "#C2410C", color: "#fff", fontSize: 10.5, fontWeight: 800,
     display: "inline-flex", alignItems: "center", justifyContent: "center", padding: "0 5px", ...style }}>{n > 99 ? "99+" : n}</span>
@@ -2195,7 +2196,7 @@ function MoreTab({ data, admin, recruiter, t, lang, setLang, goTab, openPanel, o
   const grid = { display: "grid", gridTemplateColumns: `repeat(${wide ? 4 : 3}, minmax(0, 1fr))`, gap: 8 };
   const work = [["imenik", "book", t("tabImenik"), "blue"], ["isplate", "wallet", t("tabIsplate"), "green"], ["obracun", "chart", t("tabObracun"), "blue"]];
   if (recruiter) work.unshift(["kandidati", "userPlus", tr("Kandidati"), "green"]);
-  const toneOf = { approvals: "amber", unpaid: "red", cash: "green", finance: "blue", expenses: "amber", vat: "blue", users: "blue", firm: "gray", audit: "gray", logins: "gray", errors: "gray", trash: "gray" };
+  const toneOf = { approvals: "amber", unpaid: "red", brigade: "amber", cash: "green", finance: "blue", expenses: "amber", vat: "blue", users: "blue", firm: "gray", audit: "gray", logins: "gray", errors: "gray", trash: "gray" };
   return (
     <>
       {admin && (
@@ -3052,7 +3053,7 @@ function CandidatesPanel({ data, api }) {
   );
 }
 const ADMIN_MENU = [
-  ["ai", "🤖", "AI asistent"], ["candidates", "🧑‍🍳", "Kandidati (prijave)"], ["approvals", "⏳", "Odobravanje isplata"], ["office", "👔", "Ured (zaposlenici i plaće)"], ["selfpay", "🧾", "Sami plaćaju (mzdy)"], ["cash", "💵", "Gotovina kod koordinatora"], ["finance", "💼", "Financije (banka i porezi)"], ["expenses", "🛒", "Troškovi i računi (blokovi)"], ["unpaid", "💰", "Neisplaćeno (dugovi radnicima)"], ["invoices", "💳", "Fakture — plaćeno / neplaćeno"], ["vat", "🧾", "DPH"], ["users", "👥", "Korisnici i provizije"],
+  ["ai", "🤖", "AI asistent"], ["candidates", "🧑‍🍳", "Kandidati (prijave)"], ["approvals", "⏳", "Odobravanje isplata"], ["office", "👔", "Ured (zaposlenici i plaće)"], ["selfpay", "🧾", "Sami plaćaju (mzdy)"], ["brigade", "👷", "Brigade"], ["cash", "💵", "Gotovina kod koordinatora"], ["finance", "💼", "Financije (banka i porezi)"], ["expenses", "🛒", "Troškovi i računi (blokovi)"], ["unpaid", "💰", "Neisplaćeno (dugovi radnicima)"], ["invoices", "💳", "Fakture — plaćeno / neplaćeno"], ["vat", "🧾", "DPH"], ["users", "👥", "Korisnici i provizije"],
   ["firm", "🏢", "Podaci firme i postavke"], ["audit", "📜", "Povijest radnji"], ["logins", "🔐", "Prijave"],
   ["errors", "🐛", "Greške aplikacije"], ["trash", "🗑", "Koš (obrisano)"],
 ];
@@ -4975,6 +4976,7 @@ function AdminPanels({ data, api, panel, setPanel, onOpenWorker, onOpenProfile }
       {panel === "ai" && <AiAssistantPanel data={data} />}
       {panel === "finance" && <FinancePanel data={data} api={api} onOpenExpenses={() => setPanel("expenses")} />}
       {panel === "expenses" && <ExpensesPanel data={data} api={api} />}
+      {panel === "brigade" && <BrigadePanel data={data} api={api} />}
       {panel === "cash" && <CashPanel data={data} api={api} />}
       {panel === "office" && <OfficePanel data={data} api={api} />}
       {panel === "selfpay" && <SelfPayPanel data={data} api={api} />}
@@ -7991,7 +7993,7 @@ function BrigadeCard({ object, data, api, monthBrigade, defaultDate }) {
   const blank = () => ({
     date: defaultDate || todayISO(), people: "1", hoursPer: "", payRate: last ? String(round2(last.amount / last.hours)) : "",
     amount: "", amountTouched: false, cur: last ? last.currency : (object.billCur === "EUR" ? "EUR" : "CZK"),
-    names: "", note: "", billRate: "", billCur: object.billCur || "EUR", paidBy: "", more: false,
+    names: "", note: "", billRate: "", billCur: object.billCur || "EUR", paidBy: "", more: false, from: "", range: false,
   });
   const [f, setF] = useState(blank);
   useEffect(() => { setF((p) => ({ ...p, date: defaultDate || p.date })); }, [defaultDate]);
@@ -8009,7 +8011,12 @@ function BrigadeCard({ object, data, api, monthBrigade, defaultDate }) {
 
   const save = async () => {
     if (!f.date || hours <= 0 || amount <= 0) return;
-    const ok = await api.addBrigadeCost(object, { date: f.date, hours, amount, cur: f.cur, note: f.note.trim(), names: f.names.trim(),
+    if (f.range && f.from && f.from > f.date) { await uiAlert(tr("Datum \"od\" mora biti prije datuma \"do\".")); return; }
+    // više dana u jednom upisu: datum = zadnji dan, raspon ide na početak napomene
+    const dm = (iso) => { const [, m, d] = iso.split("-"); return `${Number(d)}.${Number(m)}.`; };
+    const rangeTxt = f.range && f.from && f.from < f.date ? `${dm(f.from)}–${dm(f.date)}` : "";
+    const note = [rangeTxt, f.note.trim()].filter(Boolean).join(" · ");
+    const ok = await api.addBrigadeCost(object, { date: f.date, hours, amount, cur: f.cur, note, names: f.names.trim(),
       people, billRate: preview.billRate, billCur: f.billCur, paidBy: f.paidBy || null }, payer?.name || "");
     if (ok) setF((p) => ({ ...blank(), date: p.date, payRate: effRate ? String(effRate) : p.payRate, cur: p.cur, paidBy: p.paidBy, people: p.people, hoursPer: p.hoursPer }));
   };
@@ -8032,16 +8039,23 @@ function BrigadeCard({ object, data, api, monthBrigade, defaultDate }) {
         {tr("Ljudi koje pošalješ na dan i odmah platiš u gotovini. Sati se naplaćuju hotelu, a iznos ide kao trošak objekta.")}
       </div>
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 6 }}>
-        <div style={{ flex: "1 1 130px" }}><Field label={tr("Datum")}>
+        {f.range && <div style={{ flex: "1 1 130px" }}><Field label={tr("Od")}>
+          <input type="date" value={f.from} onChange={(e) => setF({ ...f, from: e.target.value })} />
+        </Field></div>}
+        <div style={{ flex: "1 1 130px" }}><Field label={f.range ? tr("Do") : tr("Datum")}>
           <input type="date" value={f.date} onChange={(e) => setF({ ...f, date: e.target.value })} />
         </Field></div>
         <div style={{ flex: "0 1 80px" }}><Field label={tr("Ljudi")}>
           <input inputMode="numeric" value={f.people} onChange={(e) => setF({ ...f, people: e.target.value })} placeholder="1" />
         </Field></div>
-        <div style={{ flex: "0 1 90px" }}><Field label={tr("Sati / osobi")}>
+        <div style={{ flex: "0 1 90px" }}><Field label={f.range ? tr("Sati ukupno / osobi") : tr("Sati / osobi")}>
           <input inputMode="decimal" value={f.hoursPer} onChange={(e) => setF({ ...f, hoursPer: e.target.value })} placeholder="8" />
         </Field></div>
       </div>
+      <label style={{ display: "flex", alignItems: "center", gap: 7, fontSize: 12.5, cursor: "pointer", margin: "-2px 0 8px", color: S.sub }}>
+        <input type="checkbox" checked={f.range} onChange={(e) => setF({ ...f, range: e.target.checked })} style={{ width: 17, height: 17 }} />
+        {tr("Više dana u jednom upisu (od – do)")}
+      </label>
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 6, alignItems: "flex-end" }}>
         <div style={{ flex: "1 1 110px" }}><Field label={tr("Daješ po satu")}>
           <input inputMode="decimal" value={f.amountTouched ? (effRate ? String(effRate) : "") : f.payRate}
@@ -8468,6 +8482,131 @@ function SelfPayPanel({ data, api }) {
           )}
         </Card>
       ))}
+    </div>
+  );
+}
+
+/* ================================================================== */
+/*  BRIGADE — svi hoteli na jednom mjestu (Više → Brigade)             */
+/*  Pregled mjeseca po hotelu i po osobi + brzi unos na odabrani hotel */
+/* ================================================================== */
+function BrigadePanel({ data, api }) {
+  const [mo, setMo] = useState(curMonth());
+  const shiftMo = (d) => { const [y, m] = mo.split("-").map(Number); const t = new Date(y, m - 1 + d, 1); setMo(`${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, "0")}`); };
+  const monthRows = useMemo(() => (data.brigadeCosts || []).filter((b) => monthKey(b.date) === mo), [data.brigadeCosts, mo]);
+  // hoteli: prvo oni s brigadom ovaj mjesec, pa oni gdje je ikad bila brigada, pa ostali aktivni
+  const objects = useMemo(() => {
+    const thisMo = new Set(monthRows.map((b) => b.objectId));
+    const ever = new Set((data.brigadeCosts || []).map((b) => b.objectId));
+    return sortedObjects(data.objects.filter((o) => !o.archived || thisMo.has(o.id)))
+      .sort((a, b) => (thisMo.has(b.id) - thisMo.has(a.id)) || (ever.has(b.id) - ever.has(a.id)));
+  }, [data.objects, data.brigadeCosts, monthRows]);
+  const [objId, setObjId] = useState("");
+  useEffect(() => { if (!objId && objects.length) setObjId(objects[0].id); }, [objects, objId]);
+  const object = data.objects.find((o) => o.id === objId);
+  const isNow = mo === curMonth();
+  const defaultDate = isNow ? todayISO() : `${mo}-01`;
+
+  const sum = (list) => ({
+    n: list.length, h: round2(list.reduce((s, b) => s + b.hours, 0)),
+    e: round2(list.filter((b) => b.currency === "EUR").reduce((s, b) => s + b.amount, 0)),
+    k: round2(list.filter((b) => b.currency === "CZK").reduce((s, b) => s + b.amount, 0)),
+  });
+  const moneyStr = (t) => [t.k ? czk(t.k) : "", t.e ? eur(t.e) : ""].filter(Boolean).join(" + ") || "—";
+  const total = sum(monthRows);
+  const byHotel = objects.map((o) => {
+    const list = monthRows.filter((b) => b.objectId === o.id);
+    const profit = list.reduce((s, b) => { const p = brigadeProfit(data, o, b); s[b.currency] = round2((s[b.currency] || 0) + p); return s; }, {});
+    return { o, list, t: sum(list), profit };
+  }).filter((r) => r.list.length);
+  // po osobi: upisi s imenima (više imena odvojenih zarezom → sati i iznos se dijele jednako)
+  const byPerson = useMemo(() => {
+    const m = new Map();
+    monthRows.forEach((b) => {
+      const names = (b.names || "").split(/[,;\n]+/).map((x) => x.trim()).filter(Boolean);
+      if (!names.length) return;
+      names.forEach((nm) => {
+        const key = nm.toLowerCase().replace(/\s+/g, " ");
+        const r = m.get(key) || { name: nm, h: 0, e: 0, k: 0, n: 0, hotels: new Set() };
+        r.h = round2(r.h + b.hours / names.length);
+        r[b.currency === "EUR" ? "e" : "k"] = round2(r[b.currency === "EUR" ? "e" : "k"] + b.amount / names.length);
+        r.n += 1; r.hotels.add(b.objectId);
+        m.set(key, r);
+      });
+    });
+    return [...m.values()].sort((a, b) => a.name.localeCompare(b.name, "hr"));
+  }, [monthRows]);
+  const unnamed = monthRows.filter((b) => !(b.names || "").trim());
+  const oName = (id) => data.objects.find((o) => o.id === id)?.name || "—";
+  const navBtn = { background: "#fff", border: `1px solid ${S.line}`, borderRadius: 10, width: 38, height: 36, cursor: "pointer", fontWeight: 800, fontSize: 16 };
+
+  return (
+    <div style={{ display: "grid", gap: 10, marginTop: 8 }}>
+      <Card>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+          <button onClick={() => shiftMo(-1)} style={navBtn} aria-label={tr("Prethodni mjesec")}>‹</button>
+          <div style={{ flex: 1, textAlign: "center", fontWeight: 800, fontSize: 16 }}>{monthLong(mo)}</div>
+          <button onClick={() => shiftMo(1)} style={navBtn} aria-label={tr("Sljedeći mjesec")}>›</button>
+        </div>
+        <div className="num" style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 8, textAlign: "center" }}>
+          <div style={{ background: S.bg, borderRadius: 12, padding: "8px 4px" }}><div style={{ fontSize: 11, color: S.sub, fontWeight: 700 }}>{tr("Upisa")}</div><div style={{ fontWeight: 800, fontSize: 17 }}>{total.n}</div></div>
+          <div style={{ background: S.bg, borderRadius: 12, padding: "8px 4px" }}><div style={{ fontSize: 11, color: S.sub, fontWeight: 700 }}>{tr("Sati")}</div><div style={{ fontWeight: 800, fontSize: 17 }}>{fmtH(total.h)}</div></div>
+          <div style={{ background: S.bg, borderRadius: 12, padding: "8px 4px" }}><div style={{ fontSize: 11, color: S.sub, fontWeight: 700 }}>{tr("Isplaćeno")}</div><div style={{ fontWeight: 800, fontSize: 14 }}>{moneyStr(total)}</div></div>
+        </div>
+        {byHotel.length > 0 && (
+          <div style={{ marginTop: 12 }}>
+            <div style={{ fontSize: 12, fontWeight: 800, color: S.sub, marginBottom: 4 }}>{tr("Po hotelu")}</div>
+            {byHotel.map(({ o, t, profit }) => (
+              <button key={o.id} onClick={() => setObjId(o.id)} style={{ width: "100%", display: "flex", alignItems: "center", gap: 8, padding: "8px 6px", border: "none",
+                borderBottom: `1px solid ${S.line}`, background: o.id === objId ? S.greenSoft : "none", borderRadius: 8, cursor: "pointer", textAlign: "left", fontSize: 13 }}>
+                <span style={{ flex: 1, minWidth: 0 }}>
+                  <b>{o.name}</b>
+                  <div className="num" style={{ fontSize: 11.5, color: S.sub }}>
+                    {tr("{0} upisa · {1}", t.n, fmtH(t.h))}
+                    {Object.entries(profit).map(([c, p]) => <span key={c}> · {tr("zarada")} <span style={{ color: p < 0 ? S.red : S.green, fontWeight: 700 }}>{money(p, c)}</span></span>)}
+                  </div>
+                </span>
+                <span className="num" style={{ fontWeight: 800 }}>{moneyStr(t)}</span>
+              </button>
+            ))}
+          </div>
+        )}
+        {total.n === 0 && <div style={{ fontSize: 13, color: S.sub, marginTop: 10 }}>{tr("Ovaj mjesec još nema brigada.")}</div>}
+      </Card>
+
+      <Card>
+        <Field label={tr("Hotel za unos")}>
+          <select value={objId} onChange={(e) => setObjId(e.target.value)}>
+            {objects.map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}
+          </select>
+        </Field>
+        <div style={{ fontSize: 11.5, color: S.sub, marginTop: -4 }}>
+          {tr("Zadana cijena za hotel:")}{" "}{object ? money(object.billRate || 0, object.billCur || "EUR") + tr("/h") : "—"}
+        </div>
+      </Card>
+      {object && <BrigadeCard key={object.id} object={object} data={data} api={api} defaultDate={defaultDate}
+        monthBrigade={monthRows.filter((b) => b.objectId === object.id)} />}
+
+      {(byPerson.length > 0 || unnamed.length > 0) && (
+        <Card>
+          <div style={{ fontWeight: 800, fontSize: 15, marginBottom: 6 }}>{tr("Po osobi — {0}", monthLong(mo))}</div>
+          {byPerson.map((r) => (
+            <div key={r.name} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 0", borderBottom: `1px solid ${S.line}`, fontSize: 13 }}>
+              <span style={{ flex: 1, minWidth: 0 }}>
+                <b>{r.name}</b>
+                <div style={{ fontSize: 11.5, color: S.sub }}>{[...r.hotels].map(oName).join(", ")} · {tr("{0} upisa", r.n)}</div>
+              </span>
+              <span className="num" style={{ color: S.sub }}>{fmtH(r.h)}</span>
+              <span className="num" style={{ fontWeight: 800, minWidth: 80, textAlign: "right" }}>{moneyStr(r)}</span>
+            </div>
+          ))}
+          {unnamed.length > 0 && (
+            <div className="num" style={{ fontSize: 12, color: S.sub, marginTop: 8 }}>
+              {tr("Bez imena: {0} upisa · {1} · {2}", unnamed.length, fmtH(sum(unnamed).h), moneyStr(sum(unnamed)))}
+            </div>
+          )}
+        </Card>
+      )}
     </div>
   );
 }
