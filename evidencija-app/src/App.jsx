@@ -572,7 +572,21 @@ const hppKind = (p) => {
 const hppFull = (p) => hppKind(p) === "full";
 const HPP_LABEL = { full: "HPP puni", half: "HPP pola", other: "HPP ostalo" };
 // "ostalo": (zdrav. + soc. + pojistné zaměstnavatele) / 2
-const socZdrOther = (p) => round2(((p.zdrav || 0) + (p.soc || 0) + (p.pojist || 0)) / 2);
+// zaštita od krivo pročitanog PDF-a (spojeni brojevi, npr. 558 461,5 Kč): svaki doprinos mora biti u razumnom
+// odnosu prema hrubé mzdě, inače se računa po stopama (zdrav. 4,5 %, soc. 7,1 %, zaměstnavatel 9 % + 24,8 %)
+const contribOk = (v, hruba, maxPct) => v > 0 && (!(hruba > 0) || v <= hruba * maxPct + 2);
+const czContrib = (p) => {
+  const h = p.hruba || 0;
+  if (!(h > 0)) return { zdrav: p.zdrav || 0, soc: p.soc || 0, pojist: p.pojist || 0 };
+  const zdrTotal = Math.ceil(h * 0.135), zdrEmp = Math.ceil(zdrTotal / 3);
+  const calc = { zdrav: zdrEmp, soc: Math.ceil(h * 0.071), pojist: (zdrTotal - zdrEmp) + Math.ceil(h * 0.248) };
+  return {
+    zdrav: contribOk(p.zdrav, h, 0.05) ? p.zdrav : calc.zdrav,
+    soc: contribOk(p.soc, h, 0.08) ? p.soc : calc.soc,
+    pojist: contribOk(p.pojist, h, 0.35) ? p.pojist : calc.pojist,
+  };
+};
+const socZdrOther = (p) => { const c = czContrib(p); return round2((c.zdrav + c.soc + c.pojist) / 2); };
 // na koverti: HPP puni 5500, HPP pola 3300, HPP ostalo (zdrav+soc+pojistné)/2, DPČ/DPP 0
 const socZdrFor = (p) => {
   if (/^DP[PČC]$/i.test(p.kat || "") || (!p.zdrav && !p.soc)) return 0;
@@ -673,7 +687,8 @@ function mzdyOfficeRow(data, w, p, mo) {
   const exContrib = round2(pays.filter((x) => x.type !== "racun" && x.type !== "bonus" && x.type !== "avans" && !x.deduct).reduce((t, x) => t + x.amount, 0));
   const payout = office.payouts.find((x) => x.workerId === w.id && x.month === mo) || null;
   const locked = !!payout?.approved;
-  const emp = round2((p.zdrav || 0) + (p.soc || 0)), firm = round2(p.pojist || 0);
+  const cc = czContrib(p);
+  const emp = round2(cc.zdrav + cc.soc), firm = round2(cc.pojist);
   const contrib = round2(emp + firm);
   const bankNow = p.dobirka > 0 ? p.dobirka : exBank;
   const allBank = !!sal && sal.salary > 0 && sal.bank >= sal.salary;
