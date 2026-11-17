@@ -11125,13 +11125,16 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
         const exNote = w ? notesFor(data, w.id, mo).filter((n) => isFirmNote(n, p.firm)).reduce((s, n) => s + n.amount, 0) : 0;
         const exPdfBank = w ? round2(data.payments.filter((x) => x.workerId === w.id && x.type === "racun" && monthKey(x.date) === mo && isFirmPdfBank(x, p.firm)).reduce((s, x) => s + x.amount, 0)) : 0;
         const locked = w ? !!paidFor(data, w.id, mo)?.approved : false;
+        // radnik iz Hrvatske (objekt HR) ne smije dobiti odbitke s češke pásky — samo upozorenje, ne sprema se
+        const hrWorker = !!w && data.objects.find((o) => o.id === w.objectId)?.country === "HR";
         return {
           rawName: p.name, firm: p.firm || DEFAULT_FIRM, kat: p.kat, tarif: p.tarif, corrected: p.corrected, workerId: w?.id || "", currency: cur, src: p,
           socZdr: conv(soc), bank: conv(p.dobirka), dobirkaKc: p.dobirka,
           office: false, contrib: "0", contribDetail: "",
-          include: !!w && !locked, addBank: !!w && !w.cashOnly && p.dobirka > 0 && !(exBank > 0),
+          include: !!w && !locked && !hrWorker, addBank: !!w && !hrWorker && !w.cashOnly && p.dobirka > 0 && !(exBank > 0),
           exBank, exNote, locked,
           warn: [
+            hrWorker ? "Radnik iz Hrvatske — ista osoba? Ne sprema se dok ne označiš" : "",
             nk && Math.round(nk.dobirka) !== Math.round(p.dobirka) ? `Mzdové náklady kažu ${czk(nk.dobirka)} na račun` : "",
             exBank > 0 ? `već ručno upisano na račun ${money(exBank, cur)}${Math.round(exBank) === Math.round(bankAmt) ? " (isto)" : ""}` : "",
             !locked && (exNote > 0 || exPdfBank > 0) ? `već uvezeno za ovaj mjesec za ${p.firm || DEFAULT_FIRM} (soc.-zdr. ${money(exNote, cur)}, na račun ${money(exPdfBank, cur)}) — zamijenit će se ovom páskou` : "",
