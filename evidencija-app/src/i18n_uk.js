@@ -631,6 +631,8 @@ export const TR_UK = {
  "🖨✓✓ Predloži i ispiši sve ({0})": "🖨✓✓ Запропонувати і надрукувати всіх ({0})",
  "✓ Odobri odabrane (": "✓ Затвердити вибраних (",
  "✓✓ Odobri sve predložene ({0})": "✓✓ Затвердити всі запропоновані ({0})",
+ "Skriveno {0} s kovertom 0 · prikaži": "Приховано {0} з конвертом 0 · показати",
+ "Sakrij koverte s 0 ({0})": "Сховати конверти з 0 ({0})",
  "Nitko ne odgovara ovom filteru.": "Ніхто не відповідає цьому фільтру.",
  "Označi za Excel/koverte/PDF ili grupnu radnju": "Позначити для Excel/конвертів/PDF або групової дії",
  "✓ Isplaćeno": "✓ Виплачено",

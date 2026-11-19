@@ -289,6 +289,8 @@ export const TR_CS = {
  "Nema zabilježenih grešaka. 🎉": "Žádné zaznamenané chyby. 🎉",
  "Nisam našao nijednu výplatní pásku. Učitaj PDF s páskama (i opravu ako postoji).": "Nenašel jsem žádnou výplatní pásku. Nahraj PDF s páskami (a opravu, pokud existuje).",
  "Nitko još nije upisan na ovom objektu.": "Na tomto objektu zatím nikdo není zapsán.",
+ "Skriveno {0} s kovertom 0 · prikaži": "Skryto {0} s obálkou 0 · zobrazit",
+ "Sakrij koverte s 0 ({0})": "Skrýt obálky s 0 ({0})",
  "Nitko ne odgovara ovom filteru.": "Tomuto filtru nikdo neodpovídá.",
  "Ništa nije odabrano za spremanje.": "Nic není vybráno k uložení.",
  "Nova satnica ({0}/h)": "Nová sazba ({0}/h)",

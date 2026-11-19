@@ -11030,7 +11030,15 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
     const p = view === "month" ? paidFor(data, r.w.id, month) : null;
     return p ? (p.approved ? "paid" : "pending") : "unpaid";
   };
-  const displayRows = view === "month" && payStatusFilter !== "all" ? rows.filter((r) => payStatusOf(r) === payStatusFilter) : rows;
+  // koverta 0 (ništa u gotovini ni na račun) → ne prikazuje se u Obračunu (može se otkriti klikom)
+  const [showZeroEnv, setShowZeroEnv] = useState(false);
+  const isZeroEnv = (r) => {
+    const notes = view === "month" ? notesFor(data, r.w.id, month) : [];
+    return round2(r.net - notesSum(notes, "EUR")) === 0 && round2(r.czk.net - notesSum(notes, "CZK")) === 0 && !r.bank && !r.czk.bank;
+  };
+  const statusRows = view === "month" && payStatusFilter !== "all" ? rows.filter((r) => payStatusOf(r) === payStatusFilter) : rows;
+  const zeroEnvCount = statusRows.filter(isZeroEnv).length;
+  const displayRows = showZeroEnv ? statusRows : statusRows.filter((r) => !isZeroEnv(r));
   const exportTargetRows = selected.size > 0 ? displayRows.filter((r) => selected.has(r.w.id)) : displayRows;
   const PAY_STATUS_LABEL = { all: "", paid: "✓ Isplaćeno", pending: "⏳ Predloženo", unpaid: "Bez isplate" };
   const exportScopeLabel = selected.size > 0 ? `${selected.size} odabrano`
@@ -11960,6 +11968,11 @@ function ReportTab({ data, api, admin, onOpenWorker }) {
               )}
 
               {displayRows.length === 0 && <Empty text={tr("Nitko ne odgovara ovom filteru.")} />}
+              {zeroEnvCount > 0 && (
+                <div onClick={() => setShowZeroEnv(!showZeroEnv)} style={{ fontSize: 12.5, color: S.sub, textAlign: "center", margin: "0 0 8px", cursor: "pointer" }}>
+                  {showZeroEnv ? tr("Sakrij koverte s 0 ({0})", zeroEnvCount) : tr("Skriveno {0} s kovertom 0 · prikaži", zeroEnvCount)}
+                </div>
+              )}
               {displayRows.map((r) => {
                 const paid = view === "month" ? paidFor(data, r.w.id, month) : null;
                 const gc = wCur(r.w);
