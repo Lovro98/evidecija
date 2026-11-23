@@ -7717,7 +7717,7 @@ function WorkerDetail({ worker, data, api, onBack }) {
             {worker.note && <div style={{ marginTop: 8, fontSize: 13.5, color: S.sub, whiteSpace: "pre-wrap" }}>{worker.note}</div>}
             <MzdyInfoBox data={data} workerId={worker.id} admin={api.admin} />
             <div style={{ display: "flex", gap: 8, marginTop: 14, flexWrap: "wrap" }}>
-              <Btn small kind="ghost" onClick={() => { setForm({ ...worker, rate: String(worker.rate || ""), rateCur: wCur(worker) }); setEdit(true); }}>{tr("Uredi")}</Btn>
+              <Btn small kind="ghost" onClick={() => { setForm({ ...worker, rate: String(worker.rate || ""), rateCur: wCur(worker), ...splitNameForEdit(worker.name) }); setEdit(true); }}>{tr("Uredi")}</Btn>
               <Btn small kind="ghost" onClick={() => api.archiveWorker(worker, !worker.archived)} style={{ color: worker.archived ? S.green : S.amber, fontWeight: 700 }}>
                 {worker.archived ? tr("↩ Vrati u aktivne") : tr("📁 Završio s radom")}
               </Btn>
