@@ -6226,6 +6226,31 @@ function MonthClose({ data, api, initialMonth, onClose, onOpenObject, onOpenWork
   );
 }
 
+// radnik upisan samo s jednom riječju: brzi upis prezimena i imena izravno u popisu "Provjeri imena"
+function NameFillRow({ w, objLabel, onOpen, onSave }) {
+  const [last, setLast] = useState(normalizeName(w.name));
+  const [first, setFirst] = useState("");
+  const [busy, setBusy] = useState(false);
+  const full = normalizeName(`${last} ${first}`);
+  const ok = !!last.trim() && !!first.trim();
+  const save = async () => { setBusy(true); await onSave(full); setBusy(false); };
+  return (
+    <div>
+      <div onClick={() => onOpen(w.id)} style={{ cursor: "pointer", marginBottom: 4 }}>
+        "<b>{w.name}</b>" <span style={{ color: S.sub, fontSize: 12 }}>· {objLabel} · {tr("nedostaje ime ili prezime")}</span>
+      </div>
+      <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+        <input value={last} onChange={(e) => setLast(e.target.value)} placeholder={tr("Prezime")} style={{ flex: "1 1 110px", minWidth: 0 }} />
+        <button type="button" title={tr("Zamijeni prezime i ime")} onClick={() => { setLast(first); setFirst(last); }}
+          style={{ border: "1px solid #EBD9B4", background: "#fff", borderRadius: 6, padding: "4px 8px", cursor: "pointer" }}>⇄</button>
+        <input value={first} onChange={(e) => setFirst(e.target.value)} placeholder={tr("Ime")} style={{ flex: "1 1 110px", minWidth: 0 }}
+          onKeyDown={(e) => { if (e.key === "Enter" && ok && !busy) save(); }} />
+        <Btn small onClick={save} disabled={!ok || busy}>{busy ? "…" : tr("Spremi")}</Btn>
+      </div>
+    </div>
+  );
+}
+
 function WorkersTab({ data, api, onOpen, onOpenObject }) {
   const [adding, setAdding] = useState(false);
   const [showObjects, setShowObjects] = useState(true);
@@ -6364,7 +6389,8 @@ function WorkersTab({ data, api, onOpen, onOpenObject }) {
     const badCase = !blank && w.name !== normalized;
     const oneWord = !blank && !looksLikeFullName(w.name);
     return (blank || badCase || oneWord) ? { w, blank, badCase, oneWord, normalized } : null;
-  }).filter(Boolean);
+  }).filter(Boolean)
+    .sort((a, b) => (objName(a.w.objectId) || "~").localeCompare(objName(b.w.objectId) || "~", "hr") || (a.w.name || "").localeCompare(b.w.name || "", "hr"));
   const fixName = (w, normalized) => api.updWorker(w.id, { ...w, rate: String(w.rate || ""), rateCur: wCur(w), name: normalized }, normalized);
   // jednokratna zamjena redoslijeda za sve koji još imaju staro "Ime Prezime" umjesto "Prezime Ime"
   const swappable = data.workers.filter((w) => looksLikeFullName(w.name));
@@ -6596,7 +6622,7 @@ function WorkersTab({ data, api, onOpen, onOpenObject }) {
                     ) : badCase ? (
                       <span onClick={() => onOpen(w.id)} style={{ cursor: "pointer" }}>"{w.name}" → <b>"{normalized}"</b></span>
                     ) : (
-                      <span onClick={() => onOpen(w.id)} style={{ cursor: "pointer" }}>"{w.name}{tr("\" — samo jedno ime, nedostaje prezime")}</span>
+                      <NameFillRow w={w} objLabel={objName(w.objectId) || tr("bez objekta")} onOpen={onOpen} onSave={(full) => fixName(w, full)} />
                     )}
                   </div>
                   {badCase && <Btn small onClick={() => fixName(w, normalized)}>{tr("Ispravi")}</Btn>}
